@@ -1,0 +1,313 @@
+
+# Loads default set of integrations. Do not remove.
+default_config:
+
+# Load frontend themes from the themes folder
+frontend:
+  themes: !include_dir_merge_named themes
+
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+# ---------------------------------------------------------------------------
+# Price-aware load automation (mission price-aware-load-automation-01M3PH8Y)
+# ---------------------------------------------------------------------------
+
+# pyscript (installed via HACS; pin the installed version durably, research.md R-08).
+# allow_all_imports is needed only by the adapter (yaml/json parsing); the pure
+# core under pyscript/modules/ is importable regardless.
+pyscript:
+  allow_all_imports: true
+  hass_is_global: true
+
+# forecast.solar REST sensor (research.md R-03: the built-in integration has no
+# YAML form, so C-005 is met with a REST sensor). Free tier, no API key, one plane.
+# URL path order: lat/lon/declination/azimuth/kwp. Azimuth: 0 = south, negative = east.
+# COUPLING: these roof parameters must match user_config.yaml
+# (latitude 51.12, longitude 3.85, declination 50, azimuth -10, kwp 8.1).
+# scan_interval 3600 = 1 request/hour (NFR-002 caps fetches at 12/hour).
+# The payload rides on the watt_hours_period attribute; state is only a summary
+# (states over 255 chars are truncated).
+rest:
+  - resource: "https://api.forecast.solar/estimate/51.12/3.85/50/-10/8.1"
+    scan_interval: 3600
+    sensor:
+      - name: "Forecast Solar Estimate"
+        value_template: "{{ value_json.result.watt_hours_day.values() | list | first }}"
+        json_attributes_path: "$.result"
+        json_attributes:
+          - watt_hours_period
+        unit_of_measurement: "Wh"
+
+# Capacity-tariff sensors (SlimmeLezer reflash). Canonical sources; all report kW
+# with device_class power, so no unit conversion is needed:
+#   sensor.slimmelezer_huidig_kwartiervermogen           1-0:1.4.0  running quarter-hour average
+#   sensor.slimmelezer_maandpiek                         1-0:1.6.0  this month's peak (level to defend)
+#   sensor.slimmelezer_gemiddelde_maandpiek_13_maanden   13-month average (what the fee is billed on)
+#   sensor.slimmelezer_power_consumed                    netted total
+# No utility_meter / max helpers are needed (C-014 is obsolete): the meter's own
+# registers are authoritative. Do NOT add them.
+# Reference values when recorded: month peak 1.475 kW, 13-month average 2.169 kW,
+# quarter-hour average 0.0 kW at near-zero draw.
+# The month peak was below the 2.5 kW floor then, so the ceiling equals the floor and
+# the planner is in its most protective mode. That is expected behaviour, not a fault.
+#
+# OPEN QUESTION: quarter-hour average semantics of sensor.slimmelezer_huidig_kwartiervermogen.
+#   (a) Accumulating: energy so far / full 15 min. Climbs from zero, reaching the true
+#       average only at the end of the window.
+#   (b) True running: energy so far / elapsed time. Reflects real draw from the first sample.
+#   One minute into a window they differ by 15x: under (a) a 7 kW load starting at :01 shows
+#   as ~0.5 kW, so a planner comparing to a 2.5 kW ceiling would see no problem while a large
+#   peak forms.
+#   Do NOT settle this with a manual load test (the battery behind the meter masks draw).
+#   WP11's runtime detector (T067) determines it passively from normal household consumption.
+#   Controlling config field: capacity_tariff.quarter_hour_average_mode (default: auto);
+#   pin it once the answer is known and stable.
+#
+# VERIFY ENTITY NAMES ON THE LIVE INSTALL (WP10 adapter reads these two):
+#   1. sensor.forecast_solar_estimate  (created above; attribute watt_hours_period holds
+#      timestamp-keyed Wh values).
+#   2. The ENTSO-e price entity and the attribute holding the forward price series.
+#      Expected: attributes.prices with time/price entries, but the entity id and key are
+#      UNCONFIRMED (research.md open item 2).
+#   Procedure: Developer Tools -> States, filter "entso", open the price entity, and note
+#   the attribute key holding the forward series.
+#   Expected shape: a list of mappings, each with a timestamp and a price, covering at least
+#   24 h and extending to ~48 h after the day-ahead auction publishes (~13:00 local).
+#   A mismatch shows up as the planner halting every cycle with "price data unavailable"
+#   while the sensor visibly has data.
+
+
+
+
+
+
+
+
+input_number:
+  price_consumption_day:
+    name: "Price Consumption Day (Tweevoudig Dag)"
+    min: -1
+    max: 2
+    step: 0.001
+    unit_of_measurement: "EUR/kWh"
+    mode: box
+    icon: mdi:weather-sunny
+
+  price_consumption_night:
+    name: "Price Consumption Night (Tweevoudig Nacht)"
+    min: -1
+    max: 2
+    step: 0.001
+    unit_of_measurement: "EUR/kWh"
+    mode: box
+    icon: mdi:weather-night
+
+  price_injection_day:
+    name: "Price Injection Day (Tweevoudig Dag)"
+    min: -1
+    max: 2
+    step: 0.001
+    unit_of_measurement: "EUR/kWh"
+    mode: box
+    icon: mdi:transmission-tower-export
+
+  price_injection_night:
+    name: "Price Injection Night (Tweevoudig Nacht)"
+    min: -1
+    max: 2
+    step: 0.001
+    unit_of_measurement: "EUR/kWh"
+    mode: box
+    icon: mdi:transmission-tower-export
+
+template:
+  - sensor:
+      - name: "Current Consumption Price"
+        unit_of_measurement: "EUR/kWh"
+        state: >
+          {% set hour = now().hour %}
+          {% set weekday = now().weekday() %}
+          {% if weekday < 5 and hour >= 7 and hour < 22 %}
+            {{ states('input_number.price_consumption_day') | float(0) | round(4) }}
+          {% else %}
+            {{ states('input_number.price_consumption_night') | float(0) | round(4) }}
+          {% endif %}
+        attributes:
+          tariff: >
+            {% set hour = now().hour %}
+            {% set weekday = now().weekday() %}
+            {% if weekday < 5 and hour >= 7 and hour < 22 %}
+              Tweevoudig Dag
+            {% else %}
+              Tweevoudig Nacht
+            {% endif %}
+
+      - name: "Dynamic Consumption Price"
+        unit_of_measurement: "EUR/kWh"
+        state_class: measurement
+        state: >
+          {% set belpex = states('sensor.entso_prices_current_electricity_market_price') | float(none) %}
+          {% if belpex is none %}
+            unknown
+          {% else %}
+            {{ (belpex * 1.07 + 0.007) | round(4) }}
+          {% endif %}
+        availability: >
+          {{ states('sensor.entso_prices_current_electricity_market_price') not in ['unknown', 'unavailable', 'none'] }}
+
+      - name: "Dynamic Injection Price"
+        unit_of_measurement: "EUR/kWh"
+        state_class: measurement
+        state: >
+          {% set belpex = states('sensor.entso_prices_current_electricity_market_price') | float(none) %}
+          {% if belpex is none %}
+            unknown
+          {% else %}
+            {{ (belpex * 0.94 - 0.011) | round(4) }}
+          {% endif %}
+        availability: >
+          {{ states('sensor.entso_prices_current_electricity_market_price') not in ['unknown', 'unavailable', 'none'] }}
+
+
+      - name: "Dynamic Injection Price"
+        unit_of_measurement: "EUR/kWh"
+        state_class: measurement
+        state: >
+          {% set belpex = states('sensor.average_electricity_price') | float(none) %}
+          {% if belpex is none %}
+            unknown
+          {% else %}
+            {{ (belpex * 0.94 - 0.011) | round(4) }}
+          {% endif %}
+        availability: >
+          {{ states('sensor.average_electricity_price') not in ['unknown', 'unavailable', 'none'] }}
+
+      - name: "Current Injection Price"
+        unit_of_measurement: "EUR/kWh"
+        state: >
+          {% set hour = now().hour %}
+          {% set weekday = now().weekday() %}
+          {% if weekday < 5 and hour >= 7 and hour < 22 %}
+            {{ states('input_number.price_injection_day') | float(0) | round(4) }}
+          {% else %}
+            {{ states('input_number.price_injection_night') | float(0) | round(4) }}
+          {% endif %}
+        attributes:
+          tariff: >
+            {% set hour = now().hour %}
+            {% set weekday = now().weekday() %}
+            {% if weekday < 5 and hour >= 7 and hour < 22 %}
+              Tweevoudig Dag
+            {% else %}
+              Tweevoudig Nacht
+            {% endif %}
+  - sensor:                                                                                                            
+      - name: "Energy Consumed Total"                                                                                  
+        unit_of_measurement: "kWh"                                                                                     
+        device_class: energy                                                                                           
+        state_class: total_increasing                                                                                  
+        state: >                                                                                                       
+          {{ (states('sensor.slimmelezer_energy_consumed_tariff_1') | float(0) +                                       
+              states('sensor.slimmelezer_energy_consumed_tariff_2') | float(0)) | round(3) }}                          
+                                                                                                                       
+      - name: "Energy Produced Total"                                                                                  
+        unit_of_measurement: "kWh"                                                                                     
+        device_class: energy                                                                                           
+        state_class: total_increasing                                                                                  
+        state: >                                                                                                       
+          {{ (states('sensor.slimmelezer_energy_produced_tariff_1') | float(0) +                                       
+              states('sensor.slimmelezer_energy_produced_tariff_2') | float(0)) | round(3) }}     
+  - trigger:
+      - platform: state
+        entity_id: sensor.energy_consumed_total
+    sensor:
+      - name: "Simulated Dynamic Cost Total"
+        unique_id: simulated_dynamic_cost_total
+        unit_of_measurement: "EUR"
+        device_class: monetary
+        state_class: total_increasing
+        state: >
+          {% set prev_total = states('sensor.simulated_dynamic_cost_total') | float(0) %}
+          {% set old_kwh = trigger.from_state.state | float(-1) %}
+          {% set new_kwh = trigger.to_state.state | float(-1) %}
+          {% set price = states('sensor.dynamic_consumption_price') | float(-1) %}
+          {% if old_kwh < 0 or new_kwh < 0 or price < -1 %}
+            {{ prev_total }}
+          {% else %}
+            {% set delta_kwh = new_kwh - old_kwh %}
+            {% if delta_kwh > 0 and delta_kwh < 10 %}
+              {{ (prev_total + delta_kwh * price) | round(4) }}
+            {% else %}
+              {{ prev_total }}
+            {% endif %}
+          {% endif %}
+
+  - trigger:
+      - platform: state
+        entity_id: sensor.energy_produced_total
+    sensor:
+      - name: "Simulated Dynamic Compensation Total"
+        unique_id: simulated_dynamic_compensation_total
+        unit_of_measurement: "EUR"
+        device_class: monetary
+        state_class: total_increasing
+        state: >
+          {% set prev_total = states('sensor.simulated_dynamic_compensation_total') | float(0) %}
+          {% set old_kwh = trigger.from_state.state | float(-1) %}
+          {% set new_kwh = trigger.to_state.state | float(-1) %}
+          {% set price = states('sensor.dynamic_injection_price') | float(-1) %}
+          {% if old_kwh < 0 or new_kwh < 0 %}
+            {{ prev_total }}
+          {% else %}
+            {% set delta_kwh = new_kwh - old_kwh %}
+            {% if delta_kwh > 0 and delta_kwh < 10 %}
+              {{ (prev_total + delta_kwh * price) | round(4) }}
+            {% else %}
+              {{ prev_total }}
+            {% endif %}
+          {% endif %}
+
+
+
+utility_meter:
+  daily_dynamic_cost:
+    source: sensor.simulated_dynamic_cost_total
+    cycle: daily
+    name: "Simulated Dynamic Cost Daily"
+
+  daily_dynamic_compensation:
+    source: sensor.simulated_dynamic_compensation_total
+    cycle: daily
+    name: "Simulated Dynamic Compensation Daily"
+
+  daily_actual_cost:
+    source: sensor.energy_consumed_total_cost
+    cycle: daily
+    name: "Actual Cost Daily"
+
+  daily_actual_compensation:
+    source: sensor.energy_produced_total_compensation
+    cycle: daily
+    name: "Actual Compensation Daily"
+
+  monthly_dynamic_cost:
+    source: sensor.simulated_dynamic_cost_total
+    cycle: monthly
+    name: "Simulated Dynamic Cost Monthly"
+
+  monthly_dynamic_compensation:
+    source: sensor.simulated_dynamic_compensation_total
+    cycle: monthly
+    name: "Simulated Dynamic Compensation Monthly"
+
+  monthly_actual_cost:
+    source: sensor.energy_consumed_total_cost
+    cycle: monthly
+    name: "Actual Cost Monthly"
+
+  monthly_actual_compensation:
+    source: sensor.energy_produced_total_compensation
+    cycle: monthly
+    name: "Actual Compensation Monthly"

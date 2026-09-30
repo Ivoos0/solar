@@ -1,0 +1,18 @@
+{
+  "coordination_branch": "kitty/mission-price-aware-load-automation-01M3PH8Y",
+  "created_at": "2026-09-29T12:12:18.163294+00:00",
+  "flattened": false,
+  "friendly_name": "Price-Aware Load Automation",
+  "mission_id": "01M3PH8YZ4G4BJMTGW5MDYACVK",
+  "mission_number": 1,
+  "mission_slug": "price-aware-load-automation-01M3PH8Y",
+  "mission_type": "software-dev",
+  "pr_bound": true,
+  "purpose_context": "The home already tracks dynamic and fixed electricity tariffs in Home Assistant but acts on none of them: prices are recorded and costs simulated, while appliances and battery charging still run whenever they happen to run. This mission closes that gap by making load and battery behaviour follow the price signal, so the household captures cheap and negative-price hours and avoids expensive ones without anyone watching a dashboard.",
+  "purpose_tldr": "Automatically shift household electricity loads and battery charging into the cheapest price windows so the home spends less on energy.",
+  "slug": "price-aware-load-automation-01M3PH8Y",
+  "source_description": "Derived from a six-question discovery interview with no initial description. Scope narrowed during discovery to a home battery and inverter only, driven by dynamic Belpex-derived prices with per-provider coefficients, a forecast.solar production estimate, and a trailing seven-day household usage profile, planned over a rolling horizon. The inverter is not commanded in this mission: decisions are written to a log file behind an isolated boundary, and the battery charge reading is stubbed.",
+  "target_branch": "feat/price-aware-load-automation",
+  "topology": "coord",
+  "vcs": "git"
+}

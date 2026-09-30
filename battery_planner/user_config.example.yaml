@@ -1,0 +1,61 @@
+# Copy once to battery_planner/user_config.yaml (NAS only, gitignored) and edit.
+# Every value that differs between installations lives here and nowhere else.
+
+# Provider price coefficients. Consumption and injection are never symmetric.
+prices:
+  consumption_multiplier: 1.07
+  consumption_offset: 0.007
+  injection_multiplier: 0.94
+  injection_offset: -0.011      # negative: injection price goes negative while
+                                # the market price is still positive
+
+battery:
+  capacity_kwh: CHANGE_ME       # REQUIRED - no sensible default (number, kWh)
+  reserve_percent: 10.0         # never planned below
+  max_charge_kw: 5.0            # binds PER BLOCK, independent of capacity
+  max_discharge_kw: 5.0
+  round_trip_efficiency: 0.90   # gates arbitrage and the solar-hold decision
+
+# forecast.solar convention: azimuth 0 = south, negative = east.
+solar:
+  latitude: 51.12               # verify: the API resolves to about 10 metres
+  longitude: 3.85
+  kwp: 8.1                      # 20 panels x 405 Wp
+  declination: 50               # degrees from horizontal
+  azimuth: -10                  # 10 degrees east of south
+
+# Belgian capaciteitstarief, billed on grid offtake only.
+capacity_tariff:
+  enabled: true
+  billing_floor_kw: 2.5         # no saving below this
+  rate_eur_per_kw_year: 40.0    # CHECK YOUR FLUVIUS BILL - revised annually
+  guard_interval_seconds: 30
+  quarter_hour_average_mode: auto   # auto | running | accumulating
+  peak_averaging_months: 13     # length of the averaging window the meter reports
+  offtake_sensor: sensor.slimmelezer_power_consumed
+                                # the meter's NETTED three-phase total; never
+                                # sum the per-phase sensors
+
+# Expected household consumption per block, averaged from recent history.
+usage:
+  history_weeks: 4              # trailing window
+  grouping: same_weekday        # same_weekday | day_type
+                                # same_weekday: a Wednesday block = mean of the
+                                #   last 4 Wednesdays (faithful to routines)
+                                # day_type: a Wednesday block = mean over every
+                                #   weekday in the window; Saturday and Sunday
+                                #   pool as weekend days (smoother, fills faster)
+
+timing:
+  block_minutes: 15
+  evaluation_interval_minutes: 5
+  forecast_refresh_minutes: 60
+  forecast_retry_minutes: 10
+  solar_cache_stale_minutes: 120
+  usage_cache_stale_minutes: 2880
+
+alerts:
+  address: CHANGE_ME@example.com   # REQUIRED - where halt alerts are sent
+  realert_minutes: 60
+
+timezone: Europe/Brussels

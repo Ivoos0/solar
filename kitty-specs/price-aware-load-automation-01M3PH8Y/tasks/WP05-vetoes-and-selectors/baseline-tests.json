@@ -1,0 +1,13 @@
+{
+  "wp_id": "WP05",
+  "captured_at": "2026-09-29T19:35:10Z",
+  "base_branch": "feat/price-aware-load-automation",
+  "base_commit": "d43f65294b96ad41f2ecaa40829d277794b695ee",
+  "test_runner": "pytest",
+  "total": 0,
+  "passed": 0,
+  "failed": 0,
+  "skipped": 0,
+  "failures": [],
+  "source_identity": "GateCoverageScopeSource/junit_xml"
+}
