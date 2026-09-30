@@ -190,6 +190,24 @@ def test_peak_increase_cost(site_config):
     assert cap.peak_increase_cost_eur(2.0, c) == pytest.approx(10.0)
 
 
+def test_peak_increase_cost_ignores_the_billing_floor(site_config):
+    # Pins the documented behaviour: the cost is linear in delta_kw and blind
+    # to the 2.5 kW floor. The caller must pass the floored difference.
+    assert site_config.billing_floor_kw == 2.5
+    floor = site_config.billing_floor_kw
+    # 1.0 -> 2.0 kW is entirely below the floor: billed rise is 0, but the raw
+    # delta of 1.0 kW is priced in full
+    assert cap.peak_increase_cost_eur(2.0 - 1.0, site_config) == pytest.approx(
+        40.0 / 12.0)
+    billed = max(floor, 2.0) - max(floor, 1.0)
+    assert billed == 0.0
+    assert cap.peak_increase_cost_eur(billed, site_config) == 0.0
+    # 2.0 -> 3.5 kW: only the 1.0 kW above the floor is billed
+    billed = max(floor, 3.5) - max(floor, 2.0)
+    assert cap.peak_increase_cost_eur(billed, site_config) == pytest.approx(
+        40.0 / 12.0)
+
+
 def test_averaging_window_from_config(site_config):
     assert cap.billed_average_increase_kw(1.3, site_config) == pytest.approx(
         0.1)
@@ -241,6 +259,20 @@ def test_safe_default_before_conclusion(site_config):
     assert (v.mode, v.confidence) == ("accumulating", "assumed")
     v = cap.detect_average_mode([], site_config)
     assert (v.mode, v.confidence) == ("accumulating", "assumed")
+
+
+def test_samples_from_different_windows_are_never_mixed(site_config):
+    # Each window holds ONE usable sample (3 min in one, 12 min in the next).
+    # Paired across windows they would look like a clean "running" pair
+    # (same reported value, steady load) and vote; kept apart they are lone
+    # samples and cast no vote at all.
+    out = []
+    for i in range(6):
+        minutes = 3.0 if i % 2 == 0 else 12.0
+        out.append(cap.Sample(win(i), minutes, 3.0, 3.0))
+    v = cap.detect_average_mode(out, site_config)
+    assert (v.mode, v.confidence) == ("accumulating", "assumed")
+    assert v.running_votes == 0 and v.accumulating_votes == 0
 
 
 def test_rejects_boundary_straddle(site_config):

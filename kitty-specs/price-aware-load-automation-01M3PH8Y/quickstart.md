@@ -15,7 +15,7 @@ py -3.12 -m pytest tests/ -v
 
 That is the whole toolchain. No virtualenv, no requirements file, no coverage tooling — the core has zero third-party dependencies, so there is nothing to isolate.
 
-`tests/` imports directly from `pyscript/modules/`. Those modules contain no Home Assistant imports, no pyscript decorators, and no file I/O, so CPython loads them unmodified.
+`tests/` imports directly from `pyscript/modules/`. Those modules contain no Home Assistant imports, no pyscript decorators, and no file I/O, so CPython loads them unmodified (pytest imports them; in Home Assistant the adapters load them natively with an executor `importlib` loader).
 
 **This is the only validation this mission has.** There is no inverter to command, the battery reading is stubbed, and real weather takes days to produce an interesting case. If the tests pass and the fixtures are honest, the planner is as verified as it can be before hardware exists.
 

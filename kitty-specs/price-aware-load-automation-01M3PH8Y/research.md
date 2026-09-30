@@ -25,7 +25,7 @@
 
 ## R-02 — pyscript's interpreter, and where that forces the seams
 
-**Decision**: The pure core contains **no file I/O and no pyscript decorators**. Every read and write happens in the adapter layer. The core is plain Python that CPython imports directly for tests.
+**Decision**: The pure core contains **no file I/O and no pyscript decorators**. Every read and write happens in the adapter layer. The core is ordinary CPython: pytest imports it directly, and in Home Assistant it is loaded natively (see "Native core loader" below), never run by pyscript's interpreter.
 
 **Rationale**: This is the single most consequential finding of Phase 0, and it changes the shape of the code.
 
@@ -40,6 +40,8 @@ pyscript does not execute CPython. It runs an asynchronous AST interpreter, and 
 The obvious move — decorate core functions with `@pyscript_compile` — **breaks the test story**. Those decorators are injected into pyscript's global scope and simply do not exist under CPython, so `import trajectory` in a pytest run would raise `NameError` at import time. Working around that needs a `try/except NameError` shim in every core module, which is exactly the kind of host-awareness the core is supposed to be free of.
 
 Keeping all I/O at the edge dissolves the problem rather than working around it. The core becomes pure functions over plain data: in go price lists, forecast values, a usage profile and a battery charge; out comes a trajectory and a decision. No `open()`, so no compile requirement, so no decorator, so CPython imports it unmodified.
+
+**CORRECTION (WP10 review) - native core loader**: files under `pyscript/modules/` are *pyscript* modules, so a plain `import` from an adapter runs them in pyscript's AST interpreter, which lacks generator expressions, `@property`, native callbacks (`key=fn`) and validating `__post_init__` - all of which the core uses. "Plain Python inside pyscript" therefore does not hold. Instead each adapter (`battery_planner.py`, `peak_guard.py`) loads the core with a `@pyscript_executor` helper (`_load_core`) that imports every core file with `importlib` as genuine CPython under a private name (`battery_planner_core_<name>` / `peak_guard_core_<name>`), and also registers the bare names in `sys.modules` because core code imports siblings at call time. Only the adapters and `modules/inverter.py` are interpreted, and a test lints those three files for constructs the interpreter cannot run. Natively loaded modules are not hot-reloaded; a core change needs a Home Assistant restart. The performance argument below is unaffected (native execution is faster than interpretation).
 
 **Performance check**: the trajectory is ~140 iterations of a handful of arithmetic operations. Even at the order-of-magnitude penalty the docs warn about, this is milliseconds against NFR-001's five-second budget. Interpretation is not a risk here. If measurement ever says otherwise, `@pyscript_compile` behind a shim remains available as a targeted escape hatch for the trajectory function alone — but it is not needed up front and should not be added speculatively.
 

@@ -25,7 +25,7 @@ One record per evaluation cycle, appended, never rewritten (NFR-008). Key-value 
 
 ## Required fields
 
-Every field appears in **every** record. An inapplicable value is written explicitly (`none`, `0.00kWh`) and never omitted — a missing field and a zero field must not look alike (NFR-004).
+Every field appears in **every** record. An inapplicable value is written explicitly (`none`, `n/a`, or a real `0.00kWh` that was computed) and never omitted — a missing field and a zero field must not look alike (NFR-004).
 
 | Field | Format | Notes |
 |---|---|---|
@@ -34,9 +34,9 @@ Every field appears in **every** record. An inapplicable value is written explic
 | `power` | `N.NNkW` | `0.00kW` when idle |
 | `soc` | `N.N%/N.NNkWh` | Both forms — percent is what the inverter reports, kWh is what the rules use |
 | `cons`, `inj` | 4 decimal places, EUR/kWh | Derived prices now, not market price |
-| `solar_rem`, `usage_rem` | `N.NNkWh` | Across the horizon |
+| `solar_rem`, `usage_rem` | `N.NNkWh` \| `n/a` | Across the horizon; `n/a` when the source has no trajectory (`source=guard`) |
 | `saturation` | ISO 8601 \| `none` | FR-031 |
-| `spill` | `N.NNkWh` | `0.00kWh` when none projected |
+| `spill` | `N.NNkWh` \| `n/a` | `0.00kWh` when none projected; `n/a` when the source has no trajectory (`source=guard`) |
 | `breach` | ISO 8601 \| `none` | FR-032 |
 | `end_soc` | `N.NNkWh` | Projected at horizon end |
 | `took` | `NNNms` | Cycle duration (NFR-009); makes NFR-001's 5-second budget checkable from the log |
@@ -49,7 +49,7 @@ Every field appears in **every** record. An inapplicable value is written explic
 | `degraded` | comma-separated \| `none` | FR-027 — `soc_stubbed`, `solar_zero_fallback`, `cache_age_solar=3h12m`, `usage_samples=N` |
 | `source` | `planner` \| `guard` | Which loop produced the record; always the last field |
 
-**Absent values.** When capacity handling is off, `avg`, `ceiling` and `budget` render the literal `n/a`; when the current block has no market price, `cons` and `inj` render `n/a`. `n/a` is an explicit value, never a blank and never confusable with `0.00kW`.
+**Absent values.** When capacity handling is off, `avg`, `ceiling` and `budget` render the literal `n/a`; when the current block has no market price, `cons` and `inj` render `n/a`; the peak guard has no trajectory, so its `solar_rem`, `usage_rem` and `spill` render `n/a` too. Free-text parts (each `vetoes`/`degraded` entry, the HALT `cause`) may not contain `|` or a line break, and numbers must be finite; a record violating this is rejected (ValueError) rather than written. `n/a` is an explicit value, never a blank and never confusable with `0.00kW`.
 
 **Field order is fixed**: timestamp, action, power, soc, cons, inj, solar_rem, usage_rem, saturation, spill, breach, end_soc, took, avg, ceiling, budget, vetoes, selector, why, degraded, source.
 

@@ -218,7 +218,10 @@ def test_multiline_formatted_line_is_rejected(
 def test_unsanitised_list_entry_never_writes_two_lines(
         inverter, tmp_path, warnings):
     log = tmp_path / "decisions.log"
-    r = make_record(degraded_inputs=["soc\nstubbed"])
+    r = make_record()
+    # DecisionRecord now rejects this at construction; bypass that to keep the
+    # boundary's own last-line defence covered
+    object.__setattr__(r, "degraded_inputs", ["soc\nstubbed"])
     assert inverter.apply("export", 2.5, r, str(log)) is False
     assert not log.exists()
     assert len(warnings) == 1

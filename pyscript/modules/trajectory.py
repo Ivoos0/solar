@@ -103,7 +103,10 @@ def project(battery_state, solar_series, usage_series, price_map, config,
     inside the usage span or beyond its end - raises TrajectoryError (usage is
     contractually dense to the horizon). A duplicate instant in solar or
     usage, or negative / NaN / inf energy, raises, as does an empty window
-    (nothing to derive a start or horizon from). A block absent from price_map
+    (nothing to derive a start or horizon from). A solar entry inside the
+    projection window whose start is not on the block grid (misaligned, e.g. a
+    :07 start) raises rather than being silently dropped; entries outside the
+    window (before start_time, at or beyond horizon_end) are ignored. A block absent from price_map
     is still projected with has_price False (FR-040).
     TrajectoryBlock.block_start is an aware local datetime derived from the
     UTC instant.
@@ -141,6 +144,14 @@ def project(battery_state, solar_series, usage_series, price_map, config,
     if not grid:
         raise TrajectoryError(
             "empty projection window (start %s, end %s)" % (first, end))
+    on_grid = set(grid)
+    off_grid = sorted(t for t in solar_by
+                      if first <= t < end and t not in on_grid)
+    if off_grid:
+        raise TrajectoryError(
+            "solar block %s is off the %d-minute grid (start %s); it would be "
+            "silently dropped" % (off_grid[0].astimezone(tz),
+                                  config.block_minutes, first.astimezone(tz)))
 
     capacity = config.capacity_kwh
     reserve = capacity * config.reserve_percent / 100.0

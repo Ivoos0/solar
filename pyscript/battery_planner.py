@@ -354,6 +354,7 @@ def _send_alert(cfg, cause, entered):
 def _halt(cfg, local, cause):
     """Price outage: no decision; alert on entry, then per realert_minutes."""
     global _halt_state
+    cause = decision.one_line(cause)     # may embed an exception repr
     if _halt_state is None:
         log.error(f"battery_planner: HALT, {cause}")  # noqa: F821
         _halt_state = decision.HaltState(True, cause, local, None)

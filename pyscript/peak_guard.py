@@ -46,9 +46,14 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   identical state, so a genuinely current but unchanged average would look
   stale; last_reported moves on every write. Older HA: .last_updated. Values
   may be datetime or ISO string; naive = UTC. The stamp must be at or after
-  the current window start, otherwise the tick is a no-op with one warning per
-  window. ASSUMPTION: the meter rewrites the average after each window
-  boundary. If neither timestamp exists (nothing measured) the average is
+  the current window start PLUS GUARD_BOUNDARY_MARGIN_S (2 s), otherwise the
+  tick is a no-op with one warning per window. The margin covers clock skew:
+  if the meter (ESPHome) clock runs a few seconds behind HA, the previous
+  window's average could be rewritten just after HA's boundary and carry a
+  "fresh" stamp. ASSUMPTION: the meter rewrites the average after each window
+  boundary, and any skew between meter and HA is under
+  GUARD_BOUNDARY_MARGIN_S. The margin applies only when a stamp exists; the
+  no-timestamp fallback below is unchanged. If neither timestamp exists (nothing measured) the average is
   ignored for the first STALE_FALLBACK_SECONDS (15 s) of every window, with no
   warning. A stale value NEVER produces a discharge.
 * The billed 13-month average sensor is NOT read: GridState has no field for it
@@ -64,8 +69,9 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   shave is vetoed (once per window); a shave stops. A steady shave therefore
   yields ONE record, not one per tick. Unreadable-sensor and error warnings go
   to the HA log at most once per WARN_EVERY_SECONDS per kind.
-* Record fields the guard cannot know (no trajectory): forecast_remaining and
-  usage_remaining render 0.00kWh, spill 0.00kWh, saturation and breach render
+* Record fields the guard cannot know (no trajectory): forecast_remaining,
+  usage_remaining and spill are None and render n/a (an explicit "not
+  evaluated", never a projected 0.00kWh), saturation and breach render
   "none", end_soc is the CURRENT stored kWh (same fallback decision.build uses
   with no blocks), cons/inj render n/a (no prices). why says "no trajectory".
   avg/ceiling/budget are real (capacity.*). degraded carries soc_stubbed and,
@@ -124,7 +130,7 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
 """
 import math
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import inverter          # the only core file pyscript interprets
@@ -149,6 +155,9 @@ SHAVE_CHANGE_KW = 0.25
 # 48 archived samples = 24 windows (two detector samples are kept per window)
 MAX_HISTORY_SAMPLES = 48
 STALE_FALLBACK_SECONDS = 15.0
+# A stamp must be this far past the window start to count as fresh (meter
+# clock skew; see the docstring). Only used when a timestamp exists.
+GUARD_BOUNDARY_MARGIN_S = 2
 _UNIT_FACTORS = {"kW": 1.0, "W": 0.001}
 _BAD = ("unavailable", "unknown", "none", "")
 
@@ -380,8 +389,8 @@ def _make_record(now, cfg, grid, batt, verdict, took_ms, action, power_kw,
         timestamp=now, action=action, target_power_kw=power_kw,
         charge_percent=batt.charge_percent, charge_kwh=batt.stored_kwh,
         consumption_price=None, injection_price=None,
-        forecast_remaining_kwh=0.0, usage_remaining_kwh=0.0,
-        saturation_block=None, spill_kwh=0.0, reserve_breach_block=None,
+        forecast_remaining_kwh=None, usage_remaining_kwh=None,
+        saturation_block=None, spill_kwh=None, reserve_breach_block=None,
         projected_end_charge_kwh=batt.stored_kwh, duration_ms=int(took_ms),
         running_average_kw=grid.running_average_kw,
         ceiling_kw=capacity.ceiling_kw(grid, cfg),
@@ -431,7 +440,8 @@ def _handle_error():
 def _avg_staleness(stamp, now, start):
     """None = fresh, "stale" = measured stale, "unknown" = no timestamp."""
     if stamp is not None:
-        return "stale" if stamp < start else None
+        earliest = start + timedelta(seconds=GUARD_BOUNDARY_MARGIN_S)
+        return "stale" if stamp < earliest else None
     if (now - start).total_seconds() < STALE_FALLBACK_SECONDS:
         return "unknown"
     return None
