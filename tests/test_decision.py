@@ -360,3 +360,62 @@ def test_build_capacity_off_renders_na(site_config):
     assert kv["avg"] == kv["ceiling"] == kv["budget"] == "n/a"
     assert kv["degraded"] == "none" and kv["vetoes"] == "none"
     assert kv["action"] == d.action and kv["selector"] == d.selector
+
+
+# ---- one-line contract: delimiters and non-finite numbers rejected ------------
+
+@pytest.mark.parametrize("field", ["vetoes_applied", "degraded_inputs"])
+@pytest.mark.parametrize("bad", ["a|b", "a\nb", "a\rb", "x | y=1"])
+def test_list_entries_reject_delimiters_and_line_breaks(field, bad):
+    with pytest.raises(ValueError, match=field):
+        rec(**{field: ["ok", bad]})
+
+
+@pytest.mark.parametrize("field", [
+    "target_power_kw", "charge_percent", "charge_kwh", "consumption_price",
+    "injection_price", "forecast_remaining_kwh", "usage_remaining_kwh",
+    "spill_kwh", "projected_end_charge_kwh", "running_average_kw",
+    "ceiling_kw", "budget_kw"])
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_numeric_fields_reject_non_finite(field, bad):
+    with pytest.raises(ValueError, match=field):
+        rec(**{field: bad})
+
+
+def test_required_number_may_not_be_none():
+    with pytest.raises(ValueError, match="target_power_kw"):
+        rec(target_power_kw=None)
+
+
+@pytest.mark.parametrize("bad", ["a|b", "line\none", "cr\rhere"])
+def test_halt_cause_rejects_delimiters_and_line_breaks(bad):
+    with pytest.raises(ValueError, match="cause"):
+        decision.HaltState(True, bad, T0, None)
+
+
+def test_format_halt_rechecks_the_cause():
+    h = decision.HaltState(True, "fine", T0, None)
+    object.__setattr__(h, "cause", "sneaky | alerted=none")
+    with pytest.raises(ValueError, match="cause"):
+        decision.format_halt(h, T0)
+
+
+def test_one_line_makes_untrusted_text_halt_safe():
+    cause = decision.one_line("bad\n  entries | KeyError(\"x\")\r\n")
+    assert cause == "bad entries / KeyError(\"x\")"
+    h = decision.HaltState(True, cause, T0, None)
+    assert len(decision.format_halt(h, T0).split(" | ")) == 5
+
+
+# ---- None renders n/a (guard: no trajectory) ---------------------------------
+
+def test_none_remaining_and_spill_render_na_and_keep_field_order():
+    line = decision.format_record(rec(
+        forecast_remaining_kwh=None, usage_remaining_kwh=None, spill_kwh=None))
+    kv = fields_of(line)
+    assert (kv["solar_rem"], kv["usage_rem"], kv["spill"]) == ("n/a",) * 3
+    assert len(line.split(" | ")) == 21
+    assert "0.00kWh" not in line.split(" | ")[7]          # usage_rem
+    # a real zero is still a zero
+    kv0 = fields_of(decision.format_record(rec(spill_kwh=0.0)))
+    assert kv0["spill"] == "0.00kWh"

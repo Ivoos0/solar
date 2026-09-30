@@ -225,11 +225,14 @@ def test_forming_peak_discharges_once_with_guard_record(make_guard):
     assert "source=guard" in line and "selector=S0" in line
     assert "average mode running (configured)" in line
     # documented renderings of trajectory-dependent fields
-    assert rec.forecast_remaining_kwh == 0.0 and rec.usage_remaining_kwh == 0.0
+    assert rec.forecast_remaining_kwh is None
+    assert rec.usage_remaining_kwh is None and rec.spill_kwh is None
     assert rec.saturation_block is None and rec.reserve_breach_block is None
-    assert rec.spill_kwh == 0.0
     assert rec.projected_end_charge_kwh == rec.charge_kwh
     assert "cons=n/a" in line and "inj=n/a" in line
+    assert "solar_rem=n/a" in line and "usage_rem=n/a" in line
+    assert "spill=n/a" in line and "0.00kWh" not in line
+
 
 
 def test_netted_sensor_used_and_per_phase_ignored(make_guard):
@@ -474,6 +477,40 @@ def test_stale_last_reported_no_action_fresh_one_acts(make_guard):
     g.at(12, 22, 30)
     g.st.reported[AVG] = _stamp(12, 22, 29)
     g.tick(**PEAK_ARGS)
+    assert len(g.discharges) == 1
+
+
+def test_boundary_margin_constant_is_two_seconds(make_guard):
+    assert make_guard().mod.GUARD_BOUNDARY_MARGIN_S == 2
+
+
+@pytest.mark.parametrize("attr", ["reported", "updated"])
+def test_stamp_within_margin_of_window_start_is_stale(make_guard, attr):
+    # meter clock a few seconds behind HA: a stamp 1 s after the boundary may
+    # still be the previous window's average
+    g = make_guard(mode="accumulating").at(12, 22, 30)
+    getattr(g.st, attr)[AVG] = _stamp(12, 15, 1)
+    g.tick(**PEAK_ARGS)
+    assert g.inv.calls == []
+    assert len([m for m in g.log.messages if "not refreshed" in m]) == 1
+    getattr(g.st, attr)[AVG] = _stamp(12, 15, 3)        # start + 3 s: fresh
+    g.at(12, 22, 31).tick(**PEAK_ARGS)
+    assert len(g.discharges) == 1
+
+
+def test_stamp_exactly_at_margin_is_fresh(make_guard):
+    g = make_guard(mode="accumulating").at(12, 22, 30)
+    g.st.reported[AVG] = _stamp(12, 15, 2)
+    g.tick(**PEAK_ARGS)
+    assert len(g.discharges) == 1
+
+
+def test_margin_does_not_change_no_timestamp_fallback(make_guard):
+    g = make_guard(mode="accumulating").at(12, 15, 14)   # no timestamps at all
+    g.tick(offtake="3.5", avg="3.9", peak="4.0", trigger_type="state")
+    assert g.inv.calls == []                              # inside the 15 s
+    assert not [m for m in g.log.messages if "not refreshed" in m]
+    g.at(12, 22, 30).tick(**PEAK_ARGS)                    # past it: acts
     assert len(g.discharges) == 1
 
 
@@ -860,6 +897,46 @@ def test_loader_failure_leaves_no_half_loaded_module(make_guard, monkeypatch,
         mod._load_core(str(tmp_path), ("config",))
     assert "peak_guard_core_config" not in sys.modules
     assert "config" not in sys.modules
+
+
+def test_loader_partial_failure_undoes_aliases_of_good_modules(
+        make_guard, monkeypatch, tmp_path):
+    """config loads fine, capacity raises: config's bare alias must be undone
+    (a pre-existing bare entry restored) and no private name may remain."""
+    mod = make_guard().mod
+    _bind_fresh(mod, monkeypatch)
+    import types
+    previous = types.ModuleType("config")
+    previous.__file__ = str(tmp_path / "elsewhere.py")
+    monkeypatch.setitem(sys.modules, "config", previous)
+    (tmp_path / "config.py").write_text("VALUE = 1\n")
+    (tmp_path / "capacity.py").write_text("raise RuntimeError('broken')\n")
+    with pytest.raises(RuntimeError, match="broken"):
+        mod._load_core(str(tmp_path), ("config", "capacity"))
+    assert sys.modules["config"] is previous            # alias undone
+    assert "capacity" not in sys.modules
+    # the good first module keeps its private name only if it stays consistent
+    assert "peak_guard_core_capacity" not in sys.modules
+    # with no pre-existing bare entry the alias disappears altogether
+    monkeypatch.delitem(sys.modules, "config")
+    with pytest.raises(RuntimeError, match="broken"):
+        mod._load_core(str(tmp_path), ("config", "capacity"))
+    assert "config" not in sys.modules and "capacity" not in sys.modules
+
+
+def test_ensure_core_loads_only_once(make_guard, monkeypatch):
+    mod = make_guard().mod
+    monkeypatch.setattr(mod, "_core_ready", False)
+    seen = []
+
+    def counting(core_dir, names):
+        seen.append((core_dir, names))
+        return {n: sys.modules[n] for n in names}
+    monkeypatch.setattr(mod, "_load_core", counting)
+    mod._ensure_core()
+    mod._ensure_core()
+    mod._ensure_core()
+    assert seen == [(mod.CORE_DIR, mod.CORE_MODULES)]
 
 
 _SUBPROCESS_SCRIPT = r"""

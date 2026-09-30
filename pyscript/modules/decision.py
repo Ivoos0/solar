@@ -40,6 +40,13 @@ Documented readings / discrepancies
   the current block has no published price (prices_now None).
 * ``budget`` is rendered with its sign and never clamped; capacity.budget_kw
   is negative when the window is already over the ceiling.
+* solar_rem / usage_rem / spill are None (rendered ``n/a``) when the source
+  has no trajectory to derive them from (the peak guard): ``n/a`` is
+  explicit, unlike a projected 0.00kWh.
+* Free text is validated, not repaired: list entries and the halt cause may
+  not contain ``|`` or CR/LF, and every number must be finite (ValueError).
+  ``why`` keeps its own sanitising (``_why``); ``one_line`` is offered for
+  callers that must feed untrusted text into a halt cause.
 * solar_rem / usage_rem sum the trajectory blocks from the decision's
   current block (decision.block_start) to the horizon end; end_soc is the
   last block's projected charge (the battery's stored kWh if no blocks).
@@ -58,6 +65,7 @@ Documented readings / discrepancies
   ``alerted=none``.
 """
 from dataclasses import dataclass
+import math
 from datetime import timezone
 
 ACTIONS = ("charge", "discharge", "export", "idle")
@@ -75,6 +83,32 @@ FIELD_NAMES = (
 )
 
 
+# Numeric fields that must be finite (a "nan"/"inf" would render as text that
+# is not a number). The optional ones render n/a when None.
+_REQUIRED_NUMBERS = ("target_power_kw", "charge_percent", "charge_kwh",
+                     "projected_end_charge_kwh", "duration_ms")
+_OPTIONAL_NUMBERS = ("consumption_price", "injection_price",
+                     "forecast_remaining_kwh", "usage_remaining_kwh",
+                     "spill_kwh", "running_average_kw", "ceiling_kw",
+                     "budget_kw")
+
+
+def _reject_delimiters(name, text):
+    """One-line, fixed-field-order contract: a value may not carry the field
+    separator (``|``) or a line break, or it would split or add fields."""
+    s = "" if text is None else str(text)
+    if "|" in s or "\n" in s or "\r" in s:
+        raise ValueError(
+            "%s must not contain '|' or a line break, got %r" % (name, text))
+
+
+def one_line(text):
+    """Make free text safe for a HaltState cause: whitespace runs (line
+    breaks included) collapse to one space and ``|`` becomes ``/``. Callers
+    holding untrusted text (an exception repr) use this before HaltState."""
+    return " ".join(str(text).split()).replace("|", "/")
+
+
 @dataclass(frozen=True)
 class DecisionRecord:
     timestamp: object               # aware datetime (offset is rendered)
@@ -84,10 +118,10 @@ class DecisionRecord:
     charge_kwh: float
     consumption_price: object       # float, or None when the block is unpriced
     injection_price: object         # float, or None when the block is unpriced
-    forecast_remaining_kwh: float
-    usage_remaining_kwh: float
+    forecast_remaining_kwh: object  # float, or None (source=guard: n/a)
+    usage_remaining_kwh: object     # float, or None (source=guard: n/a)
     saturation_block: object        # aware datetime | None
-    spill_kwh: float
+    spill_kwh: object               # float, or None (source=guard: n/a)
     reserve_breach_block: object    # aware datetime | None
     projected_end_charge_kwh: float
     duration_ms: int
@@ -119,6 +153,17 @@ class DecisionRecord:
                 raise ValueError("%s must be a list" % name)
             if any(not isinstance(i, str) or not i.strip() for i in items):
                 raise ValueError("%s holds a blank entry" % name)
+        for name in _REQUIRED_NUMBERS + _OPTIONAL_NUMBERS:
+            v = getattr(self, name)
+            if v is None and name in _OPTIONAL_NUMBERS:
+                continue
+            if isinstance(v, bool) or not isinstance(v, (int, float)) \
+                    or not math.isfinite(v):
+                raise ValueError("%s must be a finite number, got %r"
+                                 % (name, v))
+        for name in ("vetoes_applied", "degraded_inputs"):
+            for item in getattr(self, name):
+                _reject_delimiters(name, item)
         if not str(self.reasoning).strip():
             raise ValueError("reasoning must not be blank")
 
@@ -129,6 +174,9 @@ class HaltState:
     cause: str
     entered_at: object              # aware datetime
     last_alert_at: object           # aware datetime | None
+
+    def __post_init__(self):
+        _reject_delimiters("cause", self.cause)
 
 
 # ---- building --------------------------------------------------------------
@@ -232,7 +280,7 @@ def _kw(v):
 
 
 def _kwh(v):
-    return "%.2fkWh" % v
+    return NA if v is None else "%.2fkWh" % v
 
 
 def _price(v):
@@ -275,6 +323,7 @@ def format_record(record):
 
 def format_halt(halt_state, now):
     """HALT line for a cycle that produced no decision (FR-021, SC-001)."""
+    _reject_delimiters("cause", halt_state.cause)
     return " | ".join([
         now.isoformat(timespec="seconds"),
         "HALT",

@@ -133,6 +133,15 @@ def peak_increase_cost_eur(delta_kw, config):
 
     The billed average rises by delta/N. Billing is monthly at rate/12 and the
     elevated peak stays inside the N-month window for N months.
+
+    NOTE - the billing floor is NOT applied here. delta_kw is taken as the
+    rise of the BILLED peak, and the function is linear in it. Billing floors
+    each monthly peak at config.billing_floor_kw (2.5 kW), so raising a peak
+    that sits below the floor costs nothing until it passes the floor. A
+    caller must therefore pass the difference of the floored figures,
+    max(floor, new_peak) - max(floor, old_peak) (see ceiling_kw), never the
+    raw difference of the measured peaks; this function cannot see the
+    peaks and will price a sub-floor rise as if it were billed.
     """
     n = config.peak_averaging_months
     monthly = (billed_average_increase_kw(delta_kw, config)

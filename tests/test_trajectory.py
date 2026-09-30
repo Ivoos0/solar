@@ -409,3 +409,93 @@ def test_projection_is_recomputed_from_live_charge():
     b = run(dict(case, start_percent=100.0))
     assert a is not b
     assert a.blocks[0].projected_charge_kwh != b.blocks[0].projected_charge_kwh
+
+
+# ---- misaligned solar and ZoneInfo-keyed prices -----------------------------
+
+def _aligned_inputs(n=4):
+    cfg = fx.site(10.0, 5.0, 5.0)
+    return cfg, battery.from_percent(50, cfg), fx.usage_slots([0.1] * n)
+
+
+def test_off_grid_solar_block_raises_instead_of_being_dropped():
+    cfg, state, usage = _aligned_inputs()
+    solar = fx.solar_slots([0.2] * 4)
+    solar[2] = series.ForecastSlot(solar[2].block_start + timedelta(minutes=7),
+                                   0.2, False, 60)
+    with pytest.raises(trajectory.TrajectoryError, match="off the 15-minute grid"):
+        trajectory.project(state, solar, usage, {}, cfg)
+
+
+def test_off_grid_solar_raises_against_an_offset_start_time():
+    cfg, state, usage = _aligned_inputs()
+    with pytest.raises(trajectory.TrajectoryError, match="off the 15-minute grid"):
+        trajectory.project(state, fx.solar_slots([0.2] * 4), usage, {}, cfg,
+                           start_time=fx.START + timedelta(minutes=5))
+
+
+def test_solar_outside_the_window_is_still_ignored_not_rejected():
+    # documented: entries before start_time / at or beyond horizon_end are
+    # ignored, even when misaligned
+    cfg, state, usage = _aligned_inputs()
+    solar = fx.solar_slots([0.2] * 4)
+    solar.append(series.ForecastSlot(fx.START + timedelta(hours=9, minutes=7),
+                                     0.2, False, 60))
+    solar.append(series.ForecastSlot(fx.START - timedelta(minutes=8),
+                                     0.2, False, 60))
+    pm = {t: None for t in fx.starts(4)}        # prices fix the horizon at 4 blocks
+    t = trajectory.project(state, solar, usage, pm, cfg, start_time=fx.START)
+    assert len(t.blocks) == 4 and all(b.solar_kwh == 0.2 for b in t.blocks)
+
+
+def _zone_priced(instants, skip=()):
+    """price_map keyed by ZoneInfo-aware datetimes (what a naive caller builds)."""
+    return {t.astimezone(fx.TZ): prices.PricePoint(t.astimezone(fx.TZ), 0.1,
+                                                   0.2, 0.05, 15)
+            for t in instants if t not in skip}
+
+
+def _zone_day(y, m, d, price_map_of):
+    instants = _utc_day(y, m, d)
+    cfg = fx.site(10.0, 5.0, 5.0)
+    local = [t.astimezone(fx.TZ) for t in instants]
+    solar = [series.ForecastSlot(l, 0.001 * i, False, 60) for i, l in enumerate(local)]
+    usage = list(reversed([series.UsageSlot(l, 0.05, 7) for l in local]))
+    t = trajectory.project(battery.from_percent(50, cfg), solar, usage,
+                           price_map_of(instants), cfg)
+    return t, instants
+
+
+def test_zoneinfo_price_keys_spring_forward_day_join_all_92_blocks():
+    t, instants = _zone_day(2026, 3, 29, _zone_priced)
+    assert len(t.blocks) == 92
+    assert [b.block_start.astimezone(UTC) for b in t.blocks] == instants
+    assert all(b.has_price for b in t.blocks)
+    assert [b.solar_kwh for b in t.blocks] == pytest.approx(
+        [0.001 * i for i in range(92)])
+
+
+def test_zoneinfo_price_keys_fall_back_day_repeated_hour_dict_collapse():
+    # A dict keyed by ZoneInfo datetimes cannot hold both occurrences of the
+    # repeated hour (PEP 495: equal + same hash), so only the first (+02:00)
+    # survives. Every block must still be projected (100) and the join must be
+    # by instant: exactly the four second-occurrence blocks are unpriced.
+    t, instants = _zone_day(2026, 10, 25, _zone_priced)
+    assert len(t.blocks) == 100 and len(_zone_priced(instants)) == 96
+    unpriced = [b for b in t.blocks if not b.has_price]
+    assert len(unpriced) == 4
+    assert all(b.block_start.hour == 2
+               and b.block_start.utcoffset() == timedelta(hours=1)
+               for b in unpriced)
+
+
+def test_zoneinfo_price_keys_fall_back_day_all_100_join_by_instant():
+    # project() only iterates price_map keys; a key list keeps all 100
+    # ZoneInfo datetimes (fold 0 and 1 of the repeated hour). A join on aware
+    # equality would see 96 and leave four blocks unpriced.
+    t, instants = _zone_day(
+        2026, 10, 25, lambda ins: [x.astimezone(fx.TZ) for x in ins])
+    assert len(t.blocks) == 100
+    assert all(b.has_price for b in t.blocks)
+    assert [b.block_start.astimezone(UTC) for b in t.blocks] == instants
+    assert t.horizon_end.astimezone(UTC) == instants[-1] + fx.STEP
