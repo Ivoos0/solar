@@ -56,6 +56,13 @@ def test_full_parse_flattens():
     ("solar__declination", 91, "declination"),
     ("solar__declination", -1, "declination"),
     ("alerts__address", "  ", "address"),
+    ("alerts__notify_service", "", "notify_service"),
+    ("alerts__notify_service", "Gmail_Alert", "notify_service"),
+    ("alerts__notify_service", "gmail-alert", "notify_service"),
+    ("alerts__notify_service", "notify.gmail_alert", "notify_service"),
+    ("alerts__notify_service", "gmail alert", "notify_service"),
+    ("alerts__notify_service", "gmail_alert\n", "notify_service"),
+    ("alerts__notify_service", 5, "notify_service"),
     ("battery__max_charge_kw", 0, "max_charge_kw"),
     ("battery__max_discharge_kw", 0, "max_discharge_kw"),
     ("capacity_tariff__quarter_hour_average_mode", "bogus",
@@ -115,6 +122,7 @@ def test_fingerprint_ignores_other_fields():
     for path, v in [("prices__consumption_multiplier", 2.0),
                     ("battery__capacity_kwh", 20.0),
                     ("alerts__address", "z@z.z"),
+                    ("alerts__notify_service", "other_notifier"),
                     ("battery__reserve_percent", 20),
                     ("capacity_tariff__enabled", False),
                     ("capacity_tariff__stay_under_percent", 50),
@@ -168,3 +176,12 @@ def test_stay_under_percent_default_is_80():
 def test_stay_under_percent_accepts_valid(v):
     cfg = from_dict(base(capacity_tariff__stay_under_percent=v))
     assert cfg.stay_under_percent == v
+
+
+def test_notify_service_defaults_to_gmail_alert(site_config):
+    assert site_config.notify_service == "gmail_alert"
+
+
+def test_notify_service_is_read_from_alerts_section():
+    c = from_dict(base(alerts__notify_service="smtp_2_alerts"))
+    assert c.notify_service == "smtp_2_alerts"

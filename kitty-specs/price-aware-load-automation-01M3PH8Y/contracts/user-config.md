@@ -95,6 +95,7 @@ timing:
 
 alerts:
   address: you@example.com      # REQUIRED
+  notify_service: gmail_alert   # HA notify service name (notify.<name>); default gmail_alert
   realert_minutes: 60           # not per cycle - that would be 288 emails/day
 
 timezone: Europe/Brussels
@@ -112,6 +113,7 @@ Checked at load. A failure is a **startup error, not a degraded cycle** — bad 
 | `block_minutes` divides 60 | Blocks must align to hourly price and forecast periods |
 | `-180 <= azimuth <= 180`, `0 <= declination <= 90` | forecast.solar's accepted ranges |
 | `address` non-empty | A halt with nowhere to alert is a silent failure |
+| `notify_service` matches `[a-z0-9_]+` | It is the service name under the `notify` domain; a dotted, spaced or upper-case value can never resolve. It does not join the cache fingerprint |
 | `max_charge_kw > 0`, `max_discharge_kw > 0` | Zero would make the trajectory meaningless |
 
 ## Cache invalidation
@@ -120,4 +122,4 @@ Changing `solar.*`, `timing.block_minutes`, `usage.history_weeks` or `usage.grou
 
 ## Secrets
 
-The alert address is not a secret. Email **credentials** are not stored here — alerting goes through Home Assistant's notify service, keeping credentials in `secrets.yaml`, which `.gitignore` already excludes (NFR-007).
+The alert address and the notify service name are not secrets. Email **credentials** are not stored here — alerting goes through Home Assistant's notify service (`alerts.notify_service`, default `gmail_alert`, an SMTP notifier defined in `configuration.yaml`), keeping credentials in `secrets.yaml`, which `.gitignore` already excludes (NFR-007). The tracked `secrets.example.yaml` holds placeholders only.

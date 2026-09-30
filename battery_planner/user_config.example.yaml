@@ -63,6 +63,10 @@ timing:
 
 alerts:
   address: CHANGE_ME@example.com   # REQUIRED - where halt alerts are sent
+                                   # (same address as smtp_recipient in HA's secrets.yaml)
+  notify_service: gmail_alert      # name of the HA notify service (notify.<name>);
+                                   # lowercase letters, digits, underscore. Must match the
+                                   # notifier in configuration.yaml (or one made in the UI)
   realert_minutes: 60
 
 timezone: Europe/Brussels
