@@ -311,3 +311,32 @@ utility_meter:
     source: sensor.energy_produced_total_compensation
     cycle: monthly
     name: "Actual Compensation Monthly"
+
+# ---------------------------------------------------------------------------
+# Halt-alert e-mail (alerts.notify_service in user_config.yaml)
+# ---------------------------------------------------------------------------
+# The planner sends its "no price data" alert through notify.<name>, where <name>
+# is alerts.notify_service (default gmail_alert). This defines that notifier.
+#
+# Gmail requires 2-step verification on the account and an App Password
+# (Google Account -> Security -> App passwords). The normal account password
+# will NOT work. NOTHING secret is written here: the values below come from
+# Home Assistant's secrets.yaml, which is gitignored (see secrets.example.yaml
+# for the keys). smtp_recipient there should be the same address as
+# alerts.address in user_config.yaml.
+#
+# UNVERIFIED: the SMTP YAML platform may be deprecated in recent HA releases.
+# If Home Assistant reports it as unsupported, create the notifier through the
+# UI instead and put its service name in alerts.notify_service (README, "Alert
+# e-mail").
+notify:
+  - name: gmail_alert            # must equal alerts.notify_service
+    platform: smtp
+    server: smtp.gmail.com
+    port: 587
+    encryption: starttls
+    sender: !secret smtp_sender
+    username: !secret smtp_sender
+    password: !secret smtp_password
+    recipient: !secret smtp_recipient
+    sender_name: "Battery planner"

@@ -21,6 +21,7 @@ SRC = Path(__file__).resolve().parent.parent / "pyscript" / "battery_planner.py"
 MODULES = SRC.parent / "modules"
 UTC = timezone.utc
 T0 = datetime(2026, 9, 30, 12, 35, tzinfo=UTC)          # 14:35 in Brussels
+NOTIFY = "test_notifier"  # set in Env.write_config; the adapter reads alerts.notify_service
 STEP = timedelta(minutes=5)
 
 CONTRACT_FIELDS = [
@@ -112,7 +113,8 @@ class Env:
     def write_config(self, extra=""):
         self.config_path.write_text(
             "battery:\n  capacity_kwh: 10.0\nalerts:\n"
-            "  address: owner@example.com\n" + extra, encoding="utf-8")
+            "  address: owner@example.com\n"
+            "  notify_service: test_notifier\n" + extra, encoding="utf-8")
         bump = self.config_path.stat().st_mtime + 10
         os.utime(self.config_path, (bump, bump))
 
@@ -276,21 +278,21 @@ def test_price_outage_halts_alerts_once_and_recovers(env):
     env.run(T0)
     assert env.decisions() == []
     assert len(env.lines()) == 1 and " | HALT | " in env.lines()[0]
-    alerts = env.service.of("notify", mod.NOTIFY_SERVICE)
+    alerts = env.service.of("notify", NOTIFY)
     assert len(alerts) == 1
     assert alerts[0][2]["target"] == ["owner@example.com"]
     env.run(T0 + STEP)                                    # within realert (60)
-    assert len(env.service.of("notify", mod.NOTIFY_SERVICE)) == 1
+    assert len(env.service.of("notify", NOTIFY)) == 1
     assert sum(" | HALT | " in l for l in env.lines()) == 2
     env.run(T0 + timedelta(minutes=65))                   # past realert
-    assert len(env.service.of("notify", mod.NOTIFY_SERVICE)) == 2
+    assert len(env.service.of("notify", NOTIFY)) == 2
     st.set(mod.PRICE_ENTITY, "0.10", {mod.PRICE_ATTRIBUTE: price_entries()})
     env.run(T0 + timedelta(minutes=70))
     assert any(" | RECOVERED | " in l for l in env.lines())
     assert len(env.decisions()) == 1
     env.run(T0 + timedelta(minutes=75))
     assert sum(" | RECOVERED | " in l for l in env.lines()) == 1
-    assert len(env.service.of("notify", mod.NOTIFY_SERVICE)) == 2
+    assert len(env.service.of("notify", NOTIFY)) == 2
 
 
 @pytest.mark.parametrize("attrs", [
@@ -323,7 +325,7 @@ def test_forecast_outage_degrades_to_zero_solar_without_halt(env):
     assert len(lines) == 1
     assert "solar_zero_fallback" in fields_of(lines[0])["degraded"]
     assert not any("HALT" in l for l in env.lines())
-    assert env.service.of("notify", env.mod.NOTIFY_SERVICE) == []
+    assert env.service.of("notify", NOTIFY) == []
     assert not (env.cache_dir / "solar.json").exists()    # fallback not cached
 
 
@@ -849,20 +851,20 @@ def _alerted(line):
 
 def test_failed_alert_send_is_retried_and_recorded_as_not_alerted(env):
     mod = env.mod
-    env.service.fail.add(("notify", mod.NOTIFY_SERVICE))
+    env.service.fail.add(("notify", NOTIFY))
     env.state.set(mod.PRICE_ENTITY, "unavailable", {})
     env.run(T0)
     assert _alerted(env.lines()[0]) == "none"
     assert any("alert send failed" in m for m in env.log.by_level["error"])
     env.run(T0 + STEP)                                     # retried, not rate-limited
-    assert len(env.service.of("notify", mod.NOTIFY_SERVICE)) == 2
+    assert len(env.service.of("notify", NOTIFY)) == 2
     assert _alerted(env.lines()[1]) == "none"
     env.service.fail.clear()
     env.run(T0 + 2 * STEP)
-    assert len(env.service.of("notify", mod.NOTIFY_SERVICE)) == 3
+    assert len(env.service.of("notify", NOTIFY)) == 3
     assert _alerted(env.lines()[2]) != "none"
     env.run(T0 + 3 * STEP)                                 # now rate-limited
-    assert len(env.service.of("notify", mod.NOTIFY_SERVICE)) == 3
+    assert len(env.service.of("notify", NOTIFY)) == 3
 
 
 def test_sensor_kw_converts_watts_and_leaves_kw_alone(env):
@@ -954,3 +956,25 @@ def test_populated_history_lets_the_same_prices_grid_charge(env, monkeypatch):
     keys = fields_of(env.decisions()[0])
     assert keys["action"] == "charge" and keys["selector"] == "S1"
     assert "V4" not in keys["vetoes"]
+
+
+def test_alert_uses_default_service_when_config_omits_it(env):
+    mod = env.mod
+    env.config_path.write_text(
+        "battery:\n  capacity_kwh: 10.0\nalerts:\n"
+        "  address: owner@example.com\n", encoding="utf-8")
+    bump = env.config_path.stat().st_mtime + 20
+    os.utime(env.config_path, (bump, bump))
+    env.state.set(mod.PRICE_ENTITY, "unavailable", {})
+    env.run(T0)
+    assert len(env.service.of("notify", "gmail_alert")) == 1
+    assert env.service.of("notify", NOTIFY) == []
+
+
+def test_alert_goes_to_the_configured_service_name(env):
+    mod = env.mod
+    env.write_config()
+    env.state.set(mod.PRICE_ENTITY, "unavailable", {})
+    env.run(T0)
+    calls = env.service.of("notify", NOTIFY)
+    assert len(calls) == 1 and calls[0][2]["target"] == ["owner@example.com"]

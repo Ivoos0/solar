@@ -1,5 +1,6 @@
 # Home Assistant secrets
 secrets.yaml
+# (secrets.example.yaml is the tracked, placeholder-only template)
 *.token
 .google.token
 ip_bans.yaml

@@ -1,5 +1,6 @@
 """Site configuration: parse and validate a plain dict. Pure - no I/O."""
 import hashlib
+import re
 from dataclasses import dataclass, fields
 
 _MODES = ("auto", "running", "accumulating")
@@ -30,6 +31,7 @@ _MAP = [
     ("usage", "history_weeks", "usage_history_weeks"),
     ("usage", "grouping", "usage_grouping"),
     ("alerts", "address", "alert_address"),
+    ("alerts", "notify_service", "notify_service"),
     ("alerts", "realert_minutes", "realert_minutes"),
     (None, "timezone", "timezone"),
     ("capacity_tariff", "enabled", "capacity_enabled"),
@@ -43,7 +45,7 @@ _MAP = [
 ]
 
 _NON_NUMERIC = (
-    "alert_address", "timezone", "offtake_sensor",
+    "alert_address", "notify_service", "timezone", "offtake_sensor",
     "quarter_hour_average_mode", "capacity_enabled", "usage_grouping",
 )
 
@@ -82,6 +84,7 @@ class SiteConfig:
     solar_cache_stale_minutes: int = 120
     usage_cache_stale_minutes: int = 2880
     realert_minutes: int = 60
+    notify_service: str = "gmail_alert"
     timezone: str = "Europe/Brussels"
     capacity_enabled: bool = True
     billing_floor_kw: float = 2.5
@@ -135,6 +138,10 @@ def _errors(cfg):
         bad("declination", cfg.array_declination, "must be within 0..90")
     if not isinstance(cfg.alert_address, str) or not cfg.alert_address.strip():
         bad("alerts.address", cfg.alert_address, "must be non-empty")
+    if (not isinstance(cfg.notify_service, str)
+            or not re.fullmatch(r"[a-z0-9_]+", cfg.notify_service)):
+        bad("alerts.notify_service", cfg.notify_service,
+            "must be a service slug: lowercase letters, digits, underscore")
     if cfg.peak_averaging_months < 1:
         bad("peak_averaging_months", cfg.peak_averaging_months, "must be >= 1")
     if cfg.max_charge_kw <= 0:

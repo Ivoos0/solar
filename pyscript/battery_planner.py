@@ -53,7 +53,7 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
   is in memory only: an HA restart during an outage alerts once more.
   Forecast missing -> zero_solar_series + solar_zero_fallback marker and a
   bounded homeassistant.update_entity retry (never a halt).
-* Alerts: service.call("notify", NOTIFY_SERVICE, target=[alerts.address]).
+* Alerts: service.call("notify", alerts.notify_service, target=[alerts.address]).
   Mail account settings live in HA's own configuration; none appear here.
 * Cache: verdicts come from cache.evaluate; every series taken FROM the cache,
   fresh or stale, adds a cache_age_<kind> marker (FR-027/SC-014); a series just
@@ -109,7 +109,6 @@ MONTH_PEAK_ENTITY = "sensor.slimmelezer_maandpiek"
 # The netted offtake sensor id comes from config (capacity_tariff.offtake_sensor,
 # default sensor.slimmelezer_power_consumed).
 GUARD_FLAG_ENTITY = "pyscript.peak_guard_shaving"   # set by the peak guard (WP12)
-NOTIFY_SERVICE = "notify"             # GUESS: name of the configured notifier
 _BAD_STATES = (None, "", "unknown", "unavailable", "none", "None")
 
 # ---- tuning that is not user config ----------------------------------------
@@ -338,7 +337,7 @@ def _read_prices(cfg, local):
 def _send_alert(cfg, cause, entered):
     try:
         service.call(  # noqa: F821
-            "notify", NOTIFY_SERVICE,
+            "notify", cfg.notify_service,
             title="Battery planner halted: no price data",
             message=("No decisions are being made. Cause: %s. Halted since %s. "
                      "Re-alert every %d min." % (

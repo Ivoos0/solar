@@ -40,7 +40,7 @@ Two more things you should know before spending an evening on this:
 | Solar array | Effectively yes | The forecast and solar-absorption logic assume one, on a single plane |
 | Home battery + hybrid inverter | Yes, for any value | The planner decides what a battery should do. Today it cannot act on it |
 | ENTSO-e API key | Yes | Free. Used for dynamic prices via the Home Assistant ENTSO-e integration |
-| A `notify` platform | For alerts | See [Known gaps](#known-gaps) |
+| A `notify` service | For alerts | Gmail SMTP notifier by default; see [Alert e-mail](#alert-e-mail) |
 
 **Geography.** The capacity-tariff logic is specific to the **Flemish** capaciteitstarief
 (billing on the average of monthly quarter-hour peaks, with a 2.5 kW floor, on grid offtake only).
@@ -142,6 +142,36 @@ Install in this order.
    installs. In Developer Tools -> States, filter "entso" and compare. If they differ the planner
    halts every cycle with "price data unavailable" while the sensor visibly has data; the names are
    constants at the top of `pyscript/battery_planner.py`.
+
+### Alert e-mail
+
+When prices are unavailable the planner halts and sends an e-mail through the Home Assistant
+notify service `notify.<alerts.notify_service>` (default `notify.gmail_alert`), to
+`alerts.address`. `configuration.yaml` defines that notifier as a Gmail SMTP notifier. No address or
+credential is stored in the repository.
+
+1. **Turn on 2-step verification** for the Gmail account, then create an **App Password**
+   (Google Account -> Security -> App passwords). The normal account password will not work.
+2. **Fill HA's `secrets.yaml`** (in your HA config folder; it is gitignored). Copy the three keys from
+   the tracked template `secrets.example.yaml` and put real values in: `smtp_sender` (the Gmail
+   account), `smtp_password` (the App Password), `smtp_recipient` (where alerts go).
+3. **Set `battery_planner/user_config.yaml`**: `alerts.address` to the same address as
+   `smtp_recipient`, and `alerts.notify_service` to the notifier name (default `gmail_alert`, which
+   matches `configuration.yaml`; leave it out to use the default).
+4. **Restart Home Assistant** (a notifier is only created at startup).
+5. **Test the notifier** before relying on it: Developer Tools -> Actions, choose
+   `notify.gmail_alert` (or your service name), give it a message, and run it. The mail should
+   arrive within a minute.
+
+**Caveat, not verified.** I could not verify against a live Home Assistant that the SMTP YAML
+platform is still supported in your HA version. SMTP notify may be deprecated or moved to the UI in
+recent releases. Check the HA release notes; if it moved, create the notifier through the UI and put
+its service name in `alerts.notify_service`.
+
+**When the service does not exist.** pyscript's `service.call` needs the service to exist at call
+time. If it does not (wrong name, notifier not loaded, restart pending), the error (for example
+`ServiceNotFound`) is logged as an alert-send failure, the decision record shows `alerted=none`, and
+the send is retried on the next cycle. The halt itself still proceeds.
 
 ### File layout on the Home Assistant side
 
@@ -263,11 +293,10 @@ Not done yet (known, with a planned follow-up):
   forbids every grid-charging proposal while there is no history, because without it a grid charge
   could land on top of an unseen household peak and raise the capacity tariff. Charging from surplus
   solar, discharging and exporting are unaffected.
-- **Alert delivery is unverified.** The notify service name in `pyscript/battery_planner.py`
-  (`NOTIFY_SERVICE = "notify"`) is a placeholder, and alerts are sent to it with
-  `target=[alerts.address]`. A notify platform (for example SMTP) must be configured in Home
-  Assistant, and the name may need changing. If sending fails the error is logged and the halt still
-  proceeds.
+- **Alert delivery is unverified end to end.** The notifier is configured (see
+  [Alert e-mail](#alert-e-mail)), but it was not tested against a live Home Assistant, and the SMTP
+  YAML platform may have moved to the UI in your HA version. If sending fails the error is logged and
+  the halt still proceeds.
 - **ENTSO-e entity and attribute names are unconfirmed** on other installs (see step 4 above).
 - **Future risk in the guard:** it reads net offtake, which its own discharge would lower. Before real
   inverter transmission exists, the commanded power must be added back or the shave will switch on
