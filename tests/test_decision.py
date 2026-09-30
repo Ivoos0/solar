@@ -273,7 +273,8 @@ def _pipeline(site_config, pct, grid, plist, solar=(1.0, 1.0, 0.0, 0.0)):
           for i, (c, j) in enumerate(plist)}
     traj = trajectory.project(bs, sol, use, pm, cfg, start_time=T0P)
     now = T0P + timedelta(minutes=1)
-    d = rules.decide(traj, pm, bs, grid, cfg, now)
+    d = rules.decide(traj, pm, bs, grid, cfg, now,
+                    usage_history_available=True)
     r = decision.build(d, traj, bs, pm[T0P], decision.degraded_markers(bs),
                        now=now, duration_ms=84, grid_state=grid, config=cfg)
     return traj, d, r
@@ -351,7 +352,8 @@ def test_build_capacity_off_renders_na(site_config):
     pm = {T0P: prices.PricePoint(T0P, 0.0, 0.2, 0.02, 15)}
     traj = trajectory.project(bs, sol, use, pm, cfg, start_time=T0P)
     now = T0P + timedelta(minutes=1)
-    d = rules.decide(traj, pm, bs, None, cfg, now)
+    d = rules.decide(traj, pm, bs, None, cfg, now,
+                    usage_history_available=True)
     r = decision.build(d, traj, bs, pm[T0P], [], now=now, duration_ms=3,
                        grid_state=None, config=cfg)
     kv = fields_of(decision.format_record(r))

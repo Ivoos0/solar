@@ -16,4 +16,7 @@ def site_config():
     return config.from_dict({
         "battery": {"capacity_kwh": 10.0},
         "alerts": {"address": "owner@example.com"},
+        # The shipped default is 80; the suite's hand-derived budgets are
+        # against the full ceiling. The 80 % semantics are tested explicitly.
+        "capacity_tariff": {"stay_under_percent": 100},
     })

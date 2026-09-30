@@ -144,7 +144,8 @@ def _write_config(path, mode="running", extra=""):
     path.write_text(
         "battery:\n  capacity_kwh: 10.0\n"
         "alerts:\n  address: owner@example.com\n"
-        "capacity_tariff:\n  quarter_hour_average_mode: %s\n%s" % (mode, extra),
+        "capacity_tariff:\n  quarter_hour_average_mode: %s\n"
+        "  stay_under_percent: 100\n%s" % (mode, extra),
         encoding="utf-8")
 
 
@@ -189,7 +190,8 @@ def _cfg(mode="running"):
     return config.from_dict({
         "battery": {"capacity_kwh": 10.0},
         "alerts": {"address": "owner@example.com"},
-        "capacity_tariff": {"quarter_hour_average_mode": mode}})
+        "capacity_tariff": {"quarter_hour_average_mode": mode,
+                            "stay_under_percent": 100}})
 
 
 # a forming peak: 12:07:30, average 4.0 kW so far, drawing 5.0 kW, ceiling 2.5

@@ -78,12 +78,23 @@ def ceiling_kw(state, config):
     return max(config.billing_floor_kw, state.month_peak_kw)
 
 
+def charging_ceiling_kw(state, config):
+    """Level grid CHARGING must stay under: stay_under_percent of the ceiling.
+
+    Only the grid-charging budget uses this; peak shaving and the reported
+    ceiling defend the real ceiling_kw.
+    """
+    return ceiling_kw(state, config) * config.stay_under_percent / 100.0
+
+
 def _remaining_minutes(state):
     return WINDOW_MINUTES - state.elapsed_minutes
 
 
 def budget_kw(state, config):
-    """Grid power still drawable this window. May be negative; capped above.
+    """Grid power still drawable for CHARGING this window. May be negative;
+    capped above. Measured against charging_ceiling_kw (stay_under_percent of
+    the ceiling), so it is deliberately more cautious than the real ceiling.
 
     window_energy_kwh is metered at the connection point, so it already
     includes household draw - nothing else is subtracted.
@@ -91,7 +102,7 @@ def budget_kw(state, config):
     remaining_min = _remaining_minutes(state)
     if remaining_min < NO_BUDGET_MINUTES:
         return 0.0
-    allowance = ceiling_kw(state, config) * WINDOW_HOURS
+    allowance = charging_ceiling_kw(state, config) * WINDOW_HOURS
     budget = (allowance - state.window_energy_kwh) / (remaining_min / 60.0)
     return min(budget, config.max_charge_kw)
 

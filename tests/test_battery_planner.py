@@ -499,8 +499,8 @@ def _force_grid_charge(env, monkeypatch):
     mod = env.mod
     real = mod.rules.decide
 
-    def decide(traj, price_map, bat, grid, cfg, now):
-        d = real(traj, price_map, bat, grid, cfg, now)
+    def decide(traj, price_map, bat, grid, cfg, now, **kw):
+        d = real(traj, price_map, bat, grid, cfg, now, **kw)
         return mod.rules.Decision(
             "charge", 3.0, "S1", "cheapest block", [], [], "grid",
             d.block_start)
@@ -531,8 +531,9 @@ def test_solar_charge_is_not_downgraded_by_guard(env, monkeypatch):
     real = mod.rules.decide
     monkeypatch.setattr(
         mod.rules, "decide",
-        lambda *a: mod.rules.Decision("charge", 2.0, "S2", "solar surplus",
-                                      [], [], "solar", real(*a).block_start))
+        lambda *a, **kw: mod.rules.Decision(
+            "charge", 2.0, "S2", "solar surplus", [], [], "solar",
+            real(*a, **kw).block_start))
     env.state.set(mod.GUARD_FLAG_ENTITY, "on", {})
     env.run()
     assert fields_of(env.decisions()[0])["action"] == "charge"
@@ -885,9 +886,9 @@ def test_dst_fall_back_price_map_is_not_rekeyed_in_local_time(env, monkeypatch):
     seen = []
     real = mod.rules.decide
 
-    def spy(traj, price_map, *a):
+    def spy(traj, price_map, *a, **kw):
         seen.append(dict(price_map))
-        return real(traj, price_map, *a)
+        return real(traj, price_map, *a, **kw)
 
     monkeypatch.setattr(mod.rules, "decide", spy)
     first = datetime(2026, 10, 25, 0, 30, tzinfo=UTC)       # 02:30 CEST
@@ -907,3 +908,49 @@ def test_dst_fall_back_price_map_is_not_rekeyed_in_local_time(env, monkeypatch):
                   < datetime(2026, 10, 25, 2, 0, tzinfo=UTC)]
         if now == first:
             assert len(hour_2) == 6                          # 00:30Z..02:00Z blocks
+
+
+# ---- V4: no usage history never grid-charges ------------------------------------------------
+
+def _negative_prices(env):
+    mod = env.mod
+    entries = [dict(e, price=-0.20) for e in price_entries()]
+    env.state.set(mod.PRICE_ENTITY, "-0.20", {mod.PRICE_ATTRIBUTE: entries})
+
+
+def test_empty_history_passes_false_and_history_passes_true(env, monkeypatch):
+    mod = env.mod
+    seen = []
+    real = mod.rules.decide
+
+    def spy(*a, **kw):
+        seen.append(kw.get("usage_history_available"))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(mod.rules, "decide", spy)
+    env.run()
+    monkeypatch.setattr(mod, "read_usage_history",
+                        lambda cfg, local: _history(3))
+    env.run(T0 + timedelta(hours=12))                      # next local day
+    assert seen == [False, True]
+
+
+def test_empty_history_vetoes_grid_charge_in_the_record(env):
+    _negative_prices(env)
+    env.run()
+    keys = fields_of(env.decisions()[0])
+    # S1 grid charge is vetoed; the planner falls through to S2, which
+    # charges from SOLAR (unaffected by V4).
+    assert keys["selector"] == "S2" and keys["action"] == "charge"
+    assert "V4(suppressed S1 charge)" in keys["vetoes"]
+    assert "usage_history_unavailable" in keys["degraded"]
+
+
+def test_populated_history_lets_the_same_prices_grid_charge(env, monkeypatch):
+    monkeypatch.setattr(env.mod, "read_usage_history",
+                        lambda cfg, local: _history(3))
+    _negative_prices(env)
+    env.run()
+    keys = fields_of(env.decisions()[0])
+    assert keys["action"] == "charge" and keys["selector"] == "S1"
+    assert "V4" not in keys["vetoes"]

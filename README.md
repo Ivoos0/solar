@@ -25,8 +25,9 @@ Two more things you should know before spending an evening on this:
 - **Household usage history is not sourced yet.** The function that should provide it
   (`read_usage_history` in `pyscript/battery_planner.py`) returns an empty list, so the planner
   currently treats household consumption as zero and every record carries
-  `usage_history_unavailable`. Decision quality is limited until a household load sensor or counter
-  is wired into that one function. This is a known limitation with a planned follow-up.
+  `usage_history_unavailable`. Because of that the planner **does not charge from the grid at all**
+  (veto V4, see [Known gaps](#known-gaps)) until a household load sensor or counter is wired into
+  that one function. This is a known limitation with a planned follow-up.
 
 ## Does this fit your setup? (two-minute check)
 
@@ -184,6 +185,14 @@ A bad configuration is a startup error (logged, no decision made), not a quietly
 Check your provider's price coefficients (`prices.*`) and, for the capacity tariff, the rate on your
 own Fluvius bill (`capacity_tariff.rate_eur_per_kw_year`, revised annually).
 
+`capacity_tariff.stay_under_percent` (default `80`, must be above 0 and at most 100) is a safety
+margin for **grid charging only**: charging from the grid must stay under that percentage of the
+ceiling (this month's peak, never below `billing_floor_kw`). With the 2.5 kW floor and 80, the
+planner will not charge from the grid if the quarter-hour looks like passing 2.0 kW; with a 3.0 kW
+month peak the limit is 2.4 kW. Peak shaving and the `ceiling=` value in the log still use the real
+ceiling, and `budget=` is the room left under the reduced charging level. Set `100` to charge right up
+to the ceiling.
+
 ### Confirming it works
 
 A record should appear in `<ha-config>/battery_planner/decisions.log` within five minutes:
@@ -224,6 +233,9 @@ in, `usage_history_unavailable`). If the peak guard is shaving a peak, it writes
   foreseeable evening peak. It reads the netted offtake sensor. Like the planner, it only logs.
 - **Grid sensors unreadable** (capacity enabled): grid charging is suppressed and the record is
   marked `grid_sensors_unavailable`.
+- **No usage history:** grid charging is vetoed (V4) and the record shows it, for example
+  `vetoes=V4(suppressed S1 charge)`. Solar-surplus charging is not affected. See
+  [Known gaps](#known-gaps).
 
 ## Known gaps
 
@@ -247,7 +259,10 @@ Not done yet (known, with a planned follow-up):
 
 - **Household usage history is not sourced.** `read_usage_history` returns `[]`, so household load is
   treated as zero. Replace only that function once a household consumption sensor or counter is
-  chosen.
+  chosen. Until then, **the planner never charges from the grid**: veto V4 ("no usage profile")
+  forbids every grid-charging proposal while there is no history, because without it a grid charge
+  could land on top of an unseen household peak and raise the capacity tariff. Charging from surplus
+  solar, discharging and exporting are unaffected.
 - **Alert delivery is unverified.** The notify service name in `pyscript/battery_planner.py`
   (`NOTIFY_SERVICE = "notify"`) is a placeholder, and alerts are sent to it with
   `target=[alerts.address]`. A notify platform (for example SMTP) must be configured in Home

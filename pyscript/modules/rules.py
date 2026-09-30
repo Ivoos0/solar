@@ -4,8 +4,8 @@ No I/O, no clock (``now`` is a parameter), no third-party / HA imports.
 
 Entry point
 -----------
-    decide(trajectory, price_map, battery_state, grid_state, config, now)
-        -> Decision
+    decide(trajectory, price_map, battery_state, grid_state, config, now,
+           usage_history_available=False) -> Decision
 
   trajectory     trajectory.Trajectory from trajectory.project()
   price_map      {block_start: prices.PricePoint}; keys may be aware or
@@ -19,6 +19,10 @@ Entry point
   now            aware datetime. The "current block" is the trajectory block
                  with start <= now < start + block_minutes (UTC compare).
                  NoCurrentBlockError if there is none; ValueError if naive.
+  usage_history_available
+                 True only when the usage profile rests on real history
+                 (the adapter sets it from sample coverage). The default is the
+                 SAFE value False: no history -> V4 forbids grid charging.
 
 Decision fields: action (charge|discharge|export|idle), target_power_kw,
 selector ("S0".."S6"), reasoning, vetoes_fired (["V1", ...]), suppressed
@@ -39,6 +43,13 @@ battery), "export" (discharge to the grid), "grid_charge".
   V1  charge_percent <= reserve_percent  -> {"discharge", "export"}
   V2  injection_price < 0 (0.0 does not) -> {"export"} only
   V3  capacity budget_kw <= 0            -> {"grid_charge"} only
+  V4  no usable usage history            -> {"grid_charge"} only
+V4 ("no usage profile"): without history the trajectory cannot know the
+household load, so a grid charge could land on top of an unseen peak and raise
+the capacity tariff. It fires whether or not capacity logic is active.
+V3 and the grid-charge cap use the budget against stay_under_percent of the
+ceiling (capacity.charging_ceiling_kw), e.g. 80 % of 2.5 kW = 2.0 kW; S0 and
+the reported ceiling still use the real ceiling.
 Solar charging is a class no veto forbids.
 
 Resolved ambiguities / documented readings
@@ -87,6 +98,7 @@ VETO_FORBIDS = {
     "V1": frozenset({FORBID_DISCHARGE, FORBID_EXPORT}),
     "V2": frozenset({FORBID_EXPORT}),
     "V3": frozenset({FORBID_GRID_CHARGE}),
+    "V4": frozenset({FORBID_GRID_CHARGE}),
 }
 
 
@@ -139,8 +151,11 @@ def _capacity_active(grid_state, config):
     return grid_state is not None and config.capacity_enabled
 
 
-def establish_vetoes(battery_state, current_price, config, grid_state=None):
+def establish_vetoes(battery_state, current_price, config, grid_state=None,
+                     usage_history_available=False):
     """Return (forbidden action classes, [fired veto ids]). Data only.
+
+    usage_history_available defaults to the SAFE False (V4 fires).
 
     current_price is the PricePoint of the current block or None (no V2 then).
     Never chooses, logs or short-circuits.
@@ -153,6 +168,8 @@ def establish_vetoes(battery_state, current_price, config, grid_state=None):
     if _capacity_active(grid_state, config) \
             and capacity.budget_kw(grid_state, config) <= 0:
         fired.append("V3")
+    if not usage_history_available:
+        fired.append("V4")
     forbidden = frozenset()
     for v in fired:
         forbidden = forbidden | VETO_FORBIDS[v]
@@ -430,12 +447,13 @@ _SELECTORS = (("S0", _s0), ("S1", _s1), ("S2", _s2), ("S3", _s3),
               ("S4", _s4), ("S5", _s5))
 
 
-def decide(trajectory, price_map, battery_state, grid_state, config, now):
+def decide(trajectory, price_map, battery_state, grid_state, config, now,
+           usage_history_available=False):
     """Establish vetoes, then try S0..S6 in order; see module docstring."""
     ctx = _build_ctx(trajectory, price_map, battery_state, grid_state,
                      config, now)
     forbidden, fired = establish_vetoes(battery_state, ctx.price_now, config,
-                                        grid_state)
+                                        grid_state, usage_history_available)
     suppressed = []
     for name, selector in _SELECTORS:
         proposal = selector(ctx)

@@ -61,6 +61,11 @@ def test_full_parse_flattens():
     ("capacity_tariff__quarter_hour_average_mode", "bogus",
      "quarter_hour_average_mode"),
     ("capacity_tariff__peak_averaging_months", 0, "peak_averaging_months"),
+    ("capacity_tariff__stay_under_percent", 0, "stay_under_percent"),
+    ("capacity_tariff__stay_under_percent", -5, "stay_under_percent"),
+    ("capacity_tariff__stay_under_percent", 100.5, "stay_under_percent"),
+    ("capacity_tariff__stay_under_percent", "80", "stay_under_percent"),
+    ("capacity_tariff__stay_under_percent", True, "stay_under_percent"),
 ])
 def test_validation_rejects(path, value, field):
     with pytest.raises(ConfigError) as e:
@@ -112,6 +117,7 @@ def test_fingerprint_ignores_other_fields():
                     ("alerts__address", "z@z.z"),
                     ("battery__reserve_percent", 20),
                     ("capacity_tariff__enabled", False),
+                    ("capacity_tariff__stay_under_percent", 50),
                     ("timing__forecast_refresh_minutes", 30)]:
         assert from_dict(base(**{path: v})).fingerprint() == ref, path
 
@@ -152,3 +158,13 @@ def test_fingerprint_changes_per_usage_setting():
     # explicit defaults equal the implicit ones
     assert from_dict(base(usage__history_weeks=4,
                           usage__grouping="same_weekday")).fingerprint() == ref
+
+
+def test_stay_under_percent_default_is_80():
+    assert from_dict(base()).stay_under_percent == 80.0
+
+
+@pytest.mark.parametrize("v", [0.5, 80, 100, 100.0])
+def test_stay_under_percent_accepts_valid(v):
+    cfg = from_dict(base(capacity_tariff__stay_under_percent=v))
+    assert cfg.stay_under_percent == v

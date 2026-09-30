@@ -266,3 +266,54 @@ def test_configured_mode_bypasses_detection(site_config):
     c = cfg(site_config, quarter_hour_average_mode="running")
     v = cap.detect_average_mode(samples(5, "acc"), c)
     assert (v.mode, v.confidence) == ("running", "configured")
+
+
+# ---- stay_under_percent -----------------------------------------------------
+# state(): elapsed 7.5 min -> 0.125 h left.
+
+@pytest.mark.parametrize("pct,peak,expected", [
+    (80.0, 0.0, 2.0),      # floor 2.5 * 0.8
+    (80.0, 3.0, 2.4),      # month peak 3.0 * 0.8
+    (100.0, 0.0, 2.5),
+    (100.0, 3.0, 3.0),
+    (50.0, 2.0, 1.25),     # ceiling is the floor 2.5
+])
+def test_charging_ceiling(site_config, pct, peak, expected):
+    c = cfg(site_config, stay_under_percent=pct)
+    assert cap.charging_ceiling_kw(state(peak=peak), c) == pytest.approx(expected)
+    assert cap.ceiling_kw(state(peak=peak), c) == max(2.5, peak)   # unchanged
+
+
+@pytest.mark.parametrize("pct,peak,expected", [
+    (80.0, 0.0, 2.4),      # (2.0*0.25 - 0.2)/0.125
+    (80.0, 3.0, 3.2),      # (2.4*0.25 - 0.2)/0.125
+    (100.0, 0.0, 3.4),     # (2.5*0.25 - 0.2)/0.125 : unchanged behaviour
+    (100.0, 3.0, 4.4),     # (3.0*0.25 - 0.2)/0.125
+])
+def test_budget_uses_the_charging_ceiling(site_config, pct, peak, expected):
+    c = cfg(site_config, stay_under_percent=pct)
+    assert cap.budget_kw(state(energy=0.2, peak=peak), c) == pytest.approx(expected)
+
+
+def test_budget_can_go_negative_under_the_reduced_ceiling(site_config):
+    c = cfg(site_config, stay_under_percent=80.0)
+    # (2.0*0.25 - 0.6)/0.125 = -0.8 ; the full ceiling would give +0.2
+    assert cap.budget_kw(state(energy=0.6), c) == pytest.approx(-0.8)
+    full = cfg(site_config, stay_under_percent=100.0)
+    assert cap.budget_kw(state(energy=0.6), full) == pytest.approx(0.2)
+
+
+def test_shave_ignores_stay_under_percent(site_config):
+    # ceiling = floor 2.5, allowance 0.625; projected 0.3 + 3.0*0.125 = 0.675
+    # -> needed (0.675-0.625)/0.125 = 0.4 kW, below every clamp
+    s = state(offtake=3.0, energy=0.3, peak=0.0)
+    a = cap.shave_kw(s, cfg(site_config, stay_under_percent=100.0))
+    b = cap.shave_kw(s, cfg(site_config, stay_under_percent=50.0))
+    assert a == pytest.approx(0.4) and b == pytest.approx(0.4)
+
+
+def test_no_shave_when_between_charging_and_real_ceiling(site_config):
+    # projected 0.175 + 3.0*0.125 = 0.55 kWh -> 2.2 kW average: above the
+    # 80 % charging ceiling (2.0) but under the real ceiling (2.5): no shave.
+    s = state(offtake=3.0, energy=0.175, peak=0.0)
+    assert cap.shave_kw(s, cfg(site_config, stay_under_percent=80.0)) == 0.0
