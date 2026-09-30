@@ -42,7 +42,7 @@ Every field appears in **every** record. An inapplicable value is written explic
 | `took` | `NNNms` | Cycle duration (NFR-009); makes NFR-001's 5-second budget checkable from the log |
 | `avg` | `N.NNkW` | Running quarter-hour average grid offtake (FR-052) |
 | `ceiling` | `N.NNkW` | The peak level being defended — `max(2.5, month peak)` |
-| `budget` | `N.NNkW` | Grid power still available this window. **Negative** when the window is already over the ceiling |
+| `budget` | `N.NNkW` | Grid power still available for **charging** this window, measured against `capacity_tariff.stay_under_percent` of the ceiling (80 % of 2.5 kW = 2.0 kW by default), so it is lower than the room under the real ceiling. **Negative** when the window is already over that charging level |
 | `vetoes` | comma-separated \| `none` | FR-028 — a veto that suppressed a proposal, with what it suppressed |
 | `selector` | `S0`–`S6` | Which one fired |
 | `why` | quoted free text | The values that made the condition true |
@@ -65,10 +65,16 @@ vetoes=V2(suppressed S3 export) | selector=S6 |
 # several vetoes block the same proposal: joined with +
 vetoes=V1+V2(suppressed S3 export) | selector=S6 | ...
 
+# V4 (no usable usage history) forbids grid charging only: S1 wanted to
+# grid-charge, was suppressed, and nothing else applied
+vetoes=V4(suppressed S1 charge) | selector=S6 |
+
 # a veto fired but blocked nothing (S2 won first): rendered bare
 vetoes=V2 | selector=S2 |
   why="injection -0.0043; surplus 2.4kW, headroom 3.2kWh, charging from solar"
 ```
+
+V4 fires on every cycle while there is no usage history (until `read_usage_history` is implemented), so it appears bare on most records, and as `V4(suppressed ...)` whenever a grid-charging selector would have acted.
 
 This is the case the spec got wrong twice. A record showing a veto **must** also name the selector that finally fired (SC-010) — a veto alone is never a complete decision.
 

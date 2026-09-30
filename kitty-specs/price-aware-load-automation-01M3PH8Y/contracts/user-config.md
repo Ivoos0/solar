@@ -51,6 +51,14 @@ capacity_tariff:
   billing_floor_kw: 2.5         # no saving below this - do not shave past it
   rate_eur_per_kw_year: 40.0    # CHECK YOUR FLUVIUS BILL - revised annually
   guard_interval_seconds: 30    # how often the peak guard re-evaluates
+  stay_under_percent: 80        # > 0 and <= 100. Grid CHARGING must stay under
+                                # this percentage of the ceiling (the month peak,
+                                # floored at billing_floor_kw): 80 with the 2.5 kW
+                                # floor means never charge from the grid if the
+                                # quarter-hour looks like passing 2.0 kW. Applies
+                                # only to grid charging; peak shaving still
+                                # defends the real ceiling. 100 = charge right up
+                                # to the ceiling.
   peak_averaging_months: 13     # months in the meter's billed average (>= 1)
   quarter_hour_average_mode: auto
                                 # auto | running | accumulating

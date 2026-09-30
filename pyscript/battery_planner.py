@@ -591,7 +591,8 @@ def _cycle(now):
     traj = trajectory.project(bat, solar, usage, price_map, cfg,
                               start_time=block_start)
     grid = _grid_state(cfg, local)
-    d = rules.decide(traj, price_map, bat, grid, cfg, local)
+    d = rules.decide(traj, price_map, bat, grid, cfg, local,
+                     usage_history_available=history_days > 0)
 
     if d.action == "charge" and d.charge_source == "grid":
         if _state_value(GUARD_FLAG_ENTITY) == "on":

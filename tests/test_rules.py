@@ -19,7 +19,20 @@ import prices
 import rules
 import trajectory
 from fixtures import trajectory_cases as fx
-from rules import decide, establish_vetoes
+import rules as _rules
+
+
+
+def establish_vetoes(*a, usage_history_available=True, **kw):
+    """The existing V1-V3 expectations assume a usable history (V4 quiet)."""
+    return _rules.establish_vetoes(
+        *a, usage_history_available=usage_history_available, **kw)
+
+
+def decide(*a, usage_history_available=True, **kw):
+    return _rules.decide(
+        *a, usage_history_available=usage_history_available, **kw)
+
 
 TZ = ZoneInfo("Europe/Brussels")
 T0 = datetime(2026, 6, 2, 10, 0, tzinfo=TZ)
@@ -67,7 +80,8 @@ def price(i, cons, inj):
 
 def go(cfg, plist, now_i=0, pct=50.0, g=CALM, sat=None, breach=None,
        spill=0.0, leftover=0.0, solar=None, usage=None, shortfall=None,
-       hide=()):
+       hide=(), history=True):
+    # history: True/False -> usage_history_available; None -> omit the kwarg
     """Build trajectory + price_map by hand and decide.
 
     plist: (consumption, injection) per block, or None = no price published.
@@ -89,8 +103,9 @@ def go(cfg, plist, now_i=0, pct=50.0, g=CALM, sat=None, breach=None,
         leftover_kwh=leftover, horizon_end=T0 + n * STEP)
     pmap = {T0 + i * STEP: price(i, *p) for i, p in enumerate(plist)
             if p is not None}
-    return decide(traj, pmap, battery.from_percent(pct, cfg), g, cfg,
-                  T0 + now_i * STEP + timedelta(minutes=1))
+    kw = {} if history is None else {"usage_history_available": history}
+    return _rules.decide(traj, pmap, battery.from_percent(pct, cfg), g, cfg,
+                         T0 + now_i * STEP + timedelta(minutes=1), **kw)
 
 
 # ---- vetoes ---------------------------------------------------------------
@@ -722,3 +737,133 @@ def test_regression_with_real_projection():
     assert d.vetoes_fired == ["V2"]
     assert (d.selector, d.action, d.charge_source) == ("S2", "charge", "solar")
     assert d.target_power_kw == pytest.approx(4.0)
+
+
+# ---- V4 no usage profile ----------------------------------------------------
+
+NEG = (-0.05, 0.02)          # negative consumption price: S1 grid-charges
+ARB = [(0.10, 0.02), (0.10, 0.50), (0.10, 0.50)]
+# ARB: 0.50 * 0.9 = 0.45 > 0.10 -> S5 arbitrage grid charge when history is ok.
+
+
+def test_v4_default_is_the_safe_value_and_forbids_grid_charge_only(site_config):
+    forbidden, fired = _rules.establish_vetoes(
+        battery.from_percent(50, site_config), price(0, 0.2, 0.05),
+        site_config)                                  # kwarg omitted
+    assert fired == ["V4"]
+    assert forbidden == {"grid_charge"}
+
+
+def test_v4_fires_without_capacity_logic(site_config):
+    cfg = replace(site_config, capacity_enabled=False)
+    forbidden, fired = _rules.establish_vetoes(
+        battery.from_percent(50, cfg), price(0, 0.2, 0.05), cfg, None,
+        usage_history_available=False)
+    assert fired == ["V4"] and forbidden == {"grid_charge"}
+
+
+def test_v4_quiet_with_history(site_config):
+    forbidden, fired = establish_vetoes(
+        battery.from_percent(50, site_config), price(0, 0.2, 0.05),
+        site_config)
+    assert fired == [] and forbidden == frozenset()
+
+
+def test_v4_omitted_kwarg_in_decide_vetoes_grid_charge(site_config):
+    d = go(site_config, [NEG] * 3, history=None)
+    assert d.vetoes_fired == ["V4"]
+    assert d.suppressed == [("S1", "charge", "V4"),
+                            ("S5", "charge", "V4")]
+    assert (d.selector, d.action) == ("S6", "idle")
+
+
+def test_v4_blocks_s1_grid_charge_and_falls_through_to_idle(site_config):
+    d = go(site_config, [NEG] * 3, history=False)
+    assert (d.selector, d.action, d.target_power_kw) == ("S6", "idle", 0.0)
+    assert d.vetoes_fired == ["V4"]
+    assert d.suppressed == [("S1", "charge", "V4"),
+                            ("S5", "charge", "V4")]
+    assert "V4" in d.reasoning
+
+
+def test_v4_blocks_s5_arbitrage_grid_charge(site_config):
+    d = go(site_config, ARB, history=False)
+    assert (d.selector, d.action) == ("S6", "idle")
+    assert d.suppressed == [("S5", "charge", "V4")]
+
+
+def test_history_present_lets_s1_and_s5_grid_charge(site_config):
+    d = go(site_config, [NEG] * 3, history=True)
+    assert (d.selector, d.action, d.charge_source) == ("S1", "charge", "grid")
+    assert d.vetoes_fired == [] and d.suppressed == []
+    d = go(site_config, ARB, history=True)
+    assert (d.selector, d.action, d.charge_source) == ("S5", "charge", "grid")
+    assert d.vetoes_fired == []
+
+
+def test_v4_lets_solar_absorption_through(site_config):
+    # solar 1.0 kWh vs usage 0 this block, injection negative -> S2 solar.
+    d = go(site_config, [(0.20, -0.05)] * 3, solar={0: 1.0}, history=False)
+    assert (d.selector, d.action, d.charge_source) == ("S2", "charge", "solar")
+    assert d.vetoes_fired == ["V2", "V4"]     # V2 forbids export only
+    assert d.suppressed == []
+
+
+def test_v4_leaves_peak_shaving_alone(site_config):
+    d = go(site_config, [FLAT] * 3, g=SHAVE, history=False)
+    assert (d.selector, d.action, d.target_power_kw) == ("S0", "discharge", 1.5)
+    assert d.vetoes_fired == ["V4"]
+
+
+def test_v4_renders_in_the_vetoes_field(site_config):
+    import decision
+    d = go(site_config, [NEG] * 3, history=False)
+    assert decision.render_vetoes(d) == ["V4(suppressed S1 charge)",
+                                        "V4(suppressed S5 charge)"]
+
+
+# ---- stay_under_percent -------------------------------------------------------
+# Grid state elapsed 5 min (1/6 h left), peak 2.5 -> ceiling 2.5.
+#   100 %: allowance 0.625; energy 0.45 -> (0.625-0.45)*6 = 1.05 kW
+#    80 %: allowance 0.500; energy 0.45 -> (0.500-0.45)*6 = 0.30 kW
+#    80 %: energy 0.50 -> budget 0.0 -> V3 ; 100 %: (0.625-0.5)*6 = 0.75
+PCT_GRID = grid(energy=0.45, peak=2.5)
+PCT_FULL = grid(energy=0.50, peak=2.5)
+
+
+def test_percent_100_charges_against_the_full_ceiling(site_config):
+    d = go(site_config, [NEG] * 3, g=PCT_GRID)
+    assert d.selector == "S1"
+    assert d.target_power_kw == pytest.approx(1.05)
+
+
+def test_percent_80_caps_grid_charge_at_the_reduced_ceiling(site_config):
+    cfg = replace(site_config, stay_under_percent=80.0)
+    d = go(cfg, [NEG] * 3, g=PCT_GRID)
+    assert d.selector == "S1"
+    assert d.target_power_kw == pytest.approx(0.30)
+    assert "capped by grid budget 0.30" in d.reasoning
+
+
+def test_percent_80_fires_v3_where_100_does_not(site_config):
+    cfg = replace(site_config, stay_under_percent=80.0)
+    d = go(cfg, [NEG] * 3, g=PCT_FULL)
+    assert d.vetoes_fired == ["V3"]
+    assert d.suppressed == [("S1", "charge", "V3"),
+                            ("S5", "charge", "V3")]
+    d = go(site_config, [NEG] * 3, g=PCT_FULL)
+    assert d.vetoes_fired == [] and d.target_power_kw == pytest.approx(0.75)
+
+
+def test_percent_80_caps_s5_too(site_config):
+    cfg = replace(site_config, stay_under_percent=80.0)
+    d = go(cfg, ARB, g=PCT_GRID)
+    assert d.selector == "S5" and d.target_power_kw == pytest.approx(0.30)
+
+
+def test_percent_does_not_reduce_peak_shaving(site_config):
+    cfg = replace(site_config, stay_under_percent=80.0)
+    d = go(cfg, [FLAT] * 3, g=SHAVE)
+    assert (d.selector, d.action) == ("S0", "discharge")
+    assert d.target_power_kw == pytest.approx(1.5)   # same as 100 %
+    assert "2.50 kW ceiling" in d.reasoning           # real ceiling, not 2.0

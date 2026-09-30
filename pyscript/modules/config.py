@@ -39,6 +39,7 @@ _MAP = [
     ("capacity_tariff", "peak_averaging_months", "peak_averaging_months"),
     ("capacity_tariff", "quarter_hour_average_mode", "quarter_hour_average_mode"),
     ("capacity_tariff", "offtake_sensor", "offtake_sensor"),
+    ("capacity_tariff", "stay_under_percent", "stay_under_percent"),
 ]
 
 _NON_NUMERIC = (
@@ -89,6 +90,7 @@ class SiteConfig:
     peak_averaging_months: int = 13
     quarter_hour_average_mode: str = "auto"
     offtake_sensor: str = "sensor.slimmelezer_power_consumed"
+    stay_under_percent: float = 80.0
     usage_history_weeks: int = 4
     usage_grouping: str = "same_weekday"
 
@@ -139,6 +141,9 @@ def _errors(cfg):
         bad("max_charge_kw", cfg.max_charge_kw, "must be > 0")
     if cfg.max_discharge_kw <= 0:
         bad("max_discharge_kw", cfg.max_discharge_kw, "must be > 0")
+    if not 0 < cfg.stay_under_percent <= 100:
+        bad("stay_under_percent", cfg.stay_under_percent,
+            "must be > 0 and <= 100")
     if cfg.quarter_hour_average_mode not in _MODES:
         bad("quarter_hour_average_mode", cfg.quarter_hour_average_mode,
             "must be one of %s" % ", ".join(_MODES))

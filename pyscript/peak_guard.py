@@ -495,7 +495,8 @@ def _evaluate(trigger_type, started):
 
     batt = battery.from_percent(inverter.read_charge_percent(), cfg,
                                 is_stubbed=True)
-    forbidden, fired = rules.establish_vetoes(batt, None, cfg, grid)
+    forbidden, fired = rules.establish_vetoes(
+        batt, None, cfg, grid, usage_history_available=True)   # never grid-charges: V4 is moot
     blocking = "+".join([v for v in fired
                          if rules.FORBID_DISCHARGE in rules.VETO_FORBIDS[v]])
     took_ms = (_monotonic() - started) * 1000.0
