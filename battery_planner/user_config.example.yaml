@@ -88,6 +88,28 @@ usage:
                                 #   weeks ago; missing weeks just drop out)
                                 # none: plain mean, every day counts equally
 
+# Energy history: the planner records its own 15-minute energy history.
+# Counters must be CUMULATIVE energy in kWh (Wh and MWh are converted).
+# Several counters per quantity are summed (tariff 1 + tariff 2). Every list
+# is optional; an empty list means "not available" and that quantity is
+# recorded as null. See the README, section "Energy history".
+history:
+  enabled: true
+  sensors:
+    import:                     # energy taken from the grid
+      - sensor.slimmelezer_energy_consumed_tariff_1
+      - sensor.slimmelezer_energy_consumed_tariff_2
+    export:                     # energy injected into the grid
+      - sensor.slimmelezer_energy_produced_tariff_1
+      - sensor.slimmelezer_energy_produced_tariff_2
+    solar: []                   # PV production counter(s), e.g. from the inverter
+    battery_charge: []          # energy into the battery
+    battery_discharge: []       # energy out of the battery
+    load: []                    # household consumption counter, if you have one
+                                # Usage history (and so grid charging) unlocks
+                                # with `load`, or with solar + battery_charge +
+                                # battery_discharge all configured.
+
 timing:
   block_minutes: 15
   evaluation_interval_minutes: 5

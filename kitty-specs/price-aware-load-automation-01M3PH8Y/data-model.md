@@ -90,6 +90,10 @@ A block absent from the price map is still projected by the trajectory — the b
 | `expected_kwh` | float | kWh | Recency-weighted mean (`usage_recency_weighting`) over the configured window for this block, grouped by `usage_grouping` (same weekday, or day type) |
 | `sample_days` | int | days | Distinct dates that contributed to this slot (a plain count, unaffected by recency weights): up to `usage_history_weeks` under same-weekday grouping, up to about 5x that under day-type grouping. A genuine sample count, so it now does signal thin history; the adapter still reports overall coverage separately (FR-005, FR-059) |
 
+### Usage history source
+
+`read_usage_history` returns `[(aware block_start, load_kwh)]`, oldest first, read from the planner's own energy-history files (`battery_planner/history/blocks-YYYY-MM-DD.jsonl`, one JSON object per 15-minute block, written by `pyscript/modules/history.py`; see the README section "Energy history"). Only blocks whose `load_kwh` is known are returned, so the list is empty (and V4 keeps grid charging off) until a `load` counter, or a `solar` counter together with both battery counters, is configured. Other recorded fields (`import_kwh`, `export_kwh`, `solar_kwh`, the load split, `forecast_solar_kwh`, prices, `complete`, read times) are for later analysis and feed no decision yet.
+
 ---
 
 ## BatteryState

@@ -74,7 +74,7 @@ vetoes=V2 | selector=S2 |
   why="injection -0.0043; surplus 2.4kW, headroom 3.2kWh, charging from solar"
 ```
 
-V4 fires on every cycle while there is no usage history (until `read_usage_history` is implemented), so it appears bare on most records, and as `V4(suppressed ...)` whenever a grid-charging selector would have acted.
+V4 fires on every cycle while there is no usage history (until the energy history holds a known household load, see the README section "Energy history"), so it appears bare on most records, and as `V4(suppressed ...)` whenever a grid-charging selector would have acted.
 
 This is the case the spec got wrong twice. A record showing a veto **must** also name the selector that finally fired (SC-010) — a veto alone is never a complete decision.
 

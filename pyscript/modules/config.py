@@ -52,15 +52,28 @@ _MAP = [
      "quarter_hour_average_sensor"),
     ("capacity_tariff", "month_peak_sensor", "month_peak_sensor"),
     ("capacity_tariff", "stay_under_percent", "stay_under_percent"),
+    ("history", "enabled", "history_enabled"),
 ]
+
+# history.sensors: quantity -> attribute holding a tuple of entity ids. An
+# empty tuple means "not available" (the quantity is recorded as null).
+_HISTORY_SENSORS = (
+    ("import", "history_import_sensors"),
+    ("export", "history_export_sensors"),
+    ("solar", "history_solar_sensors"),
+    ("battery_charge", "history_battery_charge_sensors"),
+    ("battery_discharge", "history_battery_discharge_sensors"),
+    ("load", "history_load_sensors"),
+)
+_HISTORY_SENSOR_ATTRS = tuple(a for _, a in _HISTORY_SENSORS)
 
 _NON_NUMERIC = (
     "alert_address", "notify_service", "timezone", "offtake_sensor",
     "quarter_hour_average_mode", "capacity_enabled", "usage_grouping",
     "usage_recency_weighting", "inverter_type", "price_entity",
     "price_attribute", "forecast_entity", "forecast_attribute",
-    "quarter_hour_average_sensor", "month_peak_sensor",
-)
+    "quarter_hour_average_sensor", "month_peak_sensor", "history_enabled",
+) + _HISTORY_SENSOR_ATTRS
 
 # Entity-name fields (checked as domain.object_id) and attribute-name fields
 # (checked as non-empty strings), with the config key shown in errors.
@@ -132,6 +145,23 @@ class SiteConfig:
     forecast_attribute: str = "watt_hours_period"
     quarter_hour_average_sensor: str = "sensor.slimmelezer_huidig_kwartiervermogen"
     month_peak_sensor: str = "sensor.slimmelezer_maandpiek"
+    # Energy history (recorder). Cumulative kWh counters, summed per quantity.
+    # Also not in fingerprint(): they name where data is read from.
+    history_enabled: bool = True
+    history_import_sensors: tuple = (
+        "sensor.slimmelezer_energy_consumed_tariff_1",
+        "sensor.slimmelezer_energy_consumed_tariff_2")
+    history_export_sensors: tuple = (
+        "sensor.slimmelezer_energy_produced_tariff_1",
+        "sensor.slimmelezer_energy_produced_tariff_2")
+    history_solar_sensors: tuple = ()
+    history_battery_charge_sensors: tuple = ()
+    history_battery_discharge_sensors: tuple = ()
+    history_load_sensors: tuple = ()
+
+    def history_sensors(self):
+        """{quantity: tuple of entity ids} (empty tuple = not available)."""
+        return {q: getattr(self, a) for q, a in _HISTORY_SENSORS}
 
     def fingerprint(self):
         """Stable 8-hex digest of the fields that change what a block means."""
@@ -193,6 +223,22 @@ def _errors(cfg):
         v = getattr(cfg, attr)
         if not isinstance(v, str) or not v.strip():
             bad(label, v, "must be a non-empty attribute name")
+    if not isinstance(cfg.history_enabled, bool):
+        bad("history.enabled", cfg.history_enabled, "must be true or false")
+    for q, attr in _HISTORY_SENSORS:
+        v = getattr(cfg, attr)
+        label = "history.sensors.%s" % q
+        if not isinstance(v, tuple):
+            bad(label, v, "must be a list of entity ids")
+            continue
+        for item in v:
+            if not isinstance(item, str) or not re.fullmatch(
+                    r"[a-z0-9_]+\.[a-z0-9_]+", item):
+                bad(label, item, "must be an entity id like domain.object_id: "
+                    "lowercase letters, digits, underscore, exactly one dot")
+        if len(set(v)) != len(v):
+            bad(label, list(v), "lists the same entity twice (it would be "
+                "counted twice)")
     if cfg.peak_averaging_months < 1:
         bad("peak_averaging_months", cfg.peak_averaging_months, "must be >= 1")
     if cfg.max_charge_kw <= 0:
@@ -217,6 +263,29 @@ def _errors(cfg):
     return errs
 
 
+def _history_sensors(raw, kwargs, errs):
+    """Read history.sensors (optional lists of entity ids) into kwargs."""
+    section = raw.get("history")
+    if not isinstance(section, dict) or section.get("sensors") is None:
+        return
+    sensors = section["sensors"]
+    if not isinstance(sensors, dict):
+        errs.append("history.sensors=%r: must be a mapping" % (sensors,))
+        return
+    known = dict(_HISTORY_SENSORS)
+    for key, value in sensors.items():
+        if key not in known:
+            errs.append("history.sensors.%s: unknown quantity (expected one of "
+                        "%s)" % (key, ", ".join(known)))
+        elif value is None:
+            continue
+        elif not isinstance(value, (list, tuple)):
+            errs.append("history.sensors.%s=%r: must be a list of entity ids"
+                        % (key, value))
+        else:
+            kwargs[known[key]] = tuple(value)
+
+
 def from_dict(raw):
     """Build a validated SiteConfig from the parsed YAML mapping."""
     if not isinstance(raw, dict):
@@ -237,6 +306,7 @@ def from_dict(raw):
                 continue
         if key in container and container[key] is not None:
             kwargs[attr] = container[key]
+    _history_sensors(raw, kwargs, errs)
     if (isinstance(kwargs.get("inverter_type"), str)
             and kwargs["inverter_type"].strip().lower() == "none"):
         kwargs["inverter_type"] = "logging"      # "none" means log only

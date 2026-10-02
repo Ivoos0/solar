@@ -26,12 +26,12 @@ Two more things you should know before spending an evening on this:
 - **With the `logging` driver, battery state of charge is a stub.** The planner always assumes 50%.
   Every record carries `degraded=soc_stubbed`. That is expected, not a fault. A driver that reads
   the real charge removes the marker.
-- **Household usage history is not sourced yet.** The function that should provide it
-  (`read_usage_history` in `pyscript/battery_planner.py`) returns an empty list, so the planner
-  currently treats household consumption as zero and every record carries
-  `usage_history_unavailable`. Because of that the planner **does not charge from the grid at all**
-  (veto V4, see [Known gaps](#known-gaps)) until a household load sensor or counter is wired into
-  that one function. This is a known limitation with a planned follow-up.
+- **Household usage history is not available until you configure a load source.** The planner
+  records its own energy history (see [Energy history](#energy-history)), but household consumption
+  can only be derived once a `load` counter, or a `solar` production counter together with the
+  battery charge and discharge counters, is configured. Until then every record carries
+  `usage_history_unavailable` and the planner **does not charge from the grid at all** (veto V4, see
+  [Known gaps](#known-gaps)). Grid import and injection are recorded from now on regardless.
 
 ## Does this fit your setup? (two-minute check)
 
@@ -209,6 +209,7 @@ the send is retried on the next cycle. The halt itself still proceeds.
     user_config.yaml          # created once from the example, never overwrite
     decisions-YYYY-MM-DD.log  # generated, one file per local day
     cache/                    # generated
+    history/                  # generated, energy history (never deleted by the planner)
 ```
 
 Copy `pyscript/` to `<ha-config>/pyscript/` and `battery_planner/user_config.example.yaml` to
@@ -315,8 +316,8 @@ find <ha-config>/battery_planner -name 'decisions-*.log' -mtime +30 -delete
 ```
 
 Each record has the action, power, state of charge, vetoes, the selector that produced it, a
-reason, and a `degraded=` field. Expect `degraded=soc_stubbed` (and, until usage history is wired
-in, `usage_history_unavailable`). If the peak guard is shaving a peak, it writes its own records
+reason, and a `degraded=` field. Expect `degraded=soc_stubbed` (and, until a household load source is
+configured, `usage_history_unavailable`). If the peak guard is shaving a peak, it writes its own records
 (one when a shave starts, changes materially, is vetoed, or stops; not one per 30-second tick).
 
 ### Troubleshooting
@@ -351,6 +352,78 @@ in, `usage_history_unavailable`). If the peak guard is shaving a peak, it writes
   `vetoes=V4(suppressed S1 charge)`. Solar-surplus charging is not affected. See
   [Known gaps](#known-gaps).
 
+## Energy history
+
+The planner keeps its own 15-minute energy history. Home Assistant's recorder keeps raw states only
+about ten days and long-term statistics only hourly, which is too coarse and too short for usage
+profiles and forecast calibration. The history is written to
+`<ha-config>/battery_planner/history/blocks-YYYY-MM-DD.jsonl` (one file per local day of the block,
+one JSON object per line) and `last_snapshot.json` (the counters at the last boundary, so a restart
+does not lose the block in progress).
+
+**How it works.** You list cumulative kWh counters under `history.sensors` in `user_config.yaml`
+(several counters per quantity are summed, for example tariff 1 plus tariff 2). On the first planner
+cycle at or after each block boundary the counters are read, and the difference to the previous
+reading is the finished block's energy. Defaults: `import` and `export` use the four SlimmeLezer
+tariff counters. `solar`, `battery_charge`, `battery_discharge` and `load` are empty (not
+available) until you add them. `history.enabled: false` stops recording. A recorder failure is
+logged (at most once an hour per kind) and never affects a decision.
+
+**Fields per block** (energy in kWh; any field is `null` when unknown):
+
+| Field | Meaning |
+|---|---|
+| `block_start`, `local_date`, `block_minutes` | Block start (UTC ISO), local date (the file it is in), length |
+| `import_kwh`, `export_kwh` | Energy from the grid and injected into it (injection history). `from_net_kwh` equals `import_kwh` (household plus battery charging from the grid) |
+| `solar_kwh` | Measured PV production |
+| `battery_charge_kwh`, `battery_discharge_kwh` | Energy into and out of the battery |
+| `load_kwh`, `load_source` | Household consumption: `measured` from a `load` counter, else `derived` (below), else `null` |
+| `load_from_solar_kwh`, `load_from_battery_kwh`, `load_from_net_kwh`, `split_method` | Where the load came from (below) |
+| `forecast_solar_kwh` | What the forecast said for the block when it started; `null` when the forecast was missing (zero fallback) |
+| `consumption_price`, `injection_price` | Prices of the block, as known when it started |
+| `soc_percent` | State of charge at the start; `null` while the state of charge is a stub |
+| `complete` | `true` only if every configured counter was readable at both readings and gave a valid difference |
+| `start_read_at`, `snapshot_read_at` | When the counters were actually read at the start and end of the block |
+
+**Formulas.**
+
+- Derived load = `import - export + solar + battery_discharge - battery_charge`, only when all five
+  terms are known; otherwise `null`. Nothing is assumed: a missing battery counter does not count as
+  zero, because the battery exists.
+- Split (convention `priority_v1`, needs load, solar and battery discharge): solar serves the load
+  first, then the battery, the rest comes from the grid. `load_from_solar = min(load, solar)`,
+  `load_from_battery = min(load - load_from_solar, battery_discharge)`,
+  `load_from_net = load - load_from_solar - load_from_battery`. The counters are block totals, so
+  this is a convention for the usual case, not a measurement.
+- A negative difference (counter reset or replacement) makes that field `null`. A missing earlier
+  reading, or a gap of more than one block (planner stopped, Home Assistant restarted), writes
+  `null` records for the missed blocks (at most one day of them): one difference is never spread
+  over several blocks. An unreadable counter makes its whole quantity `null` (never a partial sum).
+
+**Timing imprecision.** The planner runs every `evaluation_interval_minutes`, so a block's counters
+are read up to one interval after the boundary, and the block's energy covers
+`[start_read_at, snapshot_read_at)`, not exactly the 15 minutes. With a 1-minute interval the error
+is at most a minute; with 5 minutes, up to five. Both read times are in every record.
+
+**What unlocks usage history.** The usage profile needs a known `load_kwh`. That requires a `load`
+counter, or a `solar` production counter together with `battery_charge` and `battery_discharge`
+(solar alone is not enough while a battery is installed, because energy going into or out of the
+battery would be misattributed). With only the default grid counters, import and injection are
+recorded from now on, but `load_kwh` stays `null`, usage history stays empty, and the safe
+behaviour holds: no grid charging (veto V4).
+
+**Not used yet.** `solar_realisation_ratio` in `pyscript/modules/history.py` (sum of measured solar over sum of forecast
+solar, over the blocks that have both) is implemented and tested but not applied to any decision.
+The idea is that if the panels consistently produce, say, 80 % of what the forecast says, that 80 %
+can later be applied to the solar series. The recorded prices, injection, battery and split fields
+are likewise for later analysis.
+
+**Cleanup is manual.** The planner never deletes history. To keep one year, for example:
+
+```bash
+find <ha-config>/battery_planner/history -name 'blocks-*.jsonl' -mtime +365 -delete
+```
+
 ## Known gaps
 
 Stated as facts, so you can tell what is deliberate and what is not done yet.
@@ -372,9 +445,10 @@ Deliberate scope decisions (out of scope for this mission):
 
 Not done yet (known, with a planned follow-up):
 
-- **Household usage history is not sourced.** `read_usage_history` returns `[]`, so household load is
-  treated as zero. Replace only that function once a household consumption sensor or counter is
-  chosen. Until then, **the planner never charges from the grid**: veto V4 ("no usage profile")
+- **Household usage history needs a load source.** `read_usage_history` reads the planner's own
+  energy history, which only holds a household load when a `load` counter (or `solar` plus both
+  battery counters) is configured. Until then household load is treated as zero and
+  **the planner never charges from the grid**: veto V4 ("no usage profile")
   forbids every grid-charging proposal while there is no history, because without it a grid charge
   could land on top of an unseen household peak and raise the capacity tariff. Charging from surplus
   solar, discharging and exporting are unaffected.
@@ -395,7 +469,8 @@ Not done yet (known, with a planned follow-up):
   `pyscript/modules/capacity.py` and the `capacity_tariff` config block.
 - **Real inverter control:** add a driver file, see [Adding an inverter](#adding-an-inverter). You do
   not edit `inverter.py`, the planner or the guard.
-- **Usage history:** `read_usage_history` in `pyscript/battery_planner.py`.
+- **Usage history:** configure the counters under `history.sensors`; the reader is
+  `read_usage_history` in `pyscript/battery_planner.py`.
 
 ### Adding an inverter
 

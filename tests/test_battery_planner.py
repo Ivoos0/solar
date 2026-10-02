@@ -38,7 +38,7 @@ CONTRACT_FIELDS = [
 ]
 
 _CORE_NAMES = ("config", "prices", "series", "battery", "trajectory",
-               "capacity", "rules", "decision", "cache")
+               "capacity", "rules", "decision", "cache", "history")
 _INJECTED = ("pyscript_executor", "time_trigger", "task_unique", "state",
              "service", "log", "task")
 
@@ -185,6 +185,7 @@ def env(tmp_path):
         mod.CONFIG_PATH = str(e.config_path)
         mod.CACHE_DIR = str(e.cache_dir) + "/"
         mod.DECISIONS_LOG_DIR = str(e.log_dir)
+        mod.HISTORY_DIR = str(e.tmp / "history") + "/"
         mod._now = lambda: e.clock
         e.write_config()
         st = e.state
