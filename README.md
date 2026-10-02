@@ -89,9 +89,17 @@ This produces the following Home Assistant entities (all in kW):
 | `sensor.slimmelezer_gemiddelde_maandpiek_13_maanden` | none listed | Average of the last 13 months: what the grid fee is billed on | **No.** Exposed by the firmware but not read by any code today |
 | `sensor.slimmelezer_power_consumed` | (existing) | Netted total offtake | Yes (default `capacity_tariff.offtake_sensor`) |
 
-A reader with differently named entities can match them by role and register, and set
-`capacity_tariff.offtake_sensor` in the config; the two quarter-hour and month-peak entity names
-are currently fixed constants in the code.
+A reader with differently named entities can match them by role and register and set
+`capacity_tariff.offtake_sensor`, `capacity_tariff.quarter_hour_average_sensor` and
+`capacity_tariff.month_peak_sensor` in `user_config.yaml`. The planner and the peak guard both read
+these from the config.
+
+**Peak guard trigger limitation.** The guard's `@state_trigger` names
+`sensor.slimmelezer_power_consumed` literally, because decorator arguments are evaluated once at
+load time, before any config is read, so they cannot come from `user_config.yaml`. If your
+netted offtake sensor has a different name, the guard still *reads* the configured sensor on every
+run, but it only runs on its 30-second periodic tick, not on every meter update. To trigger on
+your sensor's updates, edit the `@state_trigger(...)` argument in `pyscript/peak_guard.py`.
 
 ### The quarter-hour average has two possible meanings
 
@@ -127,12 +135,22 @@ Install in this order.
 
    The built-in Forecast.Solar integration is not used: it is UI-configured only and exposes
    aggregates rather than the per-block series the planner needs.
-4. **Check the entity names on your install.** The code expects the ENTSO-e price sensor
-   `sensor.entso_prices_current_electricity_market_price` with its forward price series in the
-   attribute `prices` (a list of `{time, price}` entries). These are **unconfirmed** on other
-   installs. In Developer Tools -> States, filter "entso" and compare. If they differ the planner
-   halts every cycle with "price data unavailable" while the sensor visibly has data; the names are
-   constants at the top of `pyscript/battery_planner.py`.
+4. **Check the entity names on your install.** Entity and attribute names are configuration, not
+   code (`user_config.yaml`):
+
+   | Key | Default | Status |
+   |---|---|---|
+   | `prices.entity` | `sensor.entso_prices_average_electricity_price` | Confirmed on a live entsoe custom-integration install |
+   | `prices.attribute` | `prices` | Confirmed: a list of `{time, price}`, time like `2026-10-02 00:00:00+02:00`, 15-minute steps, EUR/kWh |
+   | `solar.forecast_entity` | `sensor.forecast_solar_estimate` | **Unconfirmed**: set to your REST sensor's name |
+   | `solar.forecast_attribute` | `watt_hours_period` | Unconfirmed |
+   | `capacity_tariff.quarter_hour_average_sensor` | `sensor.slimmelezer_huidig_kwartiervermogen` | SlimmeLezer default |
+   | `capacity_tariff.month_peak_sensor` | `sensor.slimmelezer_maandpiek` | SlimmeLezer default |
+
+   In Developer Tools -> States, filter "entso" and open the sensor: the right one has an attribute
+   holding the list of `{time, price}` entries. Other ENTSO-e sensors (for example the "current
+   market price" one) may show a price but carry no list. A wrong name makes the planner halt every
+   cycle, and the alert and log line name the entity and attribute it tried.
 
 ### Alert e-mail
 
@@ -309,7 +327,7 @@ in, `usage_history_unavailable`). If the peak guard is shaving a peak, it writes
 | `ImportError` in the HA log | `allow_all_imports: true` missing |
 | HA log warns about blocking I/O | A file operation ran on the event loop; it must use `@pyscript_executor` |
 | Forecast always zero | REST sensor failing: check the URL and the free-tier rate limit |
-| Prices always missing, constant HALT | ENTSO-e entity or attribute names differ on your install (step 4) |
+| Prices always missing, constant HALT; cause "attribute prices missing or empty on ..." | `prices.entity` or `prices.attribute` does not match your install: open the entity in Developer Tools -> States and copy the sensor and the attribute holding the `{time, price}` list into `user_config.yaml` (step 4) |
 | Config edits have no effect | You edited the repo copy instead of `<ha-config>/battery_planner/user_config.yaml` |
 | Core code change has no effect | Core modules are not hot-reloaded: restart Home Assistant |
 

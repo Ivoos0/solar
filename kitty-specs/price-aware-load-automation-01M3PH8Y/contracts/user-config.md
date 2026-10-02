@@ -27,6 +27,14 @@ prices:
   injection_multiplier: 0.94
   injection_offset: -0.011      # negative: injection goes negative while the
                                 # market price is still positive
+  entity: sensor.entso_prices_average_electricity_price
+                                # HA entity carrying the price list; find it in
+                                # Developer Tools -> States. Confirmed on a live
+                                # entsoe install. Entity ids: domain.object_id
+                                # (lowercase letters, digits, underscore).
+  attribute: prices             # non-empty attribute name; entries are
+                                # {time, price}, time an ISO string (space or T
+                                # separator) or datetime, price EUR/kWh
 
 battery:
   capacity_kwh: 10.0            # REQUIRED - no sensible default
@@ -43,6 +51,8 @@ solar:
   kwp: 8.1                      # 20 panels x 405 Wp
   declination: 50               # from horizontal
   azimuth: -10                  # 10 degrees east of south
+  forecast_entity: sensor.forecast_solar_estimate   # unconfirmed on the live install
+  forecast_attribute: watt_hours_period
 
 # Belgian capaciteitstarief. Billed on the rolling average of the last twelve
 # monthly peaks, floored at 2.5 kW, on grid offtake only.
@@ -74,6 +84,14 @@ capacity_tariff:
                                 # connection one phase exports while others
                                 # import, so a per-phase sum reads 0.937 kW
                                 # where the meter reads 0.003 kW.
+  quarter_hour_average_sensor: sensor.slimmelezer_huidig_kwartiervermogen
+  month_peak_sensor: sensor.slimmelezer_maandpiek
+                                # The peak guard reads all three from config,
+                                # but its @state_trigger names
+                                # sensor.slimmelezer_power_consumed literally
+                                # (decorator arguments are static). With a
+                                # different offtake sensor the guard runs on its
+                                # 30 s tick only.
 
 # Expected household consumption per block, averaged from recent history.
 usage:

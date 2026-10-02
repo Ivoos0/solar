@@ -23,6 +23,13 @@ UTC = timezone.utc
 T0 = datetime(2026, 9, 30, 12, 35, tzinfo=UTC)          # 14:35 in Brussels
 NOTIFY = "test_notifier"  # set in Env.write_config; the adapter reads alerts.notify_service
 STEP = timedelta(minutes=5)
+# Config defaults for the Home Assistant entities (config.py is the source).
+PRICE_ENTITY = "sensor.entso_prices_average_electricity_price"
+PRICE_ATTRIBUTE = "prices"
+FORECAST_ENTITY = "sensor.forecast_solar_estimate"
+FORECAST_ATTRIBUTE = "watt_hours_period"
+QUARTER_AVG_ENTITY = "sensor.slimmelezer_huidig_kwartiervermogen"
+MONTH_PEAK_ENTITY = "sensor.slimmelezer_maandpiek"
 
 CONTRACT_FIELDS = [
     "action", "power", "soc", "cons", "inj", "solar_rem", "usage_rem",
@@ -181,13 +188,13 @@ def env(tmp_path):
         mod._now = lambda: e.clock
         e.write_config()
         st = e.state
-        st.set(mod.PRICE_ENTITY, "0.10", {mod.PRICE_ATTRIBUTE: price_entries()})
-        st.set(mod.FORECAST_ENTITY, "12.3",
-               {mod.FORECAST_ATTRIBUTE: forecast_payload()})
+        st.set(PRICE_ENTITY, "0.10", {PRICE_ATTRIBUTE: price_entries()})
+        st.set(FORECAST_ENTITY, "12.3",
+               {FORECAST_ATTRIBUTE: forecast_payload()})
         st.set("sensor.slimmelezer_power_consumed", "0.8",
                {"unit_of_measurement": "kW"})
-        st.set(mod.QUARTER_AVG_ENTITY, "0.7", {"unit_of_measurement": "kW"})
-        st.set(mod.MONTH_PEAK_ENTITY, "3.0", {"unit_of_measurement": "kW"})
+        st.set(QUARTER_AVG_ENTITY, "0.7", {"unit_of_measurement": "kW"})
+        st.set(MONTH_PEAK_ENTITY, "3.0", {"unit_of_measurement": "kW"})
         yield e
     finally:
         for n in _INJECTED:
@@ -284,7 +291,7 @@ def test_missing_config_no_decision(env):
 
 def test_price_outage_halts_alerts_once_and_recovers(env):
     st, mod = env.state, env.mod
-    st.set(mod.PRICE_ENTITY, "unavailable", {})
+    st.set(PRICE_ENTITY, "unavailable", {})
     env.run(T0)
     assert env.decisions() == []
     assert len(env.lines()) == 1 and " | HALT | " in env.lines()[0]
@@ -296,7 +303,7 @@ def test_price_outage_halts_alerts_once_and_recovers(env):
     assert sum(" | HALT | " in l for l in env.lines()) == 2
     env.run(T0 + timedelta(minutes=65))                   # past realert
     assert len(env.service.of("notify", NOTIFY)) == 2
-    st.set(mod.PRICE_ENTITY, "0.10", {mod.PRICE_ATTRIBUTE: price_entries()})
+    st.set(PRICE_ENTITY, "0.10", {PRICE_ATTRIBUTE: price_entries()})
     env.run(T0 + timedelta(minutes=70))
     assert any(" | RECOVERED | " in l for l in env.lines())
     assert len(env.decisions()) == 1
@@ -312,14 +319,14 @@ def test_price_outage_halts_alerts_once_and_recovers(env):
                              start=datetime(2026, 9, 28, 0, 0, tzinfo=UTC))},
 ], ids=["no-attribute", "empty", "series-already-elapsed"])
 def test_missing_or_stale_prices_halt(env, attrs):
-    env.state.set(env.mod.PRICE_ENTITY, "0.10", attrs)
+    env.state.set(PRICE_ENTITY, "0.10", attrs)
     env.run()
     assert env.decisions() == []
     assert " | HALT | " in env.lines()[0]
 
 
 def test_halt_line_carries_alert_time_and_no_decision_logic(env):
-    env.state.set(env.mod.PRICE_ENTITY, "unknown", {})
+    env.state.set(PRICE_ENTITY, "unknown", {})
     env.run()
     parts = env.lines()[0].split(" | ")
     assert parts[1] == "HALT" and parts[2].startswith("cause=")
@@ -329,7 +336,7 @@ def test_halt_line_carries_alert_time_and_no_decision_logic(env):
 # ---- forecast outage: degrade, not halt --------------------------------------------
 
 def test_forecast_outage_degrades_to_zero_solar_without_halt(env):
-    env.state.set(env.mod.FORECAST_ENTITY, "unavailable", {})
+    env.state.set(FORECAST_ENTITY, "unavailable", {})
     env.run()
     lines = env.decisions()
     assert len(lines) == 1
@@ -341,13 +348,13 @@ def test_forecast_outage_degrades_to_zero_solar_without_halt(env):
 
 def test_forecast_retry_is_spaced_and_counted(env):
     mod = env.mod
-    env.state.set(mod.FORECAST_ENTITY, "unavailable", {})
+    env.state.set(FORECAST_ENTITY, "unavailable", {})
     env.run(T0)
     assert env.service.of("homeassistant", "update_entity") == []   # threshold
     env.run(T0 + STEP)
     assert len(env.service.of("homeassistant", "update_entity")) == 1
     assert env.service.of("homeassistant", "update_entity")[0][2] == {
-        "entity_id": mod.FORECAST_ENTITY}
+        "entity_id": FORECAST_ENTITY}
     env.run(T0 + 2 * STEP)                                # only 5 min later
     assert len(env.service.of("homeassistant", "update_entity")) == 1
     env.run(T0 + 3 * STEP)                                # 10 min later
@@ -357,7 +364,7 @@ def test_forecast_retry_is_spaced_and_counted(env):
 def test_forecast_retries_stay_within_hourly_budget(env):
     env.write_config("timing:\n  evaluation_interval_minutes: 1\n"
                      "  forecast_retry_minutes: 1\n")
-    env.state.set(env.mod.FORECAST_ENTITY, "unavailable", {})
+    env.state.set(FORECAST_ENTITY, "unavailable", {})
     for i in range(60):
         env.run(T0 + timedelta(minutes=i))
     assert len(env.service.of("homeassistant", "update_entity")) <= 11
@@ -365,7 +372,7 @@ def test_forecast_retries_stay_within_hourly_budget(env):
 
 def test_forecast_down_with_fresh_solar_cache_states_its_age(env):
     env.run(T0)
-    env.state.set(env.mod.FORECAST_ENTITY, "unavailable", {})
+    env.state.set(FORECAST_ENTITY, "unavailable", {})
     env.run(T0 + STEP)
     degraded = fields_of(env.decisions()[-1])["degraded"]
     assert "cache_age_solar=5m" in degraded               # FR-027 / SC-014
@@ -379,8 +386,8 @@ def test_fresh_cache_hit_adds_age_marker_rebuilt_series_does_not(env):
     assert "cache_age_solar=5m" in fields_of(env.decisions()[-1])["degraded"]
     payload = forecast_payload()
     payload[next(iter(payload))] = 900                    # new forecast: rebuilt
-    env.state.set(env.mod.FORECAST_ENTITY, "12.3",
-                  {env.mod.FORECAST_ATTRIBUTE: payload})
+    env.state.set(FORECAST_ENTITY, "12.3",
+                  {FORECAST_ATTRIBUTE: payload})
     env.run(T0 + 2 * STEP)
     assert "cache_age_solar" not in fields_of(env.decisions()[-1])["degraded"]
 
@@ -400,7 +407,7 @@ def test_stale_cache_used_with_age_marker_when_refresh_impossible(env):
     env.write_config("timing:\n  solar_cache_stale_minutes: 10\n")
     env.run(T0)
     assert (env.cache_dir / "solar.json").exists()
-    env.state.set(env.mod.FORECAST_ENTITY, "unavailable", {})
+    env.state.set(FORECAST_ENTITY, "unavailable", {})
     env.run(T0 + timedelta(minutes=30))
     degraded = fields_of(env.decisions()[-1])["degraded"]
     assert "cache_age_solar=30m" in degraded
@@ -439,8 +446,8 @@ def test_new_forecast_rebuilds_solar(env, monkeypatch):
     payload = forecast_payload()
     first = next(iter(payload))
     payload[first] = 900
-    env.state.set(env.mod.FORECAST_ENTITY, "12.3",
-                  {env.mod.FORECAST_ATTRIBUTE: payload})
+    env.state.set(FORECAST_ENTITY, "12.3",
+                  {FORECAST_ATTRIBUTE: payload})
     env.run(T0 + STEP)
     assert len(calls) == 2
 
@@ -469,8 +476,8 @@ def test_usage_rebuilt_daily_not_per_cycle_and_coverage_reported(env, monkeypatc
     degraded = fields_of(env.decisions()[-1])["degraded"]
     assert "usage_samples=3" in degraded                   # 3 of 28 days
     assert "usage_history_unavailable" not in degraded
-    env.state.set(env.mod.PRICE_ENTITY, "0.1", {
-        env.mod.PRICE_ATTRIBUTE: price_entries(days=3)})
+    env.state.set(PRICE_ENTITY, "0.1", {
+        PRICE_ATTRIBUTE: price_entries(days=3)})
     env.run(T0 + timedelta(hours=12))                      # next local day
     assert len(calls) == 2
 
@@ -553,7 +560,7 @@ def test_solar_charge_is_not_downgraded_by_guard(env, monkeypatch):
 
 def test_grid_charge_downgraded_when_grid_sensors_unreadable(env, monkeypatch):
     _force_grid_charge(env, monkeypatch)
-    env.state.set(env.mod.QUARTER_AVG_ENTITY, "unavailable", {})
+    env.state.set(QUARTER_AVG_ENTITY, "unavailable", {})
     env.run()
     keys = fields_of(env.decisions()[0])
     assert keys["action"] == "idle"
@@ -701,13 +708,13 @@ mod.DECISIONS_LOG_DIR = str(tmp / "logs")
 mod._now = lambda: T0
 start = datetime(2026, 9, 29, 22, 0, tzinfo=UTC)
 mod_state = builtins.state
-mod_state.d[mod.PRICE_ENTITY] = ("0.10", {mod.PRICE_ATTRIBUTE: [
+mod_state.d["sensor.entso_prices_average_electricity_price"] = ("0.10", {"prices": [
     {"time": (start + timedelta(hours=h)).isoformat(), "price": 0.08 + 0.02 * (h % 6)}
     for h in range(48)]})
-mod_state.d[mod.FORECAST_ENTITY] = ("1", {mod.FORECAST_ATTRIBUTE: {
+mod_state.d["sensor.forecast_solar_estimate"] = ("1", {"watt_hours_period": {
     (start + timedelta(hours=h)).isoformat(): 600 for h in range(8, 20)}})
-for ent in ("sensor.slimmelezer_power_consumed", mod.QUARTER_AVG_ENTITY,
-            mod.MONTH_PEAK_ENTITY):
+for ent in ("sensor.slimmelezer_power_consumed", "sensor.slimmelezer_huidig_kwartiervermogen",
+            "sensor.slimmelezer_maandpiek"):
     mod_state.d[ent] = ("0.8", {"unit_of_measurement": "kW"})
 mod.run_cycle(T0)
 assert not Log.errors, Log.errors
@@ -864,7 +871,7 @@ def _alerted(line):
 def test_failed_alert_send_is_retried_and_recorded_as_not_alerted(env):
     mod = env.mod
     env.service.fail.add(("notify", NOTIFY))
-    env.state.set(mod.PRICE_ENTITY, "unavailable", {})
+    env.state.set(PRICE_ENTITY, "unavailable", {})
     env.run(T0)
     assert _alerted(env.lines()[0]) == "none"
     assert any("alert send failed" in m for m in env.log.by_level["error"])
@@ -895,8 +902,8 @@ def test_sensor_kw_converts_watts_and_leaves_kw_alone(env):
 def test_dst_fall_back_price_map_is_not_rekeyed_in_local_time(env, monkeypatch):
     mod = env.mod
     start = datetime(2026, 10, 24, 22, 0, tzinfo=UTC)      # local midnight, CEST
-    env.state.set(mod.PRICE_ENTITY, "0.10",
-                  {mod.PRICE_ATTRIBUTE: price_entries(days=2, start=start)})
+    env.state.set(PRICE_ENTITY, "0.10",
+                  {"prices": price_entries(days=2, start=start)})
     seen = []
     real = mod.rules.decide
 
@@ -929,7 +936,7 @@ def test_dst_fall_back_price_map_is_not_rekeyed_in_local_time(env, monkeypatch):
 def _negative_prices(env):
     mod = env.mod
     entries = [dict(e, price=-0.20) for e in price_entries()]
-    env.state.set(mod.PRICE_ENTITY, "-0.20", {mod.PRICE_ATTRIBUTE: entries})
+    env.state.set(PRICE_ENTITY, "-0.20", {"prices": entries})
 
 
 def test_empty_history_passes_false_and_history_passes_true(env, monkeypatch):
@@ -977,7 +984,7 @@ def test_alert_uses_default_service_when_config_omits_it(env):
         "  address: owner@example.com\n", encoding="utf-8")
     bump = env.config_path.stat().st_mtime + 20
     os.utime(env.config_path, (bump, bump))
-    env.state.set(mod.PRICE_ENTITY, "unavailable", {})
+    env.state.set(PRICE_ENTITY, "unavailable", {})
     env.run(T0)
     assert len(env.service.of("notify", "battery_alert")) == 1
     assert env.service.of("notify", NOTIFY) == []
@@ -986,7 +993,7 @@ def test_alert_uses_default_service_when_config_omits_it(env):
 def test_alert_goes_to_the_configured_service_name(env):
     mod = env.mod
     env.write_config()
-    env.state.set(mod.PRICE_ENTITY, "unavailable", {})
+    env.state.set(PRICE_ENTITY, "unavailable", {})
     env.run(T0)
     calls = env.service.of("notify", NOTIFY)
     assert len(calls) == 1 and calls[0][2]["target"] == ["owner@example.com"]
@@ -1107,9 +1114,9 @@ def test_two_consecutive_days_make_two_files(env):
 
 def test_halt_recovered_and_decision_share_the_days_file(env):
     st, mod = env.state, env.mod
-    st.set(mod.PRICE_ENTITY, "unavailable", {})
+    st.set(PRICE_ENTITY, "unavailable", {})
     env.run(T0)
-    st.set(mod.PRICE_ENTITY, "0.10", {mod.PRICE_ATTRIBUTE: price_entries()})
+    st.set(PRICE_ENTITY, "0.10", {"prices": price_entries()})
     env.run(T0 + STEP)
     env.run(T0 + 2 * STEP)
     assert [f.name for f in env.log_files()] == ["decisions-2026-09-30.log"]
@@ -1120,7 +1127,7 @@ def test_halt_recovered_and_decision_share_the_days_file(env):
 
 def test_halt_line_after_midnight_goes_to_the_next_days_file(env):
     env.run(T0)
-    env.state.set(env.mod.PRICE_ENTITY, "unavailable", {})
+    env.state.set(PRICE_ENTITY, "unavailable", {})
     env.run(datetime(2026, 9, 30, 22, 5, tzinfo=UTC))        # 00:05 local, 1 Oct
     assert any(" | HALT | " in l for l in env.day_lines("2026-10-01"))
     assert not any(" | HALT | " in l for l in env.day_lines("2026-09-30"))
@@ -1137,10 +1144,113 @@ def test_skip_line_uses_the_local_day_of_the_cycle_time(env):
 
 def test_recovered_line_goes_to_the_day_it_is_written_not_the_halt_day(env):
     st, mod = env.state, env.mod
-    st.set(mod.PRICE_ENTITY, "unavailable", {})
+    st.set(PRICE_ENTITY, "unavailable", {})
     env.run(datetime(2026, 9, 30, 21, 55, tzinfo=UTC))       # 23:55 local, 30 Sep
-    st.set(mod.PRICE_ENTITY, "0.10", {mod.PRICE_ATTRIBUTE: price_entries()})
+    st.set(PRICE_ENTITY, "0.10", {"prices": price_entries()})
     env.run(datetime(2026, 9, 30, 22, 5, tzinfo=UTC))        # 00:05 local, 1 Oct
     assert any(" | HALT | " in l for l in env.day_lines("2026-09-30"))
     assert any(" | RECOVERED | " in l for l in env.day_lines("2026-10-01"))
     assert not any(" | RECOVERED | " in l for l in env.day_lines("2026-09-30"))
+
+
+# --- configurable entities ----------------------------------------------------
+
+CUSTOM_PRICE = "sensor.my_prices"
+CUSTOM_FORECAST = "sensor.my_forecast"
+CUSTOM_AVG = "sensor.my_quarter_avg"
+CUSTOM_PEAK = "sensor.my_month_peak"
+CUSTOM_CONFIG = (
+    "prices:\n  entity: sensor.my_prices\n  attribute: price_list\n"
+    "solar:\n  forecast_entity: sensor.my_forecast\n"
+    "  forecast_attribute: wh_period\n"
+    "capacity_tariff:\n  quarter_hour_average_sensor: sensor.my_quarter_avg\n"
+    "  month_peak_sensor: sensor.my_month_peak\n")
+
+
+def _live_shaped_entries():
+    """Exactly the live entsoe shape: 'YYYY-MM-DD HH:MM:SS+02:00' strings."""
+    start = datetime(2026, 9, 30, 0, 0, tzinfo=UTC) - timedelta(hours=2)
+    out = []
+    for i in range(24 * 4 * 2):
+        t = (start + timedelta(minutes=15 * i)).astimezone(
+            timezone(timedelta(hours=2)))
+        out.append({"time": t.strftime("%Y-%m-%d %H:%M:%S") + "+02:00",
+                    "price": round(0.08 + 0.02 * ((i // 4) % 6), 5)})
+    return out
+
+
+def test_live_shaped_prices_on_default_entity_produce_decision(env):
+    entries = _live_shaped_entries()
+    assert " " in entries[0]["time"] and entries[0]["time"].endswith("+02:00")
+    env.state.set(PRICE_ENTITY, "0.1", {PRICE_ATTRIBUTE: entries})
+    env.run()
+    assert len(env.decisions()) == 1
+    assert not any(" | HALT | " in l for l in env.lines())
+
+
+def test_custom_entities_are_read_and_defaults_ignored(env):
+    st = env.state
+    for default in (PRICE_ENTITY, FORECAST_ENTITY, QUARTER_AVG_ENTITY,
+                    MONTH_PEAK_ENTITY):
+        st.drop(default)                       # default names absent entirely
+    st.set(CUSTOM_PRICE, "0.10", {"price_list": price_entries()})
+    st.set(CUSTOM_FORECAST, "12.3", {"wh_period": forecast_payload()})
+    st.set(CUSTOM_AVG, "0.7", {"unit_of_measurement": "kW"})
+    st.set(CUSTOM_PEAK, "3.0", {"unit_of_measurement": "kW"})
+    env.write_config(CUSTOM_CONFIG)
+    env.run()
+    assert len(env.decisions()) == 1
+    import json
+    solar = json.loads((env.cache_dir / "solar.json").read_text())
+    assert solar["source"] == CUSTOM_FORECAST
+
+
+def test_custom_price_entity_ignores_default_data(env):
+    # default entity still has good data, the configured one is absent: halt
+    env.write_config(CUSTOM_CONFIG)
+    env.run()
+    assert env.decisions() == []
+    assert " | HALT | " in env.lines()[0]
+    assert CUSTOM_PRICE in env.lines()[0]
+
+
+def test_custom_sensors_feed_grid_state(env):
+    env.write_config(CUSTOM_CONFIG)
+    env.state.set(CUSTOM_PRICE, "0.10", {"price_list": price_entries()})
+    env.state.set(CUSTOM_FORECAST, "1", {"wh_period": forecast_payload()})
+    # custom capacity sensors absent although the defaults have data: the
+    # grid state must be unreadable (defaults are NOT consulted)
+    env.run()
+    assert len(env.decisions()) == 1
+    before = env.decisions()[0]
+    env.state.set(CUSTOM_AVG, "0.7", {"unit_of_measurement": "kW"})
+    env.run(T0 + STEP)                       # month peak still absent
+    assert fields_of(env.decisions()[-1])["avg"] == fields_of(before)["avg"]
+    env.state.set(CUSTOM_PEAK, "3.0", {"unit_of_measurement": "kW"})
+    env.run(T0 + 2 * STEP)
+    after = env.decisions()[-1]
+    assert fields_of(before)["avg"] != fields_of(after)["avg"]
+
+
+def test_halt_cause_names_configured_entity_and_attribute(env):
+    env.write_config(CUSTOM_CONFIG)
+    env.state.set(CUSTOM_PRICE, "0.10", {"prices": price_entries()})  # wrong attr
+    env.run()
+    line = env.lines()[0]
+    assert " | HALT | " in line
+    assert "attribute price_list missing or empty on sensor.my_prices" in line
+    alert = env.service.of("notify", NOTIFY)[0][2]["message"]
+    assert "price_list" in alert and CUSTOM_PRICE in alert
+
+
+def test_halt_cause_names_default_entity_when_attribute_missing(env):
+    env.state.set(PRICE_ENTITY, "0.10", {"other": []})
+    env.run()
+    assert ("attribute prices missing or empty on %s" % PRICE_ENTITY
+            in env.lines()[0])
+
+
+def test_halt_cause_names_entity_when_unavailable(env):
+    env.state.set(PRICE_ENTITY, "unavailable", {})
+    env.run()
+    assert "price entity %s unavailable" % PRICE_ENTITY in env.lines()[0]

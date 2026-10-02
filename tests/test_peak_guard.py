@@ -1161,3 +1161,31 @@ def test_guard_record_lands_in_the_dated_file_shared_with_the_planner(
     planner_rec = replace(rec, source="planner", selector="S3")
     assert real.apply(action, power, planner_rec, log_dir=str(logs))
     assert len(day_file.read_text().splitlines()) == 2
+
+
+# --- configurable SlimmeLezer entities -----------------------------------------
+
+def test_guard_reads_configured_sensors(make_guard):
+    g = make_guard(extra=(
+        "  quarter_hour_average_sensor: sensor.my_quarter_avg\n"
+        "  month_peak_sensor: sensor.my_month_peak\n")).at(12, 7, 30)
+    g.tick(offtake="5.0", **{"sensor.my_quarter_avg": "4.0",
+                            "sensor.my_month_peak": "2.5"})
+    assert len(g.discharges) == 1
+    assert "sensor.my_quarter_avg" in g.st.gets
+    assert "sensor.my_month_peak" in g.st.gets
+    assert AVG not in g.st.gets and PEAK not in g.st.gets
+
+
+def test_guard_default_sensors_ignored_when_reconfigured(make_guard):
+    g = make_guard(extra="  month_peak_sensor: sensor.my_month_peak\n"
+                   ).at(12, 7, 30)
+    g.tick(**PEAK_ARGS)                  # default names have data, custom absent
+    assert g.inv.calls == []
+    assert any("sensor.my_month_peak" in m for m in g.log.messages)
+
+
+def test_guard_trigger_stays_literal_default_offtake(make_guard):
+    g = make_guard(extra="  offtake_sensor: sensor.other_meter\n")
+    assert ("state_trigger", (OFFTAKE,)) in g.triggers
+    assert "LITERALLY" in g.mod.__doc__ and "KNOWN LIMITATION" in g.mod.__doc__

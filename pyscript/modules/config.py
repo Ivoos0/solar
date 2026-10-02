@@ -13,6 +13,8 @@ _MAP = [
     ("prices", "consumption_offset", "consumption_offset"),
     ("prices", "injection_multiplier", "injection_multiplier"),
     ("prices", "injection_offset", "injection_offset"),
+    ("prices", "entity", "price_entity"),
+    ("prices", "attribute", "price_attribute"),
     ("battery", "capacity_kwh", "capacity_kwh"),
     ("battery", "reserve_percent", "reserve_percent"),
     ("battery", "max_charge_kw", "max_charge_kw"),
@@ -23,6 +25,8 @@ _MAP = [
     ("solar", "kwp", "array_kwp"),
     ("solar", "declination", "array_declination"),
     ("solar", "azimuth", "array_azimuth"),
+    ("solar", "forecast_entity", "forecast_entity"),
+    ("solar", "forecast_attribute", "forecast_attribute"),
     ("timing", "block_minutes", "block_minutes"),
     ("timing", "evaluation_interval_minutes", "evaluation_interval_minutes"),
     ("timing", "forecast_refresh_minutes", "forecast_refresh_minutes"),
@@ -44,13 +48,31 @@ _MAP = [
     ("capacity_tariff", "peak_averaging_months", "peak_averaging_months"),
     ("capacity_tariff", "quarter_hour_average_mode", "quarter_hour_average_mode"),
     ("capacity_tariff", "offtake_sensor", "offtake_sensor"),
+    ("capacity_tariff", "quarter_hour_average_sensor",
+     "quarter_hour_average_sensor"),
+    ("capacity_tariff", "month_peak_sensor", "month_peak_sensor"),
     ("capacity_tariff", "stay_under_percent", "stay_under_percent"),
 ]
 
 _NON_NUMERIC = (
     "alert_address", "notify_service", "timezone", "offtake_sensor",
     "quarter_hour_average_mode", "capacity_enabled", "usage_grouping",
-    "usage_recency_weighting", "inverter_type",
+    "usage_recency_weighting", "inverter_type", "price_entity",
+    "price_attribute", "forecast_entity", "forecast_attribute",
+    "quarter_hour_average_sensor", "month_peak_sensor",
+)
+
+# Entity-name fields (checked as domain.object_id) and attribute-name fields
+# (checked as non-empty strings), with the config key shown in errors.
+_ENTITY_FIELDS = (
+    ("price_entity", "prices.entity"),
+    ("forecast_entity", "solar.forecast_entity"),
+    ("quarter_hour_average_sensor", "capacity_tariff.quarter_hour_average_sensor"),
+    ("month_peak_sensor", "capacity_tariff.month_peak_sensor"),
+)
+_ATTRIBUTE_FIELDS = (
+    ("price_attribute", "prices.attribute"),
+    ("forecast_attribute", "solar.forecast_attribute"),
 )
 
 _FINGERPRINT_FIELDS = (
@@ -102,6 +124,14 @@ class SiteConfig:
     usage_grouping: str = "same_weekday"
     usage_recency_weighting: str = "linear"
     inverter_type: str = "logging"
+    # Home Assistant entities. Deliberately NOT in fingerprint(): they name
+    # where data is read from, not what a block means.
+    price_entity: str = "sensor.entso_prices_average_electricity_price"
+    price_attribute: str = "prices"
+    forecast_entity: str = "sensor.forecast_solar_estimate"
+    forecast_attribute: str = "watt_hours_period"
+    quarter_hour_average_sensor: str = "sensor.slimmelezer_huidig_kwartiervermogen"
+    month_peak_sensor: str = "sensor.slimmelezer_maandpiek"
 
     def fingerprint(self):
         """Stable 8-hex digest of the fields that change what a block means."""
@@ -153,6 +183,16 @@ def _errors(cfg):
         bad("inverter.type", cfg.inverter_type,
             "must be a driver name: lowercase letters, digits, underscore "
             "(it selects pyscript/modules/inverter_<type>.py)")
+    for attr, label in _ENTITY_FIELDS:
+        v = getattr(cfg, attr)
+        if not isinstance(v, str) or not re.fullmatch(
+                r"[a-z0-9_]+\.[a-z0-9_]+", v):
+            bad(label, v, "must be an entity id like domain.object_id: "
+                "lowercase letters, digits, underscore, exactly one dot")
+    for attr, label in _ATTRIBUTE_FIELDS:
+        v = getattr(cfg, attr)
+        if not isinstance(v, str) or not v.strip():
+            bad(label, v, "must be a non-empty attribute name")
     if cfg.peak_averaging_months < 1:
         bad("peak_averaging_months", cfg.peak_averaging_months, "must be >= 1")
     if cfg.max_charge_kw <= 0:

@@ -239,3 +239,65 @@ def test_inverter_section_must_be_a_mapping():
 def test_inverter_type_is_not_in_the_cache_fingerprint():
     ref = from_dict(base()).fingerprint()
     assert from_dict(base(inverter__type="alphaess")).fingerprint() == ref
+
+
+# --- configurable Home Assistant entities --------------------------------
+
+ENTITY_DEFAULTS = {
+    "price_entity": "sensor.entso_prices_average_electricity_price",
+    "price_attribute": "prices",
+    "forecast_entity": "sensor.forecast_solar_estimate",
+    "forecast_attribute": "watt_hours_period",
+    "quarter_hour_average_sensor": "sensor.slimmelezer_huidig_kwartiervermogen",
+    "month_peak_sensor": "sensor.slimmelezer_maandpiek",
+}
+
+ENTITY_KEYS = [
+    ("prices__entity", "price_entity"),
+    ("prices__attribute", "price_attribute"),
+    ("solar__forecast_entity", "forecast_entity"),
+    ("solar__forecast_attribute", "forecast_attribute"),
+    ("capacity_tariff__quarter_hour_average_sensor",
+     "quarter_hour_average_sensor"),
+    ("capacity_tariff__month_peak_sensor", "month_peak_sensor"),
+]
+
+
+def test_entity_defaults(site_config):
+    for attr, expected in ENTITY_DEFAULTS.items():
+        assert getattr(site_config, attr) == expected, attr
+
+
+@pytest.mark.parametrize("path,attr", ENTITY_KEYS)
+def test_entity_keys_map_to_attributes(path, attr):
+    value = "x_y1" if attr.endswith("attribute") else "sensor.my_thing_2"
+    assert getattr(from_dict(base(**{path: value})), attr) == value
+
+
+@pytest.mark.parametrize("path", [p for p, a in ENTITY_KEYS
+                                  if not a.endswith("attribute")])
+@pytest.mark.parametrize("value", [
+    "", "  ", "sensor", "sensor.", ".name", "Sensor.name", "sensor.Name",
+    "sensor.a.b", "sensor.a-b", "sensor.a b", "sensor.name\n", 5, True, [],
+])
+def test_entity_id_validation_rejects(path, value):
+    with pytest.raises(ConfigError) as e:
+        from_dict(base(**{path: value}))
+    assert path.split("__")[1] in str(e.value)
+    assert repr(value) in str(e.value)
+
+
+@pytest.mark.parametrize("path", [p for p, a in ENTITY_KEYS
+                                  if a.endswith("attribute")])
+@pytest.mark.parametrize("value", ["", "   ", 5, True, ["prices"]])
+def test_attribute_validation_rejects(path, value):
+    with pytest.raises(ConfigError) as e:
+        from_dict(base(**{path: value}))
+    assert path.split("__")[1] in str(e.value)
+
+
+def test_entity_fields_not_in_fingerprint():
+    ref = from_dict(base()).fingerprint()
+    for path, attr in ENTITY_KEYS:
+        value = "x_y1" if attr.endswith("attribute") else "sensor.other_one"
+        assert from_dict(base(**{path: value})).fingerprint() == ref, path
