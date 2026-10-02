@@ -4,7 +4,7 @@
 # Provider price coefficients. Consumption and injection are never symmetric.
 #
 # CAVEAT - the consumption price must be ALL-IN. The planner compares it with
-# injection prices (S5) and tests it against zero (S1). Your supplier line
+# injection prices (arbitrage) and tests it against zero (paid-to-charge). Your supplier line
 # (market x multiplier + offset) is NOT what you pay per kWh: Belgian bills add
 # per-kWh network costs and taxes that apply to every kWh taken from the grid,
 # plus VAT. Leave them out and "buy now, export later" and "paid to charge"
@@ -20,7 +20,7 @@
 #   green certificates 0.0110, CHP certificates 0.0039, distribution 0.0575,
 #   energy contribution 0.0019, excise 0.0475  ->  fees = 0.1218
 # Not per-kWh, so NOT part of the offset: data management (fixed) and the
-# capacity tariff (billed on your peak; see capacity_tariff.rate_eur_per_kw_year).
+# capacity tariff (billed on your monthly peak).
 # Worked example with m 1.07, o 0.007 and 6 % VAT:
 #   multiplier 1.07 x 1.06 = 1.1342, offset (0.007 + 0.1218) x 1.06 = 0.1366
 # Check whether your supplier coefficients already include VAT before applying it.
@@ -52,13 +52,9 @@ battery:
   max_discharge_kw: 5.0
   round_trip_efficiency: 0.90   # gates arbitrage and the solar-hold decision
 
-# forecast.solar convention: azimuth 0 = south, negative = east.
+# The roof (position, tilt, direction, kWp) is NOT configured here: it lives only
+# in forecast_solar_url in secrets.yaml. See README, Install step 5.
 solar:
-  latitude: 51.12               # verify: the API resolves to about 10 metres
-  longitude: 3.85
-  kwp: 8.1                      # 20 panels x 405 Wp
-  declination: 50               # degrees from horizontal
-  azimuth: -10                  # 10 degrees east of south
   forecast_entity: sensor.forecast_solar_estimate
                                 # The REST sensor from configuration.yaml that
                                 # carries the per-period forecast. UNCONFIRMED
@@ -71,11 +67,6 @@ solar:
 capacity_tariff:
   enabled: true
   billing_floor_kw: 2.5         # no saving below this
-  rate_eur_per_kw_year: 40.0    # CHECK YOUR FLUVIUS BILL - revised annually.
-                                # rate = capacity tariff EUR / billed peak kW on the
-                                # bill (EUR per kW per year); add VAT if you want the
-                                # all-in cost (the 2025-26 Imewo rate was about 53.40
-                                # excl. VAT, so 40.0 here is a generic placeholder)
   guard_interval_seconds: 30
   stay_under_percent: 80        # > 0 and <= 100. Charging from the grid must
                                 # stay under this percentage of the ceiling
@@ -85,7 +76,6 @@ capacity_tariff:
                                 # Peak shaving still defends the real ceiling.
                                 # 100 = charge right up to the ceiling.
   quarter_hour_average_mode: auto   # auto | running | accumulating
-  peak_averaging_months: 13     # length of the averaging window the meter reports
   offtake_sensor: sensor.slimmelezer_power_consumed
                                 # the meter's NETTED three-phase total; never
                                 # sum the per-phase sensors
@@ -141,7 +131,6 @@ history:
 timing:
   block_minutes: 15
   evaluation_interval_minutes: 5
-  forecast_refresh_minutes: 60
   forecast_retry_minutes: 10
   solar_cache_stale_minutes: 120
   usage_cache_stale_minutes: 2880

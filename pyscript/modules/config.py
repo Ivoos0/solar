@@ -20,16 +20,10 @@ _MAP = [
     ("battery", "max_charge_kw", "max_charge_kw"),
     ("battery", "max_discharge_kw", "max_discharge_kw"),
     ("battery", "round_trip_efficiency", "round_trip_efficiency"),
-    ("solar", "latitude", "latitude"),
-    ("solar", "longitude", "longitude"),
-    ("solar", "kwp", "array_kwp"),
-    ("solar", "declination", "array_declination"),
-    ("solar", "azimuth", "array_azimuth"),
     ("solar", "forecast_entity", "forecast_entity"),
     ("solar", "forecast_attribute", "forecast_attribute"),
     ("timing", "block_minutes", "block_minutes"),
     ("timing", "evaluation_interval_minutes", "evaluation_interval_minutes"),
-    ("timing", "forecast_refresh_minutes", "forecast_refresh_minutes"),
     ("timing", "forecast_retry_minutes", "forecast_retry_minutes"),
     ("timing", "solar_cache_stale_minutes", "solar_cache_stale_minutes"),
     ("timing", "usage_cache_stale_minutes", "usage_cache_stale_minutes"),
@@ -48,9 +42,7 @@ _MAP = [
     (None, "timezone", "timezone"),
     ("capacity_tariff", "enabled", "capacity_enabled"),
     ("capacity_tariff", "billing_floor_kw", "billing_floor_kw"),
-    ("capacity_tariff", "rate_eur_per_kw_year", "capacity_rate_eur_per_kw_year"),
     ("capacity_tariff", "guard_interval_seconds", "guard_interval_seconds"),
-    ("capacity_tariff", "peak_averaging_months", "peak_averaging_months"),
     ("capacity_tariff", "quarter_hour_average_mode", "quarter_hour_average_mode"),
     ("capacity_tariff", "offtake_sensor", "offtake_sensor"),
     ("capacity_tariff", "quarter_hour_average_sensor",
@@ -95,8 +87,7 @@ _ATTRIBUTE_FIELDS = (
 )
 
 _FINGERPRINT_FIELDS = (
-    "latitude", "longitude", "array_kwp",
-    "array_declination", "array_azimuth", "block_minutes",
+    "block_minutes",
     "usage_history_weeks", "usage_grouping", "usage_recency_weighting",
 )
 
@@ -117,14 +108,8 @@ class SiteConfig:
     max_charge_kw: float = 5.0
     max_discharge_kw: float = 5.0
     round_trip_efficiency: float = 0.90
-    latitude: float = 51.12
-    longitude: float = 3.85
-    array_kwp: float = 8.1
-    array_declination: int = 50
-    array_azimuth: int = -10
     block_minutes: int = 15
     evaluation_interval_minutes: int = 5
-    forecast_refresh_minutes: int = 60
     forecast_retry_minutes: int = 10
     solar_cache_stale_minutes: int = 120
     usage_cache_stale_minutes: int = 2880
@@ -137,9 +122,7 @@ class SiteConfig:
     timezone: str = "Europe/Brussels"
     capacity_enabled: bool = True
     billing_floor_kw: float = 2.5
-    capacity_rate_eur_per_kw_year: float = 40.0
     guard_interval_seconds: int = 30
-    peak_averaging_months: int = 13
     quarter_hour_average_mode: str = "auto"
     offtake_sensor: str = "sensor.slimmelezer_power_consumed"
     stay_under_percent: float = 80.0
@@ -208,10 +191,6 @@ def _errors(cfg):
             "must be > 0 and <= 1")
     if cfg.block_minutes <= 0 or 60 % cfg.block_minutes != 0:
         bad("block_minutes", cfg.block_minutes, "must divide 60")
-    if not -180 <= cfg.array_azimuth <= 180:
-        bad("azimuth", cfg.array_azimuth, "must be within -180..180")
-    if not 0 <= cfg.array_declination <= 90:
-        bad("declination", cfg.array_declination, "must be within 0..90")
     if not isinstance(cfg.alert_address, str) or not cfg.alert_address.strip():
         bad("alerts.address", cfg.alert_address, "must be non-empty")
     if (not isinstance(cfg.notify_service, str)
@@ -263,8 +242,6 @@ def _errors(cfg):
         if len(set(v)) != len(v):
             bad(label, list(v), "lists the same entity twice (it would be "
                 "counted twice)")
-    if cfg.peak_averaging_months < 1:
-        bad("peak_averaging_months", cfg.peak_averaging_months, "must be >= 1")
     if cfg.max_charge_kw <= 0:
         bad("max_charge_kw", cfg.max_charge_kw, "must be > 0")
     if cfg.max_discharge_kw <= 0:

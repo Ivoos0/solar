@@ -11,7 +11,7 @@ script: !include scripts.yaml
 scene: !include scenes.yaml
 
 # ---------------------------------------------------------------------------
-# Price-aware load automation (mission price-aware-load-automation-01M3PH8Y)
+# Price-aware load automation
 # ---------------------------------------------------------------------------
 
 # pyscript (installed via HACS; pin the installed version durably, research.md R-08).
@@ -25,8 +25,7 @@ pyscript:
 # YAML form, so C-005 is met with a REST sensor). Free tier, no API key, one plane.
 # The whole URL (including your roof parameters) lives in HA secrets.yaml as
 # forecast_solar_url, so this block never needs editing. See secrets.example.yaml.
-# COUPLING: the roof parameters in that URL must match user_config.yaml.
-# scan_interval 3600 = 1 request/hour (NFR-002 caps fetches at 12/hour).
+# scan_interval 3600 = 1 request/hour (forecast.solar's free tier allows about 12 requests per hour).
 # The payload rides on the watt_hours_period attribute; state is only a summary
 # (states over 255 chars are truncated).
 rest:
@@ -61,11 +60,11 @@ rest:
 #   as ~0.5 kW, so a planner comparing to a 2.5 kW ceiling would see no problem while a large
 #   peak forms.
 #   Do NOT settle this with a manual load test (the battery behind the meter masks draw).
-#   WP11's runtime detector (T067) determines it passively from normal household consumption.
+#   The planner's runtime detector determines it passively from normal household consumption.
 #   Controlling config field: capacity_tariff.quarter_hour_average_mode (default: auto);
 #   pin it once the answer is known and stable.
 #
-# VERIFY ENTITY NAMES ON THE LIVE INSTALL (WP10 adapter reads these two):
+# VERIFY ENTITY NAMES ON THE LIVE INSTALL (the planner reads these two):
 #   1. sensor.forecast_solar_estimate  (created above; attribute watt_hours_period holds
 #      timestamp-keyed Wh values).
 #   2. The ENTSO-e price entity and the attribute holding the forward price series.

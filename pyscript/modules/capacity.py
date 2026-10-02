@@ -149,32 +149,6 @@ def shave_kw(state, config):
     return max(0.0, min(needed, config.max_discharge_kw))
 
 
-def billed_average_increase_kw(delta_kw, config):
-    """Rise in the billed average when this month's peak rises by delta_kw."""
-    return delta_kw / config.peak_averaging_months
-
-
-def peak_increase_cost_eur(delta_kw, config):
-    """Euro cost of raising this month's peak by delta_kw.
-
-    The billed average rises by delta/N. Billing is monthly at rate/12 and the
-    elevated peak stays inside the N-month window for N months.
-
-    NOTE - the billing floor is NOT applied here. delta_kw is taken as the
-    rise of the BILLED peak, and the function is linear in it. Billing floors
-    each monthly peak at config.billing_floor_kw (2.5 kW), so raising a peak
-    that sits below the floor costs nothing until it passes the floor. A
-    caller must therefore pass the difference of the floored figures,
-    max(floor, new_peak) - max(floor, old_peak) (see ceiling_kw), never the
-    raw difference of the measured peaks; this function cannot see the
-    peaks and will price a sub-floor rise as if it were billed.
-    """
-    n = config.peak_averaging_months
-    monthly = (billed_average_increase_kw(delta_kw, config)
-               * config.capacity_rate_eur_per_kw_year / 12.0)
-    return monthly * n
-
-
 # ---- month-peak notice ----------------------------------------------------
 
 # A further notice in the same month needs the peak to rise by at least this
@@ -198,23 +172,6 @@ def peak_alert_due(peak_kw, month, last_month, last_peak_kw, config):
     return peak_kw - last_peak_kw >= PEAK_ALERT_MIN_STEP_KW - _STEP_EPSILON
 
 
-def peak_alert_cost_eur(peak_kw, config):
-    """ESTIMATED euro cost of this peak over the averaging window, or None.
-
-    Priced as the rise over the floor: below the floor the month is billed at
-    the floor, so max(floor, peak) - max(floor, floor) is the billed rise
-    (see peak_increase_cost_eur). Assumes the month would otherwise have stayed
-    at or below the floor and that the other months in the window are
-    unchanged. None when no rate is configured (rate <= 0): no figure is
-    invented.
-    """
-    if config.capacity_rate_eur_per_kw_year <= 0:
-        return None
-    floor = config.billing_floor_kw
-    return peak_increase_cost_eur(max(floor, peak_kw) - max(floor, floor),
-                                  config)
-
-
 def peak_alert_message(peak_kw, observed, previous_peak_kw, config):
     """(title, message) of the month-peak notice. `observed` is a string."""
     floor = config.billing_floor_kw
@@ -228,17 +185,6 @@ def peak_alert_message(peak_kw, observed, previous_peak_kw, config):
     ]
     if previous_peak_kw is not None:
         lines.append("Previous notice this month: %.2f kW." % previous_peak_kw)
-    cost = peak_alert_cost_eur(peak_kw, config)
-    if cost is not None:
-        n = config.peak_averaging_months
-        lines.append(
-            "ESTIMATED cost effect: the billed average rises by about %.3f kW "
-            "(%.2f kW over the floor, spread over %d months), roughly EUR "
-            "%.2f over the %d months this peak stays in the average, at "
-            "EUR %.2f per kW per year. An estimate that assumes the month "
-            "would otherwise have stayed at the floor; not an invoice." % (
-                billed_average_increase_kw(over, config), over, n, cost, n,
-                config.capacity_rate_eur_per_kw_year))
     title = "Capacity peak %.2f kW is above the %.2f kW billing floor" % (
         peak_kw, floor)
     return title, " ".join(lines)

@@ -2,7 +2,7 @@
 
 Adapter behaviour runs through the `env` fixture of test_battery_planner (fake
 state/service/log); the pure decision and wording are tested on capacity.py.
-Expected figures are hand-derived: cost = (peak - floor) * rate / 12.
+Expected figures are hand-derived.
 """
 import json
 from dataclasses import replace
@@ -64,29 +64,15 @@ def test_due_uses_the_configured_floor(site_config):
     assert cap.peak_alert_due(3.1, "m", None, None, c) is True
 
 
-def test_cost_is_priced_on_the_rise_over_the_floor(site_config):
-    # (3.1 - 2.5) kW * 40 EUR/kW/yr / 12 = 2.00 EUR
-    assert cap.peak_alert_cost_eur(3.1, site_config) == pytest.approx(2.0)
-    c = replace(site_config, billing_floor_kw=3.0)
-    assert cap.peak_alert_cost_eur(3.1, c) == pytest.approx(0.1 * 40 / 12)
-
-
-def test_cost_omitted_when_no_rate(site_config):
-    c = replace(site_config, capacity_rate_eur_per_kw_year=0.0)
-    assert cap.peak_alert_cost_eur(3.1, c) is None
-    _, message = cap.peak_alert_message(3.1, "t", None, c)
-    assert "ESTIMATED" not in message and "EUR" not in message
-
-
-def test_message_carries_the_numbers_and_marks_the_estimate(site_config):
+def test_message_carries_the_numbers_and_no_cost_estimate(site_config):
     title, message = cap.peak_alert_message(
         3.1, "2026-09-30T14:35:00+02:00", None, site_config)
     assert "3.10 kW" in title and "2.50 kW" in title
     assert "3.10 kW" in message and "2.50 kW" in message
     assert "0.60 kW over" in message
     assert "2026-09-30T14:35:00+02:00" in message
-    assert "ESTIMATED" in message and "EUR 2.00" in message
-    assert "13 months" in message and "not an invoice" in message
+    assert "EUR" not in message and "ESTIMATED" not in message
+    assert "invoice" not in message and "months" not in message
     assert "Previous notice" not in message
 
 
@@ -123,7 +109,7 @@ def test_crossing_sends_exactly_one_alert_with_the_numbers(env):
     assert kw["title"] == "Capacity peak 3.10 kW is above the 2.50 kW billing floor"
     assert "now 3.10 kW" in kw["message"] and "floor of 2.50 kW" in kw["message"]
     assert "2026-09-30T14:35:00+02:00" in kw["message"]
-    assert "ESTIMATED" in kw["message"] and "EUR 2.00" in kw["message"]
+    assert "EUR" not in kw["message"] and "ESTIMATED" not in kw["message"]
     assert saved(env) == {"month": "2026-09", "peak_kw": 3.1}
     assert len(env.decisions()) == 1                 # the decision still ran
 
@@ -275,7 +261,7 @@ def test_message_uses_the_configured_floor(env):
     kw = mails(env)[0][2]
     assert "floor of 3.00 kW" in kw["message"] and "3.00 kW billing floor" in kw["title"]
     assert "2.50" not in kw["message"] and "2.50" not in kw["title"]
-    assert "EUR 1.33" in kw["message"]               # 0.4 * 40 / 12
+    assert "EUR" not in kw["message"]
 
 
 def test_alert_also_works_during_a_price_halt(env):

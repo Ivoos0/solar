@@ -180,43 +180,7 @@ def test_shave_never_below_floor(site_config):
     assert cap.shave_kw(s, site_config) == pytest.approx(0.5)
 
 
-# ---- T062 euros ----------------------------------------------------------
-
-def test_peak_increase_cost(site_config):
-    # avg rises 1/13 kW ; monthly fee 40/12 per kW ; stays 13 months:
-    # (1/13) * (40/12) * 13 = 3.3333 EUR
-    assert cap.peak_increase_cost_eur(1.0, site_config) == pytest.approx(
-        40.0 / 12.0)
-    c = cfg(site_config, capacity_rate_eur_per_kw_year=60.0)
-    assert cap.peak_increase_cost_eur(2.0, c) == pytest.approx(10.0)
-
-
-def test_peak_increase_cost_ignores_the_billing_floor(site_config):
-    # Pins the documented behaviour: the cost is linear in delta_kw and blind
-    # to the 2.5 kW floor. The caller must pass the floored difference.
-    assert site_config.billing_floor_kw == 2.5
-    floor = site_config.billing_floor_kw
-    # 1.0 -> 2.0 kW is entirely below the floor: billed rise is 0, but the raw
-    # delta of 1.0 kW is priced in full
-    assert cap.peak_increase_cost_eur(2.0 - 1.0, site_config) == pytest.approx(
-        40.0 / 12.0)
-    billed = max(floor, 2.0) - max(floor, 1.0)
-    assert billed == 0.0
-    assert cap.peak_increase_cost_eur(billed, site_config) == 0.0
-    # 2.0 -> 3.5 kW: only the 1.0 kW above the floor is billed
-    billed = max(floor, 3.5) - max(floor, 2.0)
-    assert cap.peak_increase_cost_eur(billed, site_config) == pytest.approx(
-        40.0 / 12.0)
-
-
-def test_averaging_window_from_config(site_config):
-    assert cap.billed_average_increase_kw(1.3, site_config) == pytest.approx(
-        0.1)
-    c = cfg(site_config, peak_averaging_months=6)
-    assert cap.billed_average_increase_kw(1.2, c) == pytest.approx(0.2)
-    # the months cancel in the total cost
-    assert cap.peak_increase_cost_eur(1.0, c) == pytest.approx(40.0 / 12.0)
-
+# ---- euros ---------------------------------------------------------------
 
 def test_arbitrage_value():
     assert cap.arbitrage_value_eur(2.0, 0.15) == pytest.approx(0.30)
