@@ -59,9 +59,9 @@ def test_full_parse_flattens():
     ("alerts__notify_service", "", "notify_service"),
     ("alerts__notify_service", "Gmail_Alert", "notify_service"),
     ("alerts__notify_service", "gmail-alert", "notify_service"),
-    ("alerts__notify_service", "notify.gmail_alert", "notify_service"),
+    ("alerts__notify_service", "notify.battery_alert", "notify_service"),
     ("alerts__notify_service", "gmail alert", "notify_service"),
-    ("alerts__notify_service", "gmail_alert\n", "notify_service"),
+    ("alerts__notify_service", "battery_alert\n", "notify_service"),
     ("alerts__notify_service", 5, "notify_service"),
     ("battery__max_charge_kw", 0, "max_charge_kw"),
     ("battery__max_discharge_kw", 0, "max_discharge_kw"),
@@ -189,8 +189,8 @@ def test_stay_under_percent_accepts_valid(v):
     assert cfg.stay_under_percent == v
 
 
-def test_notify_service_defaults_to_gmail_alert(site_config):
-    assert site_config.notify_service == "gmail_alert"
+def test_notify_service_defaults_to_battery_alert(site_config):
+    assert site_config.notify_service == "battery_alert"
 
 
 def test_notify_service_is_read_from_alerts_section():

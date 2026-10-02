@@ -967,7 +967,7 @@ def test_alert_uses_default_service_when_config_omits_it(env):
     os.utime(env.config_path, (bump, bump))
     env.state.set(mod.PRICE_ENTITY, "unavailable", {})
     env.run(T0)
-    assert len(env.service.of("notify", "gmail_alert")) == 1
+    assert len(env.service.of("notify", "battery_alert")) == 1
     assert env.service.of("notify", NOTIFY) == []
 
 
