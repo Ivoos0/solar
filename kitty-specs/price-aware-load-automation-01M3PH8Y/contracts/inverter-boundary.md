@@ -1,53 +1,65 @@
 # Contract: Inverter Boundary
 
 **Satisfies**: FR-019, FR-020, C-001, C-002, NFR-005, SC-009
-**File**: `pyscript/modules/inverter.py`
+**Files**: `pyscript/modules/inverter.py` (the boundary), `pyscript/modules/inverter_<type>.py` (drivers)
 
-**Location: `pyscript/modules/inverter.py`.** pyscript top-level script files cannot import each other (each runs in its own isolated global context); only code in `<config>/pyscript/modules/` is importable by other scripts, and modules may use pyscript features (`@pyscript_executor`, `log`). The adapter and peak guard therefore `import inverter`. (Found in the WP09 review; the original plan placed it at `pyscript/inverter.py`.)
+**Location: `pyscript/modules/`.** pyscript top-level script files cannot import each other (each runs in its own isolated global context); only code in `<config>/pyscript/modules/` is importable by other scripts, and modules may use pyscript features (`@pyscript_executor`, `log`). The adapter and peak guard therefore `import inverter`.
 
-**This mission**: records intent, transmits nothing.
+**Default behaviour**: `inverter.type: logging` records intent and transmits nothing. Other types are drop-in driver files; none is shipped.
 
-The interface defined here is what the eventual HF2211 Modbus implementation must satisfy. Its shape is therefore a decision with consequences well past this mission: it should express **intent**, not transport. No register numbers, no connection handles, no Modbus vocabulary — those belong inside a later implementation, behind this same signature.
+The boundary expresses **intent**, not transport. No register numbers, no connection handles, no Modbus vocabulary appear in `inverter.py`; those belong inside a driver.
 
-## Interface
+## Interface the adapters call (`inverter.py`)
 
 ```python
-def apply(action, target_power_kw, record):
-    """Carry out a decision.
+def apply(action, target_power_kw, record, log_path=DEFAULT_LOG_PATH,
+          inverter_type="logging", driver_dir=None):
+    """Log the decision, THEN hand the intent to the configured driver.
 
-    This mission: append `record` to the decision log and return.
-    Nothing is transmitted to the inverter.
-
-    action           -- "charge" | "discharge" | "export" | "idle"
-    target_power_kw  -- float, 0.0 when idle
-    record           -- DecisionRecord, already complete
-
-    Returns True when the intent was durably recorded.
+    Returns True when the decision line was durably recorded, False on any
+    refusal or logging failure. Never raises. Driver outcomes never change it.
     """
 
 
-def read_charge_percent():
-    """Current battery charge, 0-100.
+def read_charge(inverter_type="logging", driver_dir=None):
+    """Returns (percent, is_stub, marker).
 
-    This mission: returns a stubbed value (FR-007, C-003).
-    Later: reads the inverter over Modbus via the HF2211.
+    is_stub -- the value is a placeholder: the caller marks decisions soc_stubbed.
+    marker  -- None, or "inverter_driver_unavailable" / "inverter_read_failed":
+               the caller adds it to the decision's degraded list. percent is
+               then 50.0 and is_stub is True.
     """
 ```
 
+Both adapters pass `cfg.inverter_type` and their `CORE_DIR` as `driver_dir`, so the planner and the guard always select the driver from the same config value.
+
+## Interface a driver implements (`inverter_<type>.py`)
+
+```python
+SOC_IS_STUB = False                      # optional, default False
+
+def send(action, target_power_kw): ...   # True = accepted; False or raise = failed
+def read_charge_percent(): ...           # number, 0..100
+```
+
+`action` is `charge`, `discharge`, `export` or `idle`; power is >= 0 kW, 0.0 when idle. `inverter_logging.py` is the reference implementation and the copy-me template.
+
 ## Rules
 
-1. **Nothing is transmitted.** No socket is opened, no Modbus frame is built, no write is attempted. NFR-005 and SC-009 make the count of transmissions exactly zero, verifiable from this file's own records.
-2. **The planner never imports anything below this boundary.** The core does not know the HF2211 exists; the adapter knows only these two functions.
-3. **The stub is visible.** `read_charge_percent` returns a placeholder and the resulting decision is marked `soc_stubbed` (FR-027), so a nonsensical decision is traceable to the placeholder rather than to the rules.
-4. **`apply` is the only writer of the decision log**, which is why "record the intent" and "act on the intent" are one call rather than two — the log cannot drift from what was attempted.
-5. **File I/O lives here or in the adapter, never in the core** — and must be run off the event loop with `@pyscript_executor` (or `@pyscript_compile` plus `task.executor`; `@pyscript_compile` alone does NOT move work off the loop), since blocking I/O inside pyscript's interpreter runs in Home Assistant's event loop (`research.md` R-02).
+1. **The decision log line is always written, by `apply`, for every driver, and first.** The driver is called only after the line is durably on disk. If the line cannot be written, or `apply` refuses (action/power do not match the record), the driver is not called.
+2. **No driver outcome changes the record or the return value.** A driver that raises, times out (`DRIVER_TIMEOUT_SECONDS`, 10 s), returns `False`, lacks `send`/`read_charge_percent`, fails to import or does not exist is logged (`log.error`/`log.warning`) and nothing else happens. The cycle and the guard continue.
+3. **Unknown or broken driver is safe and visible.** Nothing is transmitted (log-only behaviour), `apply` logs an error on every call, and `read_charge` returns the 50.0 placeholder with `is_stub=True` and marker `inverter_driver_unavailable`, which lands in `degraded=`. A failed load is not cached, so a fixed file is picked up on the next call. An unusable reading (exception, timeout, not a number in 0..100, a bool) gives the same placeholder with `inverter_read_failed`.
+4. **The stub is visible.** `logging` sets `SOC_IS_STUB = True`; its decisions are marked `soc_stubbed` (FR-027). A driver that reads real hardware leaves the flag unset, and the marker disappears, which is itself the signal that the switch happened.
+5. **Drivers never run on the event loop.** `inverter.py` loads them with importlib inside a `@pyscript_executor` helper (private name `inverter_driver_<type>`, no `sys.path` entry, no bare alias) and calls them through another executor helper that applies the timeout in a daemon thread. A driver is ordinary CPython and must not use pyscript globals. Drivers are cached after a successful load; changing one needs a Home Assistant restart.
+6. **`apply` is the only writer of the decision log lines for decisions**, which is why "record the intent" and "act on the intent" are one call rather than two. The planner also appends its own HALT/RECOVERED/SKIP lines, through its own helper.
+7. **The planner never imports anything below this boundary.** The core does not know a driver exists; the adapters know only `apply` and `read_charge`.
+8. **File I/O lives here or in the adapter, never in the core**, run off the event loop with `@pyscript_executor` (`@pyscript_compile` alone does NOT move work off the loop; `research.md` R-02).
+9. **Concurrency.** The planner and the guard may call a driver at the same time from different threads; a driver serializes its own bus access.
 
-## Swapping in real control, later
+## Config
 
-Enabling real commands should touch this file and nothing else:
+`inverter.type` (default `logging`; missing, null or `none` mean `logging`; otherwise `[a-z0-9_]+`). See `user-config.md`. A non-`logging` driver transmits real commands and is the contributor's responsibility; README "Adding an inverter" holds the skeleton and the checklist, including the guard's FUTURE RISK (commanded discharge lowers the net offtake it reads; add-back and heartbeat needed before real control).
 
-- `apply` gains a Modbus write after the log append, ordered so the log records intent even if the write fails.
-- `read_charge_percent` reads a holding register instead of returning a stub.
-- The stub marker stops appearing in `degraded`, which is itself the signal that the switch happened.
+## Adding an inverter
 
-If a future change requires editing `pyscript/modules/`, the boundary was drawn in the wrong place.
+Add one file. `inverter.py`, the planner and the guard do not change.

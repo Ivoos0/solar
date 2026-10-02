@@ -196,3 +196,46 @@ def test_notify_service_defaults_to_gmail_alert(site_config):
 def test_notify_service_is_read_from_alerts_section():
     c = from_dict(base(alerts__notify_service="smtp_2_alerts"))
     assert c.notify_service == "smtp_2_alerts"
+
+
+# ---- inverter.type (selects pyscript/modules/inverter_<type>.py) --------------
+
+def test_inverter_type_defaults_to_logging(site_config):
+    assert site_config.inverter_type == "logging"
+
+
+@pytest.mark.parametrize("raw", [
+    {},                                  # no inverter section at all
+    {"inverter": None},                  # empty section
+    {"inverter": {}},
+    {"inverter": {"type": None}},        # `type:` left blank / null
+    {"inverter": {"type": "none"}},
+    {"inverter": {"type": "None"}},
+    {"inverter": {"type": "logging"}},
+])
+def test_inverter_type_nothing_or_none_means_logging(raw):
+    assert from_dict({**base(), **raw}).inverter_type == "logging"
+
+
+@pytest.mark.parametrize("name", ["alphaess", "alpha_ess2", "hf2211"])
+def test_inverter_type_accepts_driver_names(name):
+    assert from_dict(base(inverter__type=name)).inverter_type == name
+
+
+@pytest.mark.parametrize("value", [
+    "", " ", "AlphaESS", "alpha-ess", "alpha ess", "../etc/passwd", "a.b",
+    "alphaess\n", "inverter_alphaess.py", 5, True, ["alphaess"]])
+def test_inverter_type_rejects_bad_names(value):
+    with pytest.raises(ConfigError) as exc:
+        from_dict(base(inverter__type=value))
+    assert "inverter.type" in str(exc.value)
+
+
+def test_inverter_section_must_be_a_mapping():
+    with pytest.raises(ConfigError):
+        from_dict({**base(), "inverter": "alphaess"})
+
+
+def test_inverter_type_is_not_in_the_cache_fingerprint():
+    ref = from_dict(base()).fingerprint()
+    assert from_dict(base(inverter__type="alphaess")).fingerprint() == ref

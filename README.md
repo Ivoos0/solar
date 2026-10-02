@@ -9,9 +9,12 @@ Source: <https://github.com/Ivoos0/solar>
 
 ## Read this first: it decides and records, it does not control anything
 
-**In its current state this project commands nothing.** It makes a decision every five minutes and
-appends it to a log file (`decisions.log`). The inverter layer is deliberately stubbed
-(`pyscript/modules/inverter.py`): `apply()` writes the decision to the log and transmits nothing.
+**Out of the box this project commands nothing.** It makes a decision every five minutes and
+appends it to a log file (`decisions.log`). The default inverter driver is `logging`
+(`pyscript/modules/inverter_logging.py`): it transmits nothing, so the log is the whole effect.
+A different inverter is a drop-in driver file selected by `inverter.type` in your config (see
+[Choosing an inverter driver](#choosing-an-inverter-driver) and
+[Adding an inverter](#adding-an-inverter)); the decision is logged first, whatever the driver.
 There is no dashboard; the log is the only output.
 
 If you install it, **your battery will not start behaving differently.** Nothing is broken when
@@ -20,8 +23,9 @@ actually did, and a base to build real inverter control on.
 
 Two more things you should know before spending an evening on this:
 
-- **Battery state of charge is a stub.** The planner always assumes 50%. Every record carries
-  `degraded=soc_stubbed`. That is expected, not a fault.
+- **With the `logging` driver, battery state of charge is a stub.** The planner always assumes 50%.
+  Every record carries `degraded=soc_stubbed`. That is expected, not a fault. A driver that reads
+  the real charge removes the marker.
 - **Household usage history is not sourced yet.** The function that should provide it
   (`read_usage_history` in `pyscript/battery_planner.py`) returns an empty list, so the planner
   currently treats household consumption as zero and every record carries
@@ -205,7 +209,7 @@ hot-reload, but the core under `pyscript/modules/` is loaded natively by an exec
 The full schema, with comments and validation rules, is in
 `kitty-specs/price-aware-load-automation-01M3PH8Y/contracts/user-config.md`; the annotated example is
 `battery_planner/user_config.example.yaml`. Sections: `prices`, `battery`, `solar`,
-`capacity_tariff`, `usage`, `timing`, `alerts`, `timezone`. Two fields have no sensible default and
+`capacity_tariff`, `usage`, `timing`, `alerts`, `inverter`, `timezone`. Two fields have no sensible default and
 must be set:
 
 - `battery.capacity_kwh` (shipped as `CHANGE_ME`)
@@ -227,6 +231,29 @@ planner will not charge from the grid if the quarter-hour looks like passing 2.0
 month peak the limit is 2.4 kW. Peak shaving and the `ceiling=` value in the log still use the real
 ceiling, and `budget=` is the room left under the reduced charging level. Set `100` to charge right up
 to the ceiling.
+
+### Choosing an inverter driver
+
+```yaml
+inverter:
+  type: logging      # default. Nothing, or "none", means the same.
+```
+
+`inverter.type` is a lowercase name (letters, digits, underscore) that selects the file
+`pyscript/modules/inverter_<type>.py`. `logging` ships with the project and only logs. Any other
+value loads that driver, so `type: alphaess` means `pyscript/modules/inverter_alphaess.py`.
+
+**Any driver other than `logging` transmits real commands to a real inverter. What it does is the
+responsibility of whoever wrote it and whoever enabled it.** None is shipped, and the project does
+not test against hardware.
+
+Whatever the driver, the decision line is always written to `decisions.log` first. A driver that
+raises, times out, returns `False` or is missing never removes or changes that line and never
+crashes the planner or the guard. A type with no usable driver file is an error in the Home Assistant
+log on every cycle, nothing is transmitted (the same as `logging`), and decisions carry
+`degraded=inverter_driver_unavailable` (or `inverter_read_failed` when only the charge reading is
+unusable). Driver files are loaded once; after editing one, restart Home Assistant. A driver that
+failed to load is retried on the next cycle, so adding a missing file needs no restart.
 
 ### Confirming it works
 
@@ -278,9 +305,10 @@ Stated as facts, so you can tell what is deliberate and what is not done yet.
 
 Deliberate scope decisions (out of scope for this mission):
 
-- **It commands nothing.** No inverter control, no HF2211 or Modbus transport. Decisions are logged
-  only; the one place real transmission would be added is marked in `pyscript/modules/inverter.py`.
-- **Battery state of charge is a stub** (fixed at 50%); reading real hardware is out of scope.
+- **No inverter driver is shipped except `logging`.** No inverter control, no HF2211 or Modbus
+  transport. By default decisions are logged only; a driver for your inverter is a single file (see
+  [Adding an inverter](#adding-an-inverter)).
+- **Battery state of charge is a stub** (fixed at 50%) until a driver reads the real value.
 - **Predictive peak protection** is not implemented. The trajectory projects battery charge but not
   grid offtake, so protection is reactive.
 - **Only the battery is controlled.** No other loads, no solar curtailment, no change of supply
@@ -313,9 +341,60 @@ Not done yet (known, with a planned follow-up):
 - **Provider price coefficients:** `prices.*` in `user_config.yaml`. No code change.
 - **A different grid operator or tariff:** the capacity-tariff logic is in
   `pyscript/modules/capacity.py` and the `capacity_tariff` config block.
-- **Real inverter control:** `pyscript/modules/inverter.py`, `apply()` and `read_charge_percent()`.
-  Everything that would talk to the inverter belongs behind those two functions.
+- **Real inverter control:** add a driver file, see [Adding an inverter](#adding-an-inverter). You do
+  not edit `inverter.py`, the planner or the guard.
 - **Usage history:** `read_usage_history` in `pyscript/battery_planner.py`.
+
+### Adding an inverter
+
+A driver is one file, `pyscript/modules/inverter_<name>.py`, selected with `inverter.type: <name>`.
+It provides two functions and one optional flag. Copy `inverter_logging.py` and replace the bodies.
+Skeleton for a hypothetical `alphaess`:
+
+```python
+# pyscript/modules/inverter_alphaess.py
+SOC_IS_STUB = False            # optional, default False. True = the charge is a placeholder
+
+
+def send(action, target_power_kw):
+    """action: "charge" | "discharge" | "export" | "idle". Power in kW, >= 0, 0.0 when idle.
+    Return True when the inverter accepted it. Return False or raise when it did not."""
+    ...  # talk to your inverter here
+
+
+def read_charge_percent():
+    """Battery charge, 0 to 100. Anything else counts as a failed reading."""
+    ...
+```
+
+Then set `inverter.type: alphaess`, restart Home Assistant and watch the log. What the framework does
+for you: it writes the decision line before calling you; runs your code as ordinary Python in an
+executor thread (blocking network I/O is fine, the event loop is never blocked); gives each call
+10 seconds, after which it is treated as failed; catches every failure and logs it; and marks
+decisions `soc_stubbed` while `SOC_IS_STUB` is true. A driver is loaded under a private name; it is
+not on `sys.path`, so it can import the standard library and installed packages but not the other
+files in `pyscript/modules/`, and it cannot use pyscript names such as `log` or `state`.
+
+Checklist before you enable a real driver:
+
+- [ ] **Thread safety.** The planner (every cycle, whatever the action, including `idle`) and the peak
+      guard (only when its state changes) may call `send` at the same time from different threads.
+      Serialize access to your bus, for instance with a `threading.Lock`.
+- [ ] **Network timeouts of your own.** After 10 seconds the call is abandoned, but its thread keeps
+      running until it returns.
+- [ ] **Idempotent commands.** `send("discharge", 2.5)` may arrive again unchanged on the next cycle.
+      Some inverters also need a periodic re-send (heartbeat) or they fall back to their own mode;
+      the planner's every-cycle calls give you that, the guard's change-only calls do not.
+- [ ] **Guard feedback, FUTURE RISK.** The peak guard reads net grid offtake, and its own commanded
+      discharge lowers that reading. With real control the commanded power must be added back to the
+      reading, or the shave will switch on and off repeatedly. This is not implemented; do not enable
+      a real driver together with the capacity-tariff guard until it is.
+- [ ] **Failures are your call.** The framework only logs a failed `send`; it does not retry or fall
+      back. Decide what your inverter should do when commands stop arriving.
+- [ ] **Run `logging` first** and compare a week of logged decisions with what the battery should have
+      done before sending anything real.
+- [ ] Return the real charge from `read_charge_percent` and leave `SOC_IS_STUB` unset, or the
+      decisions stay marked `soc_stubbed`.
 
 The decision logic (`pyscript/modules/`) contains no Home Assistant code and is tested without it:
 

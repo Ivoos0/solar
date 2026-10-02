@@ -978,3 +978,85 @@ def test_alert_goes_to_the_configured_service_name(env):
     env.run(T0)
     calls = env.service.of("notify", NOTIFY)
     assert len(calls) == 1 and calls[0][2]["target"] == ["owner@example.com"]
+
+
+# ---- inverter.type: the planner selects the driver from config ---------------------
+
+_REAL_DRIVER = '''
+SOC_IS_STUB = False
+SENT = []
+def send(action, target_power_kw):
+    SENT.append((action, target_power_kw))
+    return True
+def read_charge_percent():
+    return 61.0
+'''
+
+
+def _use_driver(env, tmp_path, kind, source=_REAL_DRIVER):
+    d = tmp_path / "drv"
+    d.mkdir(exist_ok=True)
+    if source is not None:
+        (d / ("inverter_%s.py" % kind)).write_text(source, encoding="utf-8")
+    env.mod.CORE_DIR = str(d)             # core is already bound; drivers load here
+    env.write_config("inverter:\n  type: %s\n" % kind)
+
+
+@pytest.fixture(autouse=False)
+def _clean_drivers():
+    yield
+    for name in list(sys.modules):
+        if name.startswith("inverter_driver_"):
+            del sys.modules[name]
+
+
+def test_default_config_uses_logging_driver_and_stays_stubbed(env, _clean_drivers):
+    env.mod.CORE_DIR = str(MODULES)
+    env.run()
+    keys = fields_of(env.decisions()[0])
+    assert "soc_stubbed" in keys["degraded"]
+    assert "inverter_driver_unavailable" not in keys["degraded"]
+    assert env.log.by_level["error"] == []
+
+
+def test_configured_driver_gets_the_decision_and_clears_the_stub_marker(
+        env, tmp_path, _clean_drivers):
+    _use_driver(env, tmp_path, "realdrv")
+    env.run()
+    lines = env.decisions()
+    assert len(lines) == 1
+    keys = fields_of(lines[0])
+    assert "soc_stubbed" not in keys["degraded"]
+    assert keys["soc"].startswith("61")
+    sent = sys.modules["inverter_driver_realdrv"].SENT
+    assert sent == [(keys["action"], float(keys["power"].replace("kW", "")))]
+    assert env.log.by_level["error"] == []
+
+
+def test_raising_driver_still_logs_and_the_cycle_survives(
+        env, tmp_path, _clean_drivers):
+    _use_driver(env, tmp_path, "boom", _REAL_DRIVER.replace(
+        "    return True", "    raise OSError('bus down')"))
+    env.run()
+    assert len(env.decisions()) == 1
+    assert any("bus down" in m for m in env.log.by_level["error"])
+    assert not any("cycle failed" in m for m in env.log.by_level["error"])
+    env.run(T0 + STEP)                                    # next cycle runs too
+    assert len(env.decisions()) == 2
+
+
+def test_unknown_driver_falls_back_to_logging_with_marker_and_error(
+        env, tmp_path, _clean_drivers):
+    _use_driver(env, tmp_path, "nonexistent", source=None)
+    env.run()
+    lines = env.decisions()
+    assert len(lines) == 1
+    keys = fields_of(lines[0])
+    assert "inverter_driver_unavailable" in keys["degraded"]
+    assert "soc_stubbed" in keys["degraded"]
+    first_errors = [m for m in env.log.by_level["error"] if "NOT transmitting" in m]
+    assert len(first_errors) == 1
+    env.run(T0 + STEP)
+    assert len([m for m in env.log.by_level["error"]
+                if "NOT transmitting" in m]) == 2         # loud every cycle
+    assert not any("cycle failed" in m for m in env.log.by_level["error"])

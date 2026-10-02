@@ -93,15 +93,20 @@ class FakeLog:
 class FakeInverter:
     def __init__(self):
         self.calls = []
+        self.reads = []
         self.charge_percent = 50.0
+        self.marker = None
+        self.stub = True
 
     def apply(self, action, target_power_kw, record, *a, **k):
         decision.format_record(record)      # must always format
+        self.kwargs = k
         self.calls.append((action, target_power_kw, record))
         return True
 
-    def read_charge_percent(self):
-        return self.charge_percent
+    def read_charge(self, inverter_type="logging", driver_dir=None):
+        self.reads.append((inverter_type, driver_dir))
+        return self.charge_percent, self.stub, self.marker
 
 
 def _factory(registry, name):
@@ -978,7 +983,7 @@ class Log:
 
 calls = []
 stub = types.ModuleType("inverter")             # pyscript's own interpreted import
-stub.read_charge_percent = lambda: 50.0
+stub.read_charge = lambda *a, **k: (50.0, True, None)
 stub.apply = lambda action, power, record, *a, **k: calls.append((action, power)) or True
 sys.modules["inverter"] = stub
 builtins.pyscript_executor = lambda fn: fn
@@ -1086,3 +1091,39 @@ def test_lint_allows_comprehensions_and_native_key_callables():
     assert interpreter_violations(
         "a = [i for i in range(3)]\nb = {i for i in a}\nc = sorted(a, key=abs)"
     ) == []
+
+
+# ---- inverter.type: the guard selects the driver from the same config ----------
+
+def test_guard_passes_configured_type_and_driver_dir_to_the_boundary(make_guard):
+    g = make_guard(extra="inverter:\n  type: alphaess\n").at(12, 7, 30)
+    g.tick(**PEAK_ARGS)
+    assert g.inv.reads and g.inv.reads[0] == ("alphaess", str(MODULES))
+    assert g.inv.kwargs == {"inverter_type": "alphaess",
+                            "driver_dir": str(MODULES)}
+
+
+def test_guard_defaults_to_the_logging_driver(make_guard):
+    g = make_guard().at(12, 7, 30)
+    g.tick(**PEAK_ARGS)
+    assert g.inv.reads[0][0] == "logging"
+    assert g.inv.kwargs["inverter_type"] == "logging"
+
+
+def test_guard_driver_marker_lands_in_the_record_and_is_not_sticky(make_guard):
+    g = make_guard().at(12, 7, 30)
+    g.inv.marker = "inverter_driver_unavailable"
+    g.tick(**PEAK_ARGS)
+    assert "inverter_driver_unavailable" in g.discharges[0][2].degraded_inputs
+    g.inv.marker = None
+    g.tick(offtake="0.3", avg="0.4", peak="2.5")          # stop record
+    stop = g.inv.calls[-1][2]
+    assert stop.action == "idle"
+    assert "inverter_driver_unavailable" not in stop.degraded_inputs
+
+
+def test_guard_stub_flag_comes_from_the_driver(make_guard):
+    g = make_guard().at(12, 7, 30)
+    g.inv.stub = False
+    g.tick(**PEAK_ARGS)
+    assert "soc_stubbed" not in g.discharges[0][2].degraded_inputs

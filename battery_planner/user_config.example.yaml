@@ -76,4 +76,14 @@ alerts:
                                    # notifier in configuration.yaml (or one made in the UI)
   realert_minutes: 60
 
+# Which inverter driver to use. Selects pyscript/modules/inverter_<type>.py.
+# Decisions are ALWAYS logged first, whatever the driver.
+inverter:
+  type: logging                    # logging (default; nothing or "none" means the same):
+                                   #   log only, transmit nothing.
+                                   # Any other value loads that driver file, which sends
+                                   #   REAL COMMANDS to your inverter. You are responsible
+                                   #   for the driver you enable. Lowercase letters,
+                                   #   digits, underscore.
+
 timezone: Europe/Brussels
