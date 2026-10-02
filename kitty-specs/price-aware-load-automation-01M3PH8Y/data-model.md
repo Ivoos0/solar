@@ -171,6 +171,7 @@ The capacity-tariff position at this instant. Built by the adapter from meter an
 | `is_restored` | bool | — | True when a sensor was unavailable after a restart and has since recovered |
 | `average_mode` | str | — | Which semantics are in force: `running` or `accumulating` (FR-055) |
 | `mode_confidence` | str | — | `configured`, `detected`, or `assumed` while detection is still gathering samples (FR-058) |
+| `own_grid_charge_kw` | float | kW | Grid power the planner itself is commanding for charging right now; default `0.0`. Set by the adapter only when a non-`logging` driver transmits the previous grid-charge decision and it is still in effect (within 2 evaluation intervals); `0.0` otherwise. `offtake_kw` includes it, so it is subtracted to estimate household draw |
 
 **Derived, in `capacity.py`:**
 
@@ -178,13 +179,15 @@ The capacity-tariff position at this instant. Built by the adapter from meter an
 ceiling_kw   = max(billing_floor_kw, month_peak_kw)        # FR-044
 allowance    = ceiling_kw * 0.25                            # kWh permitted in a full window
 remaining_h  = (15 - elapsed_minutes) / 60
-budget_kw    = (allowance - window_energy_kwh) / remaining_h   # FR-045
+allowed_offtake_kw = (charging_allowance - window_energy_kwh) / remaining_h  # TOTAL offtake rate that lands the average on the charging ceiling
+household_kw = max(0, offtake_kw - own_grid_charge_kw)       # draw still to come, assumed constant
+budget_kw    = min(allowed_offtake_kw - household_kw, max_charge_kw)  # FR-045: CHARGE power left after household draw
 shave_kw     = max(0, projected_average_kw - ceiling_kw)       # FR-048
 ```
 
 **Invariants**:
 
-- `budget_kw` may be **negative**, meaning the window is already over the ceiling and no further grid draw is acceptable. V3 fires; it is not clamped to zero silently.
+- `budget_kw` may be **negative**, meaning the window is already over the charging level once household draw is counted and no further grid charging is acceptable. V3 fires; it is not clamped to zero silently.
 - `shave_kw` is zero whenever `offtake_kw <= billing_floor_kw` — there is no saving below the floor (FR-049, C-013).
 - As `elapsed_minutes` approaches 15, `remaining_h` approaches zero and `budget_kw` diverges. Clamp the result to `max_charge_kw` and treat a window with under one minute remaining as having no budget: a large number arising from division by a vanishing interval is arithmetic, not opportunity.
 
@@ -231,7 +234,7 @@ One per cycle. Twelve field groups, all mandatory (NFR-004) — an absent veto i
 | `duration_ms` | int | How long this cycle took (NFR-009), so NFR-001's budget is measurable from the log |
 | `running_average_kw` | float | Grid offtake average so far in this quarter-hour window (FR-052) |
 | `ceiling_kw` | float | The peak level being defended |
-| `budget_kw` | float | Grid power still available this window; negative when already over |
+| `budget_kw` | float | Grid CHARGE power still available this window after the household draw; negative when already over |
 | `vetoes_applied` | list[str] | `[]` rendered explicitly as "none" (FR-028) |
 | `selector` | str | S0–S6 |
 | `reasoning` | str | Why, in words |

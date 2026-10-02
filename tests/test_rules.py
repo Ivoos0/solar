@@ -45,13 +45,16 @@ STEP = timedelta(minutes=15)
 #             capped 5.0. offtake 1.0 <= floor -> shave 0.
 #   TIGHT     peak 2.5 -> allowance 0.625; energy 0.425: 0.2*6 = 1.2 kW.
 #   EXHAUSTED energy 0.7: (0.625-0.7)*6 = -0.45 (V3). Energy 0.625 -> 0.0.
+#   Household draw is subtracted from the budget (budget = allowed offtake
+#   rate - offtake), so the legacy budget figures below hold for offtake 0.0
+#   (grid() default). A peak-shaving state can never have charge budget left.
 #   SHAVE     offtake 4.0, energy 0.3: projected = 0.3 + 4.0/6 = 0.96667 kWh
 #             -> 3.867 kW avg > 2.5. needed = (0.96667-0.625)*6 = 2.05 kW,
 #             clamped to offtake-floor = 1.5 kW (<= max_discharge 5) -> 1.5.
-#             budget = (0.625-0.3)*6 = 1.95 kW (positive: V3 stays quiet).
+#             budget = (0.625-0.3)*6 - 4.0 = -2.05 kW (V3 fires).
 
 
-def grid(offtake=1.0, energy=0.1, peak=5.0, avg=1.2):
+def grid(offtake=0.0, energy=0.1, peak=5.0, avg=1.2):
     return capacity.GridState(
         offtake_kw=offtake, window_start=T0, window_energy_kwh=energy,
         elapsed_minutes=5.0, running_average_kw=avg, month_peak_kw=peak,
@@ -170,7 +173,7 @@ def test_v3_inactive_when_capacity_disabled(site_config):
 def test_v2_leaves_discharge_to_house_allowed(site_config):
     # Injection negative but a peak is forming: S0 discharges to the house.
     d = go(site_config, [(0.20, -0.05)] * 3, g=SHAVE)
-    assert d.vetoes_fired == ["V2"]
+    assert d.vetoes_fired == ["V2", "V3"]     # V3: household eats the allowance
     assert (d.selector, d.action, d.target_power_kw) == ("S0", "discharge", 1.5)
     assert d.suppressed == []
 
@@ -186,7 +189,7 @@ def test_s0_fires_with_exact_shave_power(site_config):
 
 def test_s0_does_not_fire_below_billing_floor(site_config):
     # offtake 2.0 <= floor 2.5 -> shave_kw 0.0 -> S1 gets it.
-    g = grid(offtake=2.0, energy=0.3, peak=2.5)
+    g = grid(offtake=2.0, energy=0.1, peak=2.5)    # budget 3.15 - 2.0 = 1.15
     d = go(site_config, [(-0.05, 0.02)] * 3, g=g)
     assert d.selector == "S1" and d.suppressed == []
 
@@ -198,13 +201,14 @@ def test_s0_tried_before_s1(site_config):
         "S0", "discharge", pytest.approx(1.5))
 
 
-def test_s0_vetoed_by_v1_falls_through_to_s1(site_config):
+def test_s0_vetoed_by_v1_and_v3_leaves_idle(site_config):
     d = go(site_config, [(-0.05, 0.02)] * 3, pct=10.0, g=SHAVE)
-    assert d.vetoes_fired == ["V1"]
-    assert d.suppressed == [("S0", "discharge", "V1")]
-    assert d.selector == "S1" and d.action == "charge"
-    # budget (0.625-0.3)*6 = 1.95 kW < max_charge 5 -> capped to 1.95
-    assert d.target_power_kw == pytest.approx(1.95)
+    assert d.vetoes_fired == ["V1", "V3"]
+    assert d.suppressed[0] == ("S0", "discharge", "V1")
+    assert ("S1", "charge", "V3") in d.suppressed
+    assert d.selector == "S6" and d.action == "idle"
+    # a shaving situation has no charge budget left: S1 cannot take over
+    assert d.target_power_kw == 0.0
 
 
 # ---- S1 -------------------------------------------------------------------
@@ -812,7 +816,7 @@ def test_v4_lets_solar_absorption_through(site_config):
 def test_v4_leaves_peak_shaving_alone(site_config):
     d = go(site_config, [FLAT] * 3, g=SHAVE, history=False)
     assert (d.selector, d.action, d.target_power_kw) == ("S0", "discharge", 1.5)
-    assert d.vetoes_fired == ["V4"]
+    assert d.vetoes_fired == ["V3", "V4"]
 
 
 def test_v4_renders_in_the_vetoes_field(site_config):
@@ -867,3 +871,35 @@ def test_percent_does_not_reduce_peak_shaving(site_config):
     assert (d.selector, d.action) == ("S0", "discharge")
     assert d.target_power_kw == pytest.approx(1.5)   # same as 100 %
     assert "2.50 kW ceiling" in d.reasoning           # real ceiling, not 2.0
+
+
+# ---- household draw reduces the clamp of every grid-charging selector -------
+HOUSEHOLD = grid(offtake=1.0, energy=0.425, peak=2.5)   # 1.2 allowed - 1.0 = 0.2
+
+
+def test_s1_clamps_to_budget_after_household_draw(site_config):
+    d = go(site_config, [(-0.05, 0.02)] * 2, g=HOUSEHOLD)
+    assert d.selector == "S1"
+    assert d.target_power_kw == pytest.approx(0.2)
+    assert "capped by grid budget 0.20 kW" in d.reasoning
+
+
+def test_s4_s5_clamp_to_budget_after_household_draw(site_config):
+    d = go(site_config, ARB, g=HOUSEHOLD)
+    assert d.selector == "S5"
+    assert d.target_power_kw == pytest.approx(0.2)
+    assert "capped by grid budget 0.20 kW" in d.reasoning
+
+
+def test_household_draw_beyond_allowance_fires_v3_and_blocks_charge(site_config):
+    g = grid(offtake=1.5, energy=0.425, peak=2.5)         # 1.2 - 1.5 < 0
+    d = go(site_config, [(-0.05, 0.02)] * 2, g=g)
+    assert "V3" in d.vetoes_fired and d.action != "charge"
+
+
+def test_s4_clamps_to_budget_after_household_draw(site_config):
+    d = go(site_config, S4_PRICES, now_i=1, pct=30.0, breach=4,
+           shortfall=S4_SHORT, g=HOUSEHOLD)
+    assert d.selector == "S4"
+    assert d.target_power_kw == pytest.approx(0.2)
+    assert "capped by grid budget 0.20 kW" in d.reasoning

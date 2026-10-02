@@ -270,7 +270,7 @@ margin for **grid charging only**: charging from the grid must stay under that p
 ceiling (this month's peak, never below `billing_floor_kw`). With the 2.5 kW floor and 80, the
 planner will not charge from the grid if the quarter-hour looks like passing 2.0 kW; with a 3.0 kW
 month peak the limit is 2.4 kW. Peak shaving and the `ceiling=` value in the log still use the real
-ceiling, and `budget=` is the room left under the reduced charging level. Set `100` to charge right up
+ceiling, and `budget=` is the grid charging power still available under the reduced charging level after the household's own draw (the planner never charges at a rate that, added to what the house is drawing, would push the quarter-hour above that level). Set `100` to charge right up
 to the ceiling.
 
 ### Choosing an inverter driver

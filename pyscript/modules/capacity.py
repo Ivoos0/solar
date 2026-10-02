@@ -30,6 +30,11 @@ class GridState:
     is_restored: bool
     average_mode: str = "accumulating"
     mode_confidence: str = "assumed"
+    # Grid power the planner itself is currently drawing to charge (kW): the
+    # last decision's grid-charge power, set by the adapter ONLY when a real
+    # (non-logging) driver transmits it and it is still in effect; else 0.0.
+    # offtake_kw includes it, so budget_kw subtracts it to find household draw.
+    own_grid_charge_kw: float = 0.0
 
 
 def window_start_of(now):
@@ -48,7 +53,8 @@ def normalise_average(reported_kw, elapsed_minutes, mode):
 
 def build_state(offtake_kw, window_energy_kwh, now, month_peak_kw, config,
                 is_restored=False, reported_average_kw=None,
-                average_mode=None, mode_confidence=None):
+                average_mode=None, mode_confidence=None,
+                own_grid_charge_kw=0.0):
     """Build a GridState.
 
     If reported_average_kw (the meter 1-0:1.4.0 figure) is given it is
@@ -70,7 +76,8 @@ def build_state(offtake_kw, window_energy_kwh, now, month_peak_kw, config,
         energy = window_energy_kwh
         running = energy / (eff / 60.0)
     return GridState(offtake_kw, start, energy, elapsed, running,
-                     month_peak_kw, is_restored, mode, conf)
+                     month_peak_kw, is_restored, mode, conf,
+                     own_grid_charge_kw)
 
 
 def ceiling_kw(state, config):
@@ -91,19 +98,38 @@ def _remaining_minutes(state):
     return WINDOW_MINUTES - state.elapsed_minutes
 
 
-def budget_kw(state, config):
-    """Grid power still drawable for CHARGING this window. May be negative;
-    capped above. Measured against charging_ceiling_kw (stay_under_percent of
-    the ceiling), so it is deliberately more cautious than the real ceiling.
+def household_draw_kw(state):
+    """Estimated household draw: metered offtake minus the planner's own grid
+    charge, never below 0 (offtake_kw is metered at the connection point and
+    so includes whatever the planner is charging from the grid)."""
+    return max(0.0, state.offtake_kw - state.own_grid_charge_kw)
 
-    window_energy_kwh is metered at the connection point, so it already
-    includes household draw - nothing else is subtracted.
-    """
+
+def allowed_offtake_kw(state, config):
+    """TOTAL grid offtake rate (household + charging) that would land the
+    quarter-hour average exactly on charging_ceiling_kw at the window end.
+    May be negative; uncapped. 0.0 in the last NO_BUDGET_MINUTES."""
     remaining_min = _remaining_minutes(state)
     if remaining_min < NO_BUDGET_MINUTES:
         return 0.0
     allowance = charging_ceiling_kw(state, config) * WINDOW_HOURS
-    budget = (allowance - state.window_energy_kwh) / (remaining_min / 60.0)
+    return (allowance - state.window_energy_kwh) / (remaining_min / 60.0)
+
+
+def budget_kw(state, config):
+    """Grid CHARGE power still available after the household's own draw:
+    allowed_offtake_kw - household_draw_kw, capped above at max_charge_kw.
+    May be negative (V3 fires at <= 0). Measured against charging_ceiling_kw
+    (stay_under_percent of the ceiling), so it is deliberately more cautious
+    than the real ceiling. 0.0 in the last NO_BUDGET_MINUTES.
+
+    window_energy_kwh is metered at the connection point (draw so far, already
+    included); household_draw_kw covers the draw still to come, assumed to
+    continue at its current rate.
+    """
+    if _remaining_minutes(state) < NO_BUDGET_MINUTES:
+        return 0.0
+    budget = allowed_offtake_kw(state, config) - household_draw_kw(state)
     return min(budget, config.max_charge_kw)
 
 

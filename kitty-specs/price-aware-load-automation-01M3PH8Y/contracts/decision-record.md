@@ -42,7 +42,7 @@ Every field appears in **every** record. An inapplicable value is written explic
 | `took` | `NNNms` | Cycle duration (NFR-009); makes NFR-001's 5-second budget checkable from the log |
 | `avg` | `N.NNkW` | Running quarter-hour average grid offtake (FR-052) |
 | `ceiling` | `N.NNkW` | The peak level being defended — `max(2.5, month peak)` |
-| `budget` | `N.NNkW` | Grid power still available for **charging** this window, measured against `capacity_tariff.stay_under_percent` of the ceiling (80 % of 2.5 kW = 2.0 kW by default), so it is lower than the room under the real ceiling. **Negative** when the window is already over that charging level |
+| `budget` | `N.NNkW` | Grid power still available for **charging** this window after the household's own estimated draw (allowed total offtake rate minus household draw, capped at `max_charge_kw`), measured against `capacity_tariff.stay_under_percent` of the ceiling (80 % of 2.5 kW = 2.0 kW by default), so it is lower than the room under the real ceiling. **Negative** when the window is already over that charging level |
 | `vetoes` | comma-separated \| `none` | FR-028 — a veto that suppressed a proposal, with what it suppressed |
 | `selector` | `S0`–`S6` | Which one fired |
 | `why` | quoted free text | The values that made the condition true |

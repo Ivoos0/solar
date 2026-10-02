@@ -288,7 +288,8 @@ def _grid(energy=0.1, peak=5.0, avg=1.2, offtake=1.0):
 
 
 def test_real_pipeline_export_record(site_config):
-    # elapsed 1 min -> 14 min remain; budget = (1.25-0.1)/(14/60) = 4.93 kW
+    # elapsed 1 min -> 14 min remain; allowed offtake (1.25-0.1)/(14/60) =
+    # 4.93 kW, minus household 1.0 kW (offtake) -> budget 3.93 kW
     plist = [(0.2140, 0.1890), (0.30, 0.05), (0.30, 0.05), (0.30, 0.05)]
     traj, d, r = _pipeline(site_config, 90.0, _grid(), plist)
     assert d.selector == "S3" and d.action == "export"
@@ -306,7 +307,7 @@ def test_real_pipeline_export_record(site_config):
     assert kv["end_soc"] == "9.80kWh"
     assert kv["took"] == "84ms"
     assert kv["avg"] == "1.20kW" and kv["ceiling"] == "5.00kW"
-    assert kv["budget"] == "4.93kW"
+    assert kv["budget"] == "3.93kW"
     assert kv["vetoes"] == "none" and kv["selector"] == "S3"
     assert kv["degraded"] == "soc_stubbed" and kv["source"] == "planner"
     assert "spill ahead 0.80 kWh" in kv["why"]
@@ -334,7 +335,7 @@ def test_real_pipeline_capped_grid_charge_reports_both_powers(site_config):
     # Negative consumption price -> S1 grid charge; tight budget caps it.
     plist = [(-0.05, 0.10), (0.30, 0.05), (0.30, 0.05), (0.30, 0.05)]
     traj, d, r = _pipeline(site_config, 50.0,
-                           _grid(energy=0.5, peak=2.5), plist,
+                           _grid(energy=0.5, peak=2.5, offtake=0.0), plist,
                            solar=(0.0, 0.0, 0.0, 0.0))
     assert d.selector == "S1" and d.action == "charge"
     kv = fields_of(decision.format_record(r))

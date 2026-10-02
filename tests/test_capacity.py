@@ -123,14 +123,14 @@ def test_budget_last_allowed_minute(site_config):
                          site_config) == pytest.approx(3.0)
 
 
-def test_budget_no_double_subtraction(site_config):
+def test_budget_subtracts_household_draw_once(site_config):
     # Household draws 4 kW steadily: 7.5 min -> 0.5 kWh already IN
     # window_energy (metered at the connection point).
-    # Correct: (1.0 - 0.5)/0.125 = 4.0 kW.
-    # TRAP: subtracting offtake (4.0) again would give 0.0.
-    b = cap.budget_kw(state(offtake=4.0, energy=0.5, peak=4.0), site_config)
-    assert b == pytest.approx(4.0)
-    assert b != pytest.approx(0.0)
+    # Total allowed rate (1.0 - 0.5)/0.125 = 4.0 kW; the house keeps drawing
+    # 4.0 kW, so nothing is left for charging.
+    s = state(offtake=4.0, energy=0.5, peak=4.0)
+    assert cap.allowed_offtake_kw(s, site_config) == pytest.approx(4.0)
+    assert cap.budget_kw(s, site_config) == pytest.approx(0.0)
 
 
 # ---- T056 shave ----------------------------------------------------------
@@ -142,8 +142,9 @@ def test_shave_worked_scenario(site_config):
     assert s.running_average_kw == pytest.approx(6.0)
     assert cap.ceiling_kw(s, site_config) == 4.0
     # allowance 1.0 ; remaining 10 min = 1/6 h
-    # budget (1.0-0.5)/(1/6) = 3.0
-    assert cap.budget_kw(s, site_config) == pytest.approx(3.0)
+    # allowed offtake (1.0-0.5)/(1/6) = 3.0 ; household 6.0 -> budget -3.0
+    assert cap.allowed_offtake_kw(s, site_config) == pytest.approx(3.0)
+    assert cap.budget_kw(s, site_config) == pytest.approx(-3.0)
     # projected 0.5 + 6*(1/6) = 1.5 kWh -> avg 6.0 > 4.0
     # shave (1.5-1.0)/(1/6) = 3.0 ; offtake becomes 3.0 (>= floor 2.5)
     # check: 0.5 + 3.0/6 = 1.0 kWh -> avg 4.0

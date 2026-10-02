@@ -1255,3 +1255,134 @@ def test_halt_cause_names_entity_when_unavailable(env):
     env.state.set(PRICE_ENTITY, "unavailable", {})
     env.run()
     assert "price entity %s unavailable" % PRICE_ENTITY in env.lines()[0]
+
+
+# ---- own_grid_charge_kw (household draw in the grid-charge budget) ----------
+
+OFFTAKE_ENTITY = "sensor.slimmelezer_power_consumed"
+
+
+def _real_driver(env, name="fakeinv"):
+    """A non-logging driver in its own dir; the adapter reads CORE_DIR."""
+    d = env.tmp / "drivers"
+    d.mkdir(exist_ok=True)
+    (d / ("inverter_%s.py" % name)).write_text(
+        "SOC_IS_STUB = False\n"
+        "def send(action, target_power_kw):\n    return True\n"
+        "def read_charge_percent():\n    return 40.0\n", encoding="utf-8")
+    env.mod.CORE_DIR = str(d)
+    env.write_config("inverter:\n  type: %s\n"
+                     "capacity_tariff:\n  quarter_hour_average_mode: running\n"
+                     "  stay_under_percent: 80\n" % name)
+
+
+def _charge_at_budget(env):
+    """Wrap rules.decide: remember the grid it saw, always charge at budget."""
+    seen = []
+    cap = env.mod.capacity
+    rules = env.mod.rules
+    real = rules.decide
+
+    def fake(traj, price_map, bat, grid, cfg, now, **kw):
+        d = real(traj, price_map, bat, grid, cfg, now, **kw)
+        seen.append(grid)
+        kwh = min(cap.budget_kw(grid, cfg), cfg.max_charge_kw)
+        if kwh <= 0:
+            return d
+        from dataclasses import replace
+        return replace(d, action="charge", target_power_kw=kwh,
+                       selector="S1", charge_source="grid", reasoning="forced")
+    rules.decide = fake
+    return seen
+
+
+def test_own_grid_charge_is_zero_with_logging_driver(env):
+    seen = _charge_at_budget(env)
+    env.write_config("capacity_tariff:\n  quarter_hour_average_mode: running\n")
+    env.state.set(OFFTAKE_ENTITY, "1.5", {"unit_of_measurement": "kW"})
+    env.run(T0)
+    env.run(T0 + STEP)
+    assert len(seen) == 2
+    assert seen[0].own_grid_charge_kw == 0.0
+    assert seen[1].own_grid_charge_kw == 0.0
+
+
+def test_own_grid_charge_equals_last_grid_charge_with_real_driver(env):
+    _real_driver(env)
+    seen = _charge_at_budget(env)
+    env.state.set(OFFTAKE_ENTITY, "1.5", {"unit_of_measurement": "kW"})
+    env.run(T0)
+    assert seen[0].own_grid_charge_kw == 0.0          # nothing commanded yet
+    first_kw = env.mod._last_grid_charge[1]
+    assert first_kw > 0
+    env.run(T0 + STEP)
+    assert seen[1].own_grid_charge_kw == pytest.approx(first_kw)
+
+
+def test_own_grid_charge_expires_after_two_intervals(env):
+    _real_driver(env)
+    seen = _charge_at_budget(env)
+    env.state.set(OFFTAKE_ENTITY, "1.5", {"unit_of_measurement": "kW"})
+    env.run(T0)
+    env.run(T0 + timedelta(minutes=11))                 # > 2 x 5 min
+    assert seen[1].own_grid_charge_kw == 0.0
+
+
+def test_non_grid_decision_clears_own_grid_charge(env):
+    _real_driver(env)
+    _charge_at_budget(env)
+    env.state.set(OFFTAKE_ENTITY, "1.5", {"unit_of_measurement": "kW"})
+    env.run(T0)
+    assert env.mod._last_grid_charge is not None
+    env.mod.rules.decide = env.mod.rules.decide.__closure__[0].cell_contents \
+        if False else env.mod.rules.decide
+    env.mod._remember_grid_charge(
+        type("D", (), {"action": "idle", "charge_source": None,
+                       "target_power_kw": 0.0})(), T0)
+    assert env.mod._last_grid_charge is None
+
+
+def test_real_driver_budget_is_stable_across_cycles(env):
+    # Constant household 1.5 kW. With a real driver the metered offtake is
+    # household + the charge commanded last cycle; the budget must come out
+    # exactly as if only the household were drawing (no every-other-cycle
+    # oscillation), and the planner keeps charging every cycle.
+    _real_driver(env)
+    seen = _charge_at_budget(env)
+    cap = env.mod.capacity
+    house = 1.5
+    powers = []
+    for i in range(3):
+        own = env.mod._last_grid_charge[1] if env.mod._last_grid_charge else 0.0
+        env.state.set(OFFTAKE_ENTITY, str(house + own),
+                      {"unit_of_measurement": "kW"})
+        env.run(T0 + i * STEP)
+        g = seen[-1]
+        reference = cap.GridState(
+            house, g.window_start, g.window_energy_kwh, g.elapsed_minutes,
+            g.running_average_kw, g.month_peak_kw, g.is_restored)
+        cfg = env.mod._config
+        assert cap.budget_kw(g, cfg) == pytest.approx(
+            cap.budget_kw(reference, cfg))
+        powers.append(env.mod._last_grid_charge[1])
+    assert all(p > 0 for p in powers)
+
+
+def test_real_driver_without_own_correction_would_oscillate(env):
+    # Documents the failure the correction prevents: household 1.5 kW only,
+    # budget with the raw (charge-inclusive) offtake is strictly smaller.
+    _real_driver(env)
+    seen = _charge_at_budget(env)
+    cap = env.mod.capacity
+    env.state.set(OFFTAKE_ENTITY, "1.5", {"unit_of_measurement": "kW"})
+    env.run(T0)
+    first_kw = env.mod._last_grid_charge[1]
+    env.state.set(OFFTAKE_ENTITY, str(1.5 + first_kw),
+                  {"unit_of_measurement": "kW"})
+    env.run(T0 + STEP)
+    g = seen[-1]
+    naive = cap.GridState(
+        g.offtake_kw, g.window_start, g.window_energy_kwh, g.elapsed_minutes,
+        g.running_average_kw, g.month_peak_kw, g.is_restored)
+    cfg = env.mod._config
+    assert cap.budget_kw(naive, cfg) < cap.budget_kw(g, cfg)
