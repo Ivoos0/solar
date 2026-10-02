@@ -77,8 +77,8 @@ Resolved ambiguities / documented readings
   cheapest N" includes ties with the N-th cheapest price. S4 and S5 need
   headroom > 0.
 * Every grid-charging selector (S1, S4, S5) clamps to budget_kw
-  (capacity.budget_kw, capped there at max_charge_kw) and says so when the cap
-  bit. budget_kw is 0.0 in the last minute of a window (WP11), so V3 then
+  (capacity.budget_kw: charge power left after the household draw, capped there
+  at max_charge_kw) and says so when the cap bit. budget_kw is 0.0 in the last minute of a window (WP11), so V3 then
   forbids grid charging; that is WP11 semantics, not re-derived here.
 * If the current block has no published price, every price selector (S1-S5)
   is skipped and V2 cannot fire; S0 and S6 still work.

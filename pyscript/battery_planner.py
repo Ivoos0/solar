@@ -143,6 +143,7 @@ _mode_samples = []
 _hist_last = None                     # history.Snapshot at the last boundary
 _hist_loaded = False                  # last_snapshot.json read once per process
 _hist_warned = {}                     # warning kind -> last time logged
+_last_grid_charge = None              # (local time, kW) of the last recorded grid-charge decision
 
 
 def _now():
@@ -691,6 +692,25 @@ def _usage(cfg, local, span_start, span_end, markers):
 
 # ---- grid state ----------------------------------------------------------------
 
+def _own_grid_charge_kw(cfg, local):
+    """Grid power this planner is itself drawing right now (kW), else 0.0.
+
+    Non-zero only when a real driver (not "logging", which transmits nothing)
+    was handed the previous decision, that decision was a grid charge, and it
+    is at most 2 evaluation intervals old (a skipped cycle or halt must not
+    leave a stale figure behind). The metered offtake includes this charge;
+    capacity.budget_kw subtracts it to get household draw, so the budget does
+    not shrink by the planner's own charging (no every-other-cycle flapping).
+    """
+    if cfg.inverter_type == "logging" or _last_grid_charge is None:
+        return 0.0
+    when, kw = _last_grid_charge
+    age = (local - when).total_seconds()
+    if age < 0 or age > 2 * cfg.evaluation_interval_minutes * 60:
+        return 0.0
+    return kw
+
+
 def _grid_state(cfg, local):
     """capacity.GridState, or None (capacity off, or a sensor is unreadable)."""
     global _mode_samples
@@ -708,7 +728,17 @@ def _grid_state(cfg, local):
     verdict = capacity.detect_average_mode(_mode_samples, cfg)
     return capacity.build_state(
         offtake, 0.0, local, peak, cfg, reported_average_kw=reported,
-        average_mode=verdict.mode, mode_confidence=verdict.confidence)
+        average_mode=verdict.mode, mode_confidence=verdict.confidence,
+        own_grid_charge_kw=_own_grid_charge_kw(cfg, local))
+
+
+def _remember_grid_charge(d, local):
+    """Note a recorded decision's grid-charge power for the next cycle."""
+    global _last_grid_charge
+    if d.action == "charge" and d.charge_source == "grid":
+        _last_grid_charge = (local, d.target_power_kw)
+    else:
+        _last_grid_charge = None
 
 
 def _suppress_grid_charge(d, veto, why):
@@ -786,6 +816,8 @@ def _cycle(now):
                           inverter_type=cfg.inverter_type,
                           driver_dir=CORE_DIR):
         log.error("battery_planner: decision could not be recorded")  # noqa: F821
+    else:
+        _remember_grid_charge(d, local)
     if took > SLOW_CYCLE_MS:
         log.warning(f"battery_planner: slow cycle {took}ms")  # noqa: F821
     _record_history(cfg, now, price_map, solar, zero_fallback,

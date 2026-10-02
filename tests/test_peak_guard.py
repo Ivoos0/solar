@@ -239,7 +239,9 @@ def test_forming_peak_discharges_once_with_guard_record(make_guard):
     assert action == "discharge" and power == pytest.approx(expected)
     assert rec.source == "guard" and rec.selector == "S0"
     assert rec.target_power_kw == pytest.approx(expected)
-    assert rec.vetoes_applied == []
+    # a forming peak leaves no charge budget after the household draw (V3
+    # forbids grid charging only; the guard never charges)
+    assert rec.vetoes_applied == ["V3"]
     assert "soc_stubbed" in rec.degraded_inputs
     line = decision.format_record(rec)
     assert "source=guard" in line and "selector=S0" in line
@@ -289,7 +291,7 @@ def test_battery_at_reserve_is_vetoed_by_v1(make_guard):
     action, power, rec = g.inv.calls[0]
     assert action == "idle" and power == 0.0
     assert rec.source == "guard" and rec.selector == "S0"
-    assert rec.vetoes_applied == ["V1(suppressed S0 discharge)"]
+    assert rec.vetoes_applied == ["V1(suppressed S0 discharge)", "V3"]
     assert "peak is allowed to form" in rec.reasoning
     assert g.st.values[SHAVING] == "off"
     # same window again: recorded once, not per tick
