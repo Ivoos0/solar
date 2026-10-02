@@ -2,9 +2,33 @@
 # Every value that differs between installations lives here and nowhere else.
 
 # Provider price coefficients. Consumption and injection are never symmetric.
+#
+# CAVEAT - the consumption price must be ALL-IN. The planner compares it with
+# injection prices (S5) and tests it against zero (S1). Your supplier line
+# (market x multiplier + offset) is NOT what you pay per kWh: Belgian bills add
+# per-kWh network costs and taxes that apply to every kWh taken from the grid,
+# plus VAT. Leave them out and "buy now, export later" and "paid to charge"
+# look profitable when they are not. Fold them into the offset:
+#
+#   fees per kWh = (annual EUR of each per-kWh bill line) / (annual kWh offtake)
+#   all-in price = (market x m + o + fees) x (1 + VAT)
+#   multiplier   = m x (1 + VAT)
+#   offset       = (o + fees) x (1 + VAT)
+#
+# Per-kWh lines on a Fluvius Imewo bill for 2025-26 (EUR/kWh, VAT excluded;
+# YOUR distribution operator and year differ - compute your own from your bill):
+#   green certificates 0.0110, CHP certificates 0.0039, distribution 0.0575,
+#   energy contribution 0.0019, excise 0.0475  ->  fees = 0.1218
+# Not per-kWh, so NOT part of the offset: data management (fixed) and the
+# capacity tariff (billed on your peak; see capacity_tariff.rate_eur_per_kw_year).
+# Worked example with m 1.07, o 0.007 and 6 % VAT:
+#   multiplier 1.07 x 1.06 = 1.1342, offset (0.007 + 0.1218) x 1.06 = 0.1366
+# Check whether your supplier coefficients already include VAT before applying it.
+# Injection: private households are normally not charged VAT or these fees on
+# injection, so the injection coefficients below stay as the supplier states.
 prices:
-  consumption_multiplier: 1.07
-  consumption_offset: 0.007
+  consumption_multiplier: 1.07    # supplier coefficient only; see the caveat above
+  consumption_offset: 0.007       # supplier coefficient only; see the caveat above
   injection_multiplier: 0.94
   injection_offset: -0.011      # negative: injection price goes negative while
                                 # the market price is still positive
@@ -47,7 +71,11 @@ solar:
 capacity_tariff:
   enabled: true
   billing_floor_kw: 2.5         # no saving below this
-  rate_eur_per_kw_year: 40.0    # CHECK YOUR FLUVIUS BILL - revised annually
+  rate_eur_per_kw_year: 40.0    # CHECK YOUR FLUVIUS BILL - revised annually.
+                                # rate = capacity tariff EUR / billed peak kW on the
+                                # bill (EUR per kW per year); add VAT if you want the
+                                # all-in cost (the 2025-26 Imewo rate was about 53.40
+                                # excl. VAT, so 40.0 here is a generic placeholder)
   guard_interval_seconds: 30
   stay_under_percent: 80        # > 0 and <= 100. Charging from the grid must
                                 # stay under this percentage of the ceiling
