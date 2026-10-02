@@ -195,6 +195,49 @@ time. If it does not (wrong name, notifier not loaded, restart pending), the err
 `ServiceNotFound`) is logged as an alert-send failure, the decision record shows `alerted=none`, and
 the send is retried on the next cycle. The halt itself still proceeds.
 
+### Capacity-tariff e-mails: a warning before, a notice after
+
+Two optional e-mails use the same notifier as the halt alert. Both read the thresholds from
+`user_config.yaml`; nothing is hardcoded to 2.5 kW.
+
+**Notice after (`alerts.peak_enabled`, default on).** The Belgian capacity tariff bills the highest
+quarter-hour average of each month, with a floor (`capacity_tariff.billing_floor_kw`, default 2.5).
+Once this month's peak as reported by the meter (`capacity_tariff.month_peak_sensor`, 1-0:1.6.0)
+goes strictly above that floor, you start paying more. The planner checks the sensor every cycle and
+sends ONE e-mail for the first crossing in a calendar month (local time, `timezone`), and one more
+each time the peak rises to a new value at least 0.05 kW (`PEAK_ALERT_MIN_STEP_KW` in
+`pyscript/modules/capacity.py`) above the last one mailed. An unchanged peak is never repeated, and
+a new month starts afresh (the meter resets its monthly register, so a lower peak then is fine). The
+mail gives the peak, the floor, when the planner first saw it and an **estimated** cost effect, and
+it needs capacity logic enabled and a readable sensor. It works during a price halt too.
+This is a notice, not a prevention: the meter only reports a new maximum when the quarter-hour has
+completed, so it arrives after the peak is set. The prevention is the peak guard.
+
+*Interpretation.* "Goes above 2.5" was read as the month peak passing `billing_floor_kw`. The cost
+estimate uses `capacity.peak_increase_cost_eur` on the rise over the floor, assuming the month would
+otherwise have stayed at the floor and that the other months in the averaging window are unchanged.
+It is the cost across the `capacity_tariff.peak_averaging_months` months the peak stays in the
+average (about a year at the default 13), at `rate_eur_per_kw_year`. It is an estimate, not an
+invoice, and is left out when no rate is configured.
+
+The last mailed `(month, peak)` is kept in `<ha-config>/battery_planner/state/peak_alert.json`, so a
+restart does not repeat a notice. If that file is missing or unreadable the planner treats it as
+"nothing sent yet" and so may mail once for an old peak after a restart (at most once per start).
+A failed send is logged and retried on the next cycle; it is only recorded after it succeeded.
+
+**Warning before (`alerts.peak_warning_enabled`, default on).** The peak guard (every ~30 s) projects
+this quarter-hour's average from the energy so far and the current offtake, the same projection it
+uses to shave. When the projection exceeds the ceiling (this month's peak, never below the billing
+floor) on `alerts.peak_warning_ticks` consecutive evaluations (default 2, at least ~20 s apart; 1
+warns on the first), it e-mails a PREDICTION: projected average, ceiling, time left in the
+quarter-hour, current offtake and what the guard is doing (shaving at some kW, or unable to shave
+because the battery is at its reserve, plus notes when the battery reading is a stub or the inverter
+driver only logs). Noise control: not in the first minute of a quarter-hour nor in its last minute,
+at most one warning per quarter-hour, at most one per `alerts.peak_warning_min_interval_minutes`
+(default 60; kept in memory, so a restart forgets it), and a failed send is retried on the next tick.
+A warning can turn out wrong (the load may drop), and one that is right does not mean you were
+billed. Neither e-mail ever changes a decision.
+
 ### File layout on the Home Assistant side
 
 ```
@@ -209,6 +252,7 @@ the send is retried on the next cycle. The halt itself still proceeds.
     user_config.yaml          # created once from the example, never overwrite
     decisions-YYYY-MM-DD.log  # generated, one file per local day
     cache/                    # generated
+    state/peak_alert.json     # generated, last month-peak notice sent
     history/                  # generated, energy history (never deleted by the planner)
 ```
 
@@ -338,6 +382,9 @@ configured, `usage_history_unavailable`). If the peak guard is shaving a peak, i
 - **Price outage:** no decisions are made. A `HALT` line is written to the log each cycle, one alert
   is sent on entry and then at most one per `alerts.realert_minutes`, and a `RECOVERED` line is
   written when prices return.
+- **Capacity e-mails:** a warning before a predicted crossing (peak guard) and a notice after the
+  month peak passes the billing floor (planner); see
+  [Capacity-tariff e-mails](#capacity-tariff-e-mails-a-warning-before-a-notice-after).
 - **Forecast outage:** solar is treated as zero, the record is marked, and a bounded number of
   refresh attempts are made. It does not halt.
 - **Peak guard** (`pyscript/peak_guard.py`): every ~30 seconds and on each change of the offtake

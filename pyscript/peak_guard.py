@@ -143,6 +143,15 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   pyscript/modules/inverter.py are interpreted; a test lints this file.
 * Config is loaded with a ~20-line copy of the planner adapter loader (WP10).
   Duplication is accepted for now; keep the two in step.
+* Predictive warning (alerts.peak_warning_enabled): after the shave decision
+  each evaluation calls _predictive_warning, which asks capacity.peak_warning_due
+  whether the projected window average has exceeded the ceiling on
+  alerts.peak_warning_ticks (default 2) consecutive evaluations (see that function for the full rules) and then e-mails ONE
+  warning per window, rate-limited by alerts.peak_warning_min_interval_minutes
+  (memory only: a restart forgets it). The sender is a thin local _notify (a
+  pyscript script cannot import the planner's; native code cannot reach
+  `service`); the rules and wording are shared in capacity.py. It never changes
+  the shave decision and never raises.
 * All file I/O goes through @pyscript_executor helpers (research.md R-02).
 """
 import math
@@ -202,6 +211,7 @@ _flags = {
     "stale_window": None,  # window a stale-average WARNING was already logged
     "stale_info_window": None,  # window a low stale-average INFO was logged
     "stale_episode": False,  # a stale average was seen and has not refreshed yet
+    "peak_warn": {},       # capacity.peak_warning_due memory (in memory only)
 }
 
 
@@ -349,6 +359,56 @@ def _read_sensor(entity):
     stamp = (_as_datetime(getattr(raw, "last_reported", None))
              or _as_datetime(getattr(raw, "last_updated", None)))
     return value * factor, stamp, None
+
+
+def _notify(cfg, title, message):
+    """Send one e-mail through the configured notify service (the same call
+    shape as battery_planner._notify; a pyscript script cannot import it and
+    native code cannot reach `service`, so this thin wrapper is duplicated).
+    True when sent; a failure is warned (rate-limited) and returns False."""
+    try:
+        service.call(  # noqa: F821
+            "notify", cfg.notify_service,
+            title=title, message=message, target=[cfg.alert_address])
+        return True
+    except Exception as exc:
+        _warn("alert", "alert send failed: %r" % (exc,))
+        return False
+
+
+def _guard_note(cfg, shave, vetoed, batt, charge_is_stub):
+    """One sentence on what the guard is doing about a predicted crossing."""
+    if vetoed:
+        note = ("The guard CANNOT shave it: veto V1, the battery at %.1f%% is "
+                "at or below the %.1f%% reserve." % (
+                    batt.charge_percent, cfg.reserve_percent))
+    elif shave > 0:
+        note = "The guard is shaving: discharging %.2f kW to hold it." % shave
+    else:
+        note = "The guard is not shaving (nothing it could shave right now)."
+    if charge_is_stub:
+        note += " The battery charge is a stub value (no real reading)."
+    if cfg.inverter_type == "logging":
+        note += (" The inverter driver is 'logging': a shave is recorded but "
+                 "nothing is sent to the battery.")
+    return note
+
+
+def _predictive_warning(cfg, grid, shave, vetoed, batt, charge_is_stub, at):
+    """E-mail when this quarter-hour is probably going to cross the ceiling.
+    Never raises and never touches a decision; a failed send is retried."""
+    try:
+        if not cfg.peak_warning_enabled:
+            return
+        mem = _flags["peak_warn"]
+        if not capacity.peak_warning_due(mem, grid, cfg, at):
+            return
+        title, message = capacity.peak_warning_message(
+            grid, cfg, _guard_note(cfg, shave, vetoed, batt, charge_is_stub))
+        if _notify(cfg, title, message):
+            capacity.peak_warning_sent(mem, grid, at)
+    except Exception as exc:
+        _warn("peak_warning", "predictive warning failed: %r" % (exc,))
 
 
 def _set_shaving_entity(on, window_start, shave_kw):
@@ -593,6 +653,8 @@ def _evaluate(trigger_type, started):
                    capacity.ceiling_kw(grid, cfg)))
             _emit("idle", 0.0, record, cfg)
             record_written = True
+
+    _predictive_warning(cfg, grid, shave, vetoed, batt, charge_is_stub, started)
 
     if shave > 0:
         moved = abs(shave - _flags["shave_kw"]) >= SHAVE_CHANGE_KW

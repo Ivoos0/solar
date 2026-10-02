@@ -175,6 +175,165 @@ def peak_increase_cost_eur(delta_kw, config):
     return monthly * n
 
 
+# ---- month-peak notice ----------------------------------------------------
+
+# A further notice in the same month needs the peak to rise by at least this
+# much (kW) above the last peak that was notified. Stops 0.01 kW creep mailing.
+PEAK_ALERT_MIN_STEP_KW = 0.05
+_STEP_EPSILON = 1e-9              # float noise, e.g. 3.10 - 3.05 = 0.0500000000000003
+
+
+def peak_alert_due(peak_kw, month, last_month, last_peak_kw, config):
+    """True when this month's peak warrants a (further) notice.
+
+    peak_kw must be strictly above config.billing_floor_kw. The first such
+    reading of a calendar month (month != last_month) always qualifies; later
+    ones only when the peak is at least PEAK_ALERT_MIN_STEP_KW above
+    last_peak_kw. An unchanged or lower peak never qualifies.
+    """
+    if peak_kw is None or not peak_kw > config.billing_floor_kw:
+        return False
+    if last_month != month or last_peak_kw is None:
+        return True
+    return peak_kw - last_peak_kw >= PEAK_ALERT_MIN_STEP_KW - _STEP_EPSILON
+
+
+def peak_alert_cost_eur(peak_kw, config):
+    """ESTIMATED euro cost of this peak over the averaging window, or None.
+
+    Priced as the rise over the floor: below the floor the month is billed at
+    the floor, so max(floor, peak) - max(floor, floor) is the billed rise
+    (see peak_increase_cost_eur). Assumes the month would otherwise have stayed
+    at or below the floor and that the other months in the window are
+    unchanged. None when no rate is configured (rate <= 0): no figure is
+    invented.
+    """
+    if config.capacity_rate_eur_per_kw_year <= 0:
+        return None
+    floor = config.billing_floor_kw
+    return peak_increase_cost_eur(max(floor, peak_kw) - max(floor, floor),
+                                  config)
+
+
+def peak_alert_message(peak_kw, observed, previous_peak_kw, config):
+    """(title, message) of the month-peak notice. `observed` is a string."""
+    floor = config.billing_floor_kw
+    over = peak_kw - floor
+    lines = [
+        "This month's capacity peak is now %.2f kW, above the billing floor "
+        "of %.2f kW (%.2f kW over)." % (peak_kw, floor, over),
+        "First seen by the planner at %s. The meter reports a new maximum "
+        "only after the quarter-hour has completed, so this is a notice after "
+        "the fact, not a prevention." % observed,
+    ]
+    if previous_peak_kw is not None:
+        lines.append("Previous notice this month: %.2f kW." % previous_peak_kw)
+    cost = peak_alert_cost_eur(peak_kw, config)
+    if cost is not None:
+        n = config.peak_averaging_months
+        lines.append(
+            "ESTIMATED cost effect: the billed average rises by about %.3f kW "
+            "(%.2f kW over the floor, spread over %d months), roughly EUR "
+            "%.2f over the %d months this peak stays in the average, at "
+            "EUR %.2f per kW per year. An estimate that assumes the month "
+            "would otherwise have stayed at the floor; not an invoice." % (
+                billed_average_increase_kw(over, config), over, n, cost, n,
+                config.capacity_rate_eur_per_kw_year))
+    title = "Capacity peak %.2f kW is above the %.2f kW billing floor" % (
+        peak_kw, floor)
+    return title, " ".join(lines)
+
+
+# ---- predictive warning (peak guard) ---------------------------------------
+
+# Noise control for the "probably going to cross this quarter" e-mail.
+# The number of consecutive evaluations over the ceiling is config
+# alerts.peak_warning_ticks (default 2). When it is 2 or more, those
+# evaluations must ALSO span at least this long since the first of them. Guard
+# ticks are 30 s apart (jitter-tolerant 20 s), but a state trigger can fire a
+# second after a tick; evaluations a second apart are not "sustained".
+PEAK_WARN_SUSTAIN_SECONDS = 20.0
+
+
+def projected_average_kw(state):
+    """Quarter-hour average if the current offtake continues to the window end.
+
+    Same projection shave_kw uses: (energy so far + offtake * time left) / 0.25 h.
+    """
+    remaining_h = max(0.0, _remaining_minutes(state)) / 60.0
+    return (state.window_energy_kwh
+            + state.offtake_kw * remaining_h) / WINDOW_HOURS
+
+
+def peak_warning_due(mem, state, config, now_s):
+    """True when a predictive warning should be sent NOW. Updates `mem`.
+
+    mem is a dict kept by the caller between evaluations; now_s is a monotonic
+    clock in seconds. Fires only when the projection exceeds ceiling_kw on
+    config.peak_warning_ticks consecutive evaluations (spanning at least
+    PEAK_WARN_SUSTAIN_SECONDS when that is 2 or more), at least MIN_ELAPSED_MINUTES into the window and
+    with at least NO_BUDGET_MINUTES left; at most once per window and once per
+    config.peak_warning_min_interval_minutes. The caller reports a successful
+    send with peak_warning_sent(); until then it stays due (retry).
+    """
+    window = state.window_start
+    if mem.get("window") != window:
+        mem["window"] = window
+        mem["streak"] = 0
+        mem["since"] = None
+    over = (state.elapsed_minutes >= MIN_ELAPSED_MINUTES
+            and _remaining_minutes(state) >= NO_BUDGET_MINUTES
+            and projected_average_kw(state) > ceiling_kw(state, config))
+    if not over:
+        mem["streak"] = 0
+        mem["since"] = None
+        return False
+    mem["streak"] = mem.get("streak", 0) + 1
+    if mem["streak"] == 1:
+        mem["since"] = now_s
+    ticks = config.peak_warning_ticks
+    if mem["streak"] < ticks:
+        return False
+    if ticks > 1 and now_s - mem["since"] < PEAK_WARN_SUSTAIN_SECONDS:
+        return False
+    if mem.get("sent_window") == window:
+        return False
+    sent_at = mem.get("sent_at")
+    if (sent_at is not None and now_s - sent_at
+            < config.peak_warning_min_interval_minutes * 60.0):
+        return False
+    return True
+
+
+def peak_warning_sent(mem, state, now_s):
+    """Record a successful send (never call it after a failed one)."""
+    mem["sent_window"] = state.window_start
+    mem["sent_at"] = now_s
+
+
+def peak_warning_message(state, config, guard_note):
+    """(title, message) of the predictive warning. guard_note says what the
+    guard is doing about it."""
+    projected = projected_average_kw(state)
+    ceiling = ceiling_kw(state, config)
+    if state.month_peak_kw > config.billing_floor_kw:
+        basis = "this month's peak so far (billing floor %.2f kW)" % (
+            config.billing_floor_kw)
+    else:
+        basis = "the billing floor (this month's peak is %.2f kW)" % (
+            state.month_peak_kw)
+    title = ("Capacity peak warning: this quarter-hour is heading for %.2f kW "
+             "(ceiling %.2f kW)" % (projected, ceiling))
+    message = (
+        "PREDICTION, not a measured peak: the quarter-hour that started at "
+        "%s is projected to average %.2f kW if the current load continues, "
+        "above the %.2f kW ceiling, which is %s. Time left in this quarter-hour: "
+        "%.1f min. Current offtake: %.2f kW. %s" % (
+            state.window_start.strftime("%H:%M"), projected, ceiling, basis,
+            _remaining_minutes(state), state.offtake_kw, guard_note))
+    return title, message
+
+
 def arbitrage_value_eur(kwh, price_spread):
     """Value of moving kwh across a price spread (eur/kWh)."""
     return kwh * price_spread

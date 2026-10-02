@@ -54,6 +54,15 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
   Forecast missing -> zero_solar_series + solar_zero_fallback marker and a
   bounded homeassistant.update_entity retry (never a halt).
 * Alerts: service.call("notify", alerts.notify_service, target=[alerts.address]).
+  Both the halt alert and the month-peak notice go through _notify().
+* Month-peak notice (alerts.peak_enabled): each cycle, before the price check
+  (so it also works during a halt), _check_peak_alert compares the meter's month
+  peak with capacity_tariff.billing_floor_kw. First crossing of a calendar month
+  (local time) and each further rise of >= capacity.PEAK_ALERT_MIN_STEP_KW send
+  one e-mail; (month, peak) is saved to battery_planner/state/peak_alert.json
+  only after a successful send. A failed send is retried next cycle. Missing or
+  unreadable file = nothing sent yet: one notice per start at most. It never
+  affects a decision.
   Mail account settings live in HA's own configuration; none appear here.
 * Cache: verdicts come from cache.evaluate; every series taken FROM the cache,
   fresh or stale, adds a cache_age_<kind> marker (FR-027/SC-014); a series just
@@ -103,6 +112,7 @@ CONFIG_PATH = "/config/battery_planner/user_config.yaml"
 CACHE_DIR = "/config/battery_planner/cache/"
 DECISIONS_LOG_DIR = inverter.DEFAULT_LOG_DIR
 HISTORY_DIR = "/config/battery_planner/history/"
+PEAK_ALERT_PATH = "/config/battery_planner/state/peak_alert.json"
 CORE_DIR = "/config/pyscript/modules"
 # Dependency order (rules needs capacity). inverter is NOT in this list.
 CORE_MODULES = ("config", "prices", "series", "battery", "trajectory",
@@ -143,6 +153,8 @@ _mode_samples = []
 _hist_last = None                     # history.Snapshot at the last boundary
 _hist_loaded = False                  # last_snapshot.json read once per process
 _hist_warned = {}                     # warning kind -> last time logged
+_peak_alert_loaded = False            # peak_alert.json read once per process
+_peak_alert_last = None               # (YYYY-MM, kW) of the last notified peak
 _last_grid_charge = None              # (local time, kW) of the last recorded grid-charge decision
 
 
@@ -401,20 +413,26 @@ def _read_prices(cfg, local):
     return price_map, None
 
 
-def _send_alert(cfg, cause, entered):
+def _notify(cfg, title, message):
+    """Send one e-mail via the configured notify service. True when sent;
+    a failure is logged and returns False so the caller retries later."""
     try:
         service.call(  # noqa: F821
             "notify", cfg.notify_service,
-            title="Battery planner halted: no price data",
-            message=("No decisions are being made. Cause: %s. Halted since %s. "
-                     "Re-alert every %d min." % (
-                         cause, entered.isoformat(timespec="seconds"),
-                         cfg.realert_minutes)),
-            target=[cfg.alert_address])
+            title=title, message=message, target=[cfg.alert_address])
         return True
     except Exception as exc:
         log.error(f"battery_planner: alert send failed: {exc!r}")  # noqa: F821
         return False
+
+
+def _send_alert(cfg, cause, entered):
+    return _notify(
+        cfg, "Battery planner halted: no price data",
+        "No decisions are being made. Cause: %s. Halted since %s. "
+        "Re-alert every %d min." % (
+            cause, entered.isoformat(timespec="seconds"),
+            cfg.realert_minutes))
 
 
 def _halt(cfg, local, cause):
@@ -445,6 +463,57 @@ def _recover(local):
         "halted_for=%dm" % minutes]), local)
     log.info("battery_planner: prices recovered, resuming decisions")  # noqa: F821
     _halt_state = None
+
+
+# ---- month-peak notice ---------------------------------------------------------
+
+def _peak_alert_state():
+    """(month, kW) last notified, or None. Read from disk once per process; an
+    unreadable or malformed file counts as "nothing sent yet", so a restart
+    notifies at most once for an old peak (then memory takes over)."""
+    global _peak_alert_loaded, _peak_alert_last
+    if not _peak_alert_loaded:
+        _peak_alert_loaded = True
+        data = _read_json(PEAK_ALERT_PATH)
+        if (isinstance(data, dict) and isinstance(data.get("month"), str)
+                and isinstance(data.get("peak_kw"), (int, float))
+                and not isinstance(data.get("peak_kw"), bool)):
+            _peak_alert_last = (data["month"], float(data["peak_kw"]))
+    return _peak_alert_last
+
+
+def _check_peak_alert(cfg, local):
+    """E-mail when the meter's month peak exceeds the billing floor.
+
+    Independent of prices and the halt state; never raises and never touches
+    a decision. A failed send is not recorded, so the next cycle retries.
+    """
+    global _peak_alert_last
+    try:
+        if not (cfg.peak_alert_enabled and cfg.capacity_enabled):
+            return
+        peak = _sensor_kw(cfg.month_peak_sensor)
+        if peak is None:
+            return
+        month = "%04d-%02d" % (local.year, local.month)
+        last = _peak_alert_state()
+        last_month = last[0] if last else None
+        last_peak = last[1] if last else None
+        if not capacity.peak_alert_due(peak, month, last_month, last_peak, cfg):
+            return
+        previous = last_peak if last_month == month else None
+        title, message = capacity.peak_alert_message(
+            peak, local.isoformat(timespec="seconds"), previous, cfg)
+        if not _notify(cfg, title, message):
+            return
+        _peak_alert_last = (month, peak)
+        err = _write_json_atomic(PEAK_ALERT_PATH,
+                                 {"month": month, "peak_kw": peak})
+        if err:
+            log.error(  # noqa: F821
+                f"battery_planner: cannot save peak alert state: {err}")
+    except Exception as exc:
+        log.error(f"battery_planner: peak alert failed: {exc!r}")  # noqa: F821
 
 
 # ---- forecast and solar series -----------------------------------------------
@@ -759,6 +828,7 @@ def _cycle(now):
     if cfg is None:
         return
     local = now.astimezone(ZoneInfo(cfg.timezone))
+    _check_peak_alert(cfg, local)        # before prices: also works in a halt
     price_map, cause = _read_prices(cfg, local)
     if cause is not None:
         _halt(cfg, local, cause)
