@@ -44,7 +44,7 @@ Two more things you should know before spending an evening on this:
 | Solar array | Effectively yes | The forecast and solar-absorption logic assume one, on a single plane |
 | Home battery + hybrid inverter | Yes, for any value | The planner decides what a battery should do. Today it cannot act on it |
 | ENTSO-e API key | Yes | Free. Used for dynamic prices via the Home Assistant ENTSO-e integration |
-| A `notify` service | For alerts | Gmail SMTP notifier by default; see [Alert e-mail](#alert-e-mail) |
+| A `notify` service | For alerts | SMTP notifier named `battery_alert`, provider chosen in `secrets.yaml`; see [Alert e-mail](#alert-e-mail) |
 
 **Geography.** The capacity-tariff logic is specific to the **Flemish** capaciteitstarief
 (billing on the average of monthly quarter-hour peaks, with a 2.5 kW floor, on grid offtake only).
@@ -113,30 +113,17 @@ Install in this order.
    version tested was not recorded; note yours so a later upgrade is a deliberate act.
 2. **ENTSO-e integration.** Provides the dynamic market price. Needs a free API key. Day-ahead prices
    publish around 13:00 local time.
-3. **Edit `configuration.yaml`.** The repository's `configuration.yaml` contains the blocks needed;
-   the relevant ones are `pyscript:` and `rest:`:
+3. **Use the repository's `configuration.yaml` as-is.** It contains the `pyscript:`, `rest:` and
+   `notify:` blocks the planner needs, and you never edit them. Everything personal comes from
+   `secrets.yaml` (below) and `battery_planner/user_config.yaml`. If your Home Assistant already has
+   a `configuration.yaml`, see [Updating](#updating) for the one-time merge.
 
-   ```yaml
-   pyscript:
-     allow_all_imports: true      # the adapter parses YAML and JSON
-     hass_is_global: true
-
-   rest:
-     - resource: "https://api.forecast.solar/estimate/51.12/3.85/50/-10/8.1"
-       scan_interval: 3600        # hourly: inside the free-tier rate budget
-       sensor:
-         - name: "Forecast Solar Estimate"
-           value_template: "{{ value_json.result.watt_hours_day.values() | list | first }}"
-           json_attributes_path: "$.result"
-           json_attributes:
-             - watt_hours_period
-           unit_of_measurement: "Wh"
-   ```
-
-   The URL path is `lat/lon/declination/azimuth/kwp`. **Change the coordinates to your own
-   roof.** The ones shown are an example. **Azimuth: 0 = south, negative = east**, so `-10` is ten
-   degrees east of south. This is the easiest thing to get backwards. The URL and `user_config.yaml`
-   (`solar.*`) must describe the same roof.
+   The forecast.solar REST sensor takes its whole URL from the secret `forecast_solar_url`. Put your
+   own roof in it in `secrets.yaml`; the template `secrets.example.yaml` shows the form
+   (`https://api.forecast.solar/estimate/lat/lon/declination/azimuth/kwp`, with generic example
+   values). **Azimuth: 0 = south, negative = east**, so `-10` is ten degrees east of south. This is
+   the easiest thing to get backwards. The URL and `user_config.yaml` (`solar.*`) must describe the
+   same roof.
 
    The built-in Forecast.Solar integration is not used: it is UI-configured only and exposes
    aggregates rather than the per-block series the planner needs.
@@ -150,21 +137,34 @@ Install in this order.
 ### Alert e-mail
 
 When prices are unavailable the planner halts and sends an e-mail through the Home Assistant
-notify service `notify.<alerts.notify_service>` (default `notify.gmail_alert`), to
-`alerts.address`. `configuration.yaml` defines that notifier as a Gmail SMTP notifier. No address or
-credential is stored in the repository.
+notify service `notify.<alerts.notify_service>` (default `notify.battery_alert`), to
+`alerts.address`. `configuration.yaml` defines that notifier with no provider-specific values: the
+server, port, encryption and credentials all come from `secrets.yaml`. No address or credential is
+stored in the repository.
 
-1. **Turn on 2-step verification** for the Gmail account, then create an **App Password**
-   (Google Account -> Security -> App passwords). The normal account password will not work.
-2. **Fill HA's `secrets.yaml`** (in your HA config folder; it is gitignored). Copy the three keys from
-   the tracked template `secrets.example.yaml` and put real values in: `smtp_sender` (the Gmail
-   account), `smtp_password` (the App Password), `smtp_recipient` (where alerts go).
+1. **Pick your provider** in `secrets.example.yaml`. It has ready-made presets for Gmail, Outlook /
+   Microsoft 365, Yahoo and iCloud, plus a CUSTOM block (`smtp_server`, `smtp_port`,
+   `smtp_encryption` = `starttls` | `tls` | `none`; typical ports 587 / 465 / 25). Keep exactly one
+   preset uncommented. Most providers need an app password (Gmail: turn on 2-step verification, then
+   Google Account -> Security -> App passwords); the normal account password will not work.
+   **The preset hostnames and ports come from the providers' public documentation as known at the
+   time of writing and have not been verified against live accounts.** Confirm them with your
+   provider. Outlook / Microsoft 365 may not work at all, because basic-auth SMTP is disabled on many
+   Microsoft accounts.
+2. **Fill HA's `secrets.yaml`** (in your HA config folder; it is gitignored). Copy the keys from
+   the tracked template `secrets.example.yaml` and put real values in: the provider block
+   (`smtp_server`, `smtp_port`, `smtp_encryption`), `smtp_sender` (the sending account),
+   `smtp_password` (the app password), `smtp_recipient` (where alerts go), and `forecast_solar_url`.
 3. **Set `battery_planner/user_config.yaml`**: `alerts.address` to the same address as
-   `smtp_recipient`, and `alerts.notify_service` to the notifier name (default `gmail_alert`, which
+   `smtp_recipient`, and `alerts.notify_service` to the notifier name (default `battery_alert`, which
    matches `configuration.yaml`; leave it out to use the default).
+
+   *Rename note:* earlier versions named the notifier `gmail_alert`. If you set
+   `alerts.notify_service: gmail_alert` before, either keep the old name (and keep that name in your
+   merged notifier) or update the setting to `battery_alert`.
 4. **Restart Home Assistant** (a notifier is only created at startup).
 5. **Test the notifier** before relying on it: Developer Tools -> Actions, choose
-   `notify.gmail_alert` (or your service name), give it a message, and run it. The mail should
+   `notify.battery_alert` (or your service name), give it a message, and run it. The mail should
    arrive within a minute.
 
 **Caveat, not verified.** I could not verify against a live Home Assistant that the SMTP YAML
@@ -181,7 +181,8 @@ the send is retried on the next cycle. The halt itself still proceeds.
 
 ```
 <ha-config>/
-  configuration.yaml          # edited
+  configuration.yaml          # taken as-is from this repo (merged once by hand if you had your own)
+  secrets.yaml                # yours, gitignored: provider, credentials, forecast URL
   pyscript/                   # copied from this repo, overwrite freely
     battery_planner.py
     peak_guard.py
@@ -203,6 +204,27 @@ cp user_config.example.yaml user_config.yaml
 **Restart Home Assistant after copying.** The script files (`battery_planner.py`, `peak_guard.py`)
 hot-reload, but the core under `pyscript/modules/` is loaded natively by an executor loader and is
 **not** hot-reloaded. Any change to a core file needs a Home Assistant restart.
+
+### Updating
+
+You edit exactly two files, both gitignored, so updating from git never produces a merge conflict:
+
+- `battery_planner/user_config.yaml` (your site, battery, tariff and alert settings)
+- Home Assistant's `secrets.yaml` (e-mail provider and credentials, forecast.solar URL)
+
+Everything else is taken as shipped. To update: pull the new version, copy `pyscript/` over
+`<ha-config>/pyscript/`, and take the tracked `configuration.yaml` as-is. **Never overwrite
+`battery_planner/user_config.yaml` or `secrets.yaml`.** If a release adds new keys, compare
+`user_config.example.yaml` and `secrets.example.yaml` with your files and add only what is missing.
+Restart Home Assistant afterwards (see above).
+
+If your Home Assistant already has its own `configuration.yaml`, you cannot just overwrite it. Merge
+this repository's blocks (`pyscript:`, `rest:`, `notify:`, and the helper and template blocks you
+want) into yours **once, by hand**, or pull them in with `!include`. After that, no further edits to
+`configuration.yaml` are needed, because every personal value is a `!secret`.
+
+**Not tested:** loading these blocks as a Home Assistant package or via split `!include` files was
+not tested. Only the single `configuration.yaml` form is what this repository ships.
 
 ### Configuring `user_config.yaml`
 

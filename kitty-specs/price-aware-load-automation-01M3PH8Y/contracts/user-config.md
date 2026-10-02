@@ -102,7 +102,7 @@ timing:
 
 alerts:
   address: you@example.com      # REQUIRED
-  notify_service: gmail_alert   # HA notify service name (notify.<name>); default gmail_alert
+  notify_service: battery_alert   # HA notify service name (notify.<name>); default battery_alert
   realert_minutes: 60           # not per cycle - that would be 288 emails/day
 
 inverter:
@@ -134,4 +134,4 @@ Changing `solar.*`, `timing.block_minutes`, `usage.history_weeks`, `usage.groupi
 
 ## Secrets
 
-The alert address and the notify service name are not secrets. Email **credentials** are not stored here — alerting goes through Home Assistant's notify service (`alerts.notify_service`, default `gmail_alert`, an SMTP notifier defined in `configuration.yaml`), keeping credentials in `secrets.yaml`, which `.gitignore` already excludes (NFR-007). The tracked `secrets.example.yaml` holds placeholders only.
+The alert address and the notify service name are not secrets. Email **credentials** are not stored here — alerting goes through Home Assistant's notify service (`alerts.notify_service`, default `battery_alert`, an SMTP notifier defined in `configuration.yaml`), keeping credentials in `secrets.yaml`, which `.gitignore` already excludes (NFR-007). The tracked `secrets.example.yaml` holds placeholders only.

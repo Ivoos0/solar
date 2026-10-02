@@ -88,7 +88,7 @@ class SiteConfig:
     solar_cache_stale_minutes: int = 120
     usage_cache_stale_minutes: int = 2880
     realert_minutes: int = 60
-    notify_service: str = "gmail_alert"
+    notify_service: str = "battery_alert"
     timezone: str = "Europe/Brussels"
     capacity_enabled: bool = True
     billing_floor_kw: float = 2.5
