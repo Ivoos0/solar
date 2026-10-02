@@ -144,6 +144,10 @@ alerts:
   address: you@example.com      # REQUIRED
   notify_service: battery_alert   # HA notify service name (notify.<name>); default battery_alert
   realert_minutes: 60           # not per cycle - that would be 288 emails/day
+  peak_enabled: true            # notice AFTER: month peak (meter 1-0:1.6.0) above capacity_tariff.billing_floor_kw
+  peak_warning_enabled: true    # warning BEFORE: this quarter-hour is projected above the ceiling (peak guard)
+  peak_warning_min_interval_minutes: 60  # integer >= 1; at most one warning per interval (and per quarter-hour)
+  peak_warning_ticks: 2         # integer >= 1; consecutive guard evaluations over the ceiling before warning
 
 inverter:
   type: logging                 # selects pyscript/modules/inverter_<type>.py; default logging
@@ -166,6 +170,7 @@ Checked at load. A failure is a **startup error, not a degraded cycle** — bad 
 | `address` non-empty | A halt with nowhere to alert is a silent failure |
 | `notify_service` matches `[a-z0-9_]+` | It is the service name under the `notify` domain; a dotted, spaced or upper-case value can never resolve. It does not join the cache fingerprint |
 | `inverter.type` matches `[a-z0-9_]+`; missing, null or `none` become `logging` | It names the driver file `inverter_<type>.py`, so path separators, dots, spaces and upper case can never select a file outside the modules directory. It does not join the cache fingerprint. Whether the driver file exists is checked at run time, not here: a missing driver falls back to log-only behaviour with an error and a degraded marker (see `inverter-boundary.md`) |
+| `alerts.peak_enabled` and `alerts.peak_warning_enabled` are booleans; `alerts.peak_warning_min_interval_minutes` and `alerts.peak_warning_ticks` are integers `>= 1` (no booleans, no floats) | A typo must not silently disable or flood a mail. None of them joins the cache fingerprint |
 | `max_charge_kw > 0`, `max_discharge_kw > 0` | Zero would make the trajectory meaningless |
 | `history.enabled` is a boolean; each `history.sensors.<quantity>` is a list of entity ids (`domain.object_id`) without duplicates; only the quantities `import`, `export`, `solar`, `battery_charge`, `battery_discharge`, `load` are accepted | A typo must not silently disable a counter. The `history` section does not join the cache fingerprint (it names where data is read from) |
 

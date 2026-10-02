@@ -103,6 +103,10 @@ class Env:
         self.config_path = tmp / "user_config.yaml"
         self.log_dir = tmp / "logs"
         self.cache_dir = tmp / "cache"
+        self.peak_path = tmp / "state" / "peak_alert.json"
+        # Off by default: the fixture's month peak (3.0) is above the floor
+        # and would mail in every unrelated test. Peak-alert tests turn it on.
+        self.peak_alerts = False
 
     def run(self, now=None):
         if now is not None:
@@ -131,7 +135,9 @@ class Env:
         self.config_path.write_text(
             "battery:\n  capacity_kwh: 10.0\nalerts:\n"
             "  address: owner@example.com\n"
-            "  notify_service: test_notifier\n" + extra, encoding="utf-8")
+            "  notify_service: test_notifier\n"
+            "  peak_enabled: %s\n" % ("true" if self.peak_alerts else "false")
+            + extra, encoding="utf-8")
         bump = self.config_path.stat().st_mtime + 10
         os.utime(self.config_path, (bump, bump))
 
@@ -186,6 +192,7 @@ def env(tmp_path):
         mod.CACHE_DIR = str(e.cache_dir) + "/"
         mod.DECISIONS_LOG_DIR = str(e.log_dir)
         mod.HISTORY_DIR = str(e.tmp / "history") + "/"
+        mod.PEAK_ALERT_PATH = str(e.peak_path)
         mod._now = lambda: e.clock
         e.write_config()
         st = e.state
@@ -982,7 +989,8 @@ def test_alert_uses_default_service_when_config_omits_it(env):
     mod = env.mod
     env.config_path.write_text(
         "battery:\n  capacity_kwh: 10.0\nalerts:\n"
-        "  address: owner@example.com\n", encoding="utf-8")
+        "  address: owner@example.com\n  peak_enabled: false\n",
+        encoding="utf-8")
     bump = env.config_path.stat().st_mtime + 20
     os.utime(env.config_path, (bump, bump))
     env.state.set(PRICE_ENTITY, "unavailable", {})

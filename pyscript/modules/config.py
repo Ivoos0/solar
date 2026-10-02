@@ -39,6 +39,11 @@ _MAP = [
     ("alerts", "address", "alert_address"),
     ("alerts", "notify_service", "notify_service"),
     ("alerts", "realert_minutes", "realert_minutes"),
+    ("alerts", "peak_enabled", "peak_alert_enabled"),
+    ("alerts", "peak_warning_enabled", "peak_warning_enabled"),
+    ("alerts", "peak_warning_min_interval_minutes",
+     "peak_warning_min_interval_minutes"),
+    ("alerts", "peak_warning_ticks", "peak_warning_ticks"),
     ("inverter", "type", "inverter_type"),
     (None, "timezone", "timezone"),
     ("capacity_tariff", "enabled", "capacity_enabled"),
@@ -73,6 +78,7 @@ _NON_NUMERIC = (
     "usage_recency_weighting", "inverter_type", "price_entity",
     "price_attribute", "forecast_entity", "forecast_attribute",
     "quarter_hour_average_sensor", "month_peak_sensor", "history_enabled",
+    "peak_alert_enabled", "peak_warning_enabled",
 ) + _HISTORY_SENSOR_ATTRS
 
 # Entity-name fields (checked as domain.object_id) and attribute-name fields
@@ -124,6 +130,10 @@ class SiteConfig:
     usage_cache_stale_minutes: int = 2880
     realert_minutes: int = 60
     notify_service: str = "battery_alert"
+    peak_alert_enabled: bool = True
+    peak_warning_enabled: bool = True
+    peak_warning_min_interval_minutes: int = 60
+    peak_warning_ticks: int = 2
     timezone: str = "Europe/Brussels"
     capacity_enabled: bool = True
     billing_floor_kw: float = 2.5
@@ -223,6 +233,20 @@ def _errors(cfg):
         v = getattr(cfg, attr)
         if not isinstance(v, str) or not v.strip():
             bad(label, v, "must be a non-empty attribute name")
+    if not isinstance(cfg.peak_alert_enabled, bool):
+        bad("alerts.peak_enabled", cfg.peak_alert_enabled,
+            "must be true or false")
+    if not isinstance(cfg.peak_warning_enabled, bool):
+        bad("alerts.peak_warning_enabled", cfg.peak_warning_enabled,
+            "must be true or false")
+    if (isinstance(cfg.peak_warning_min_interval_minutes, float)
+            or cfg.peak_warning_min_interval_minutes < 1):
+        bad("alerts.peak_warning_min_interval_minutes",
+            cfg.peak_warning_min_interval_minutes, "must be an integer >= 1")
+    if (isinstance(cfg.peak_warning_ticks, float)
+            or cfg.peak_warning_ticks < 1):
+        bad("alerts.peak_warning_ticks", cfg.peak_warning_ticks,
+            "must be an integer >= 1")
     if not isinstance(cfg.history_enabled, bool):
         bad("history.enabled", cfg.history_enabled, "must be true or false")
     for q, attr in _HISTORY_SENSORS:
