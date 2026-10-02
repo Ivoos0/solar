@@ -1,8 +1,11 @@
 """Inverter boundary: always records intent, then hands it to the configured driver.
 
 Public surface (contracts/inverter-boundary.md):
-    apply(action, target_power_kw, record, log_path=DEFAULT_LOG_PATH,
-          inverter_type="logging", driver_dir=None) -> bool
+    apply(action, target_power_kw, record, log_path=None,
+          inverter_type="logging", driver_dir=None,
+          log_dir=DEFAULT_LOG_DIR) -> bool
+    log_path_for(day, log_dir=DEFAULT_LOG_DIR)
+        -> "<log_dir>/decisions-YYYY-MM-DD.log"
     read_charge(inverter_type="logging", driver_dir=None)
         -> (percent, is_stub, marker)
 driver_dir=None means DEFAULT_DRIVER_DIR.
@@ -30,9 +33,22 @@ import os
 import decision
 
 # Home Assistant config dir inside the container. Parameterised on apply() so
-# tests can redirect it.
-DEFAULT_LOG_PATH = "/config/battery_planner/decisions.log"
+# tests can redirect it. The decision log is one file per local calendar day,
+# decisions-YYYY-MM-DD.log, so old days can be removed by file name or age.
+DEFAULT_LOG_DIR = "/config/battery_planner"
 DEFAULT_DRIVER_DIR = "/config/pyscript/modules"
+
+
+def log_path_for(day, log_dir=DEFAULT_LOG_DIR):
+    """Decision log file for `day`: <log_dir>/decisions-YYYY-MM-DD.log.
+
+    `day` is any date or datetime; only its own year, month and day are used.
+    Pass the record's timestamp (aware, in the configured local zone) and the
+    file is that local calendar day. No clock is read here.
+    """
+    return "%s/decisions-%04d-%02d-%02d.log" % (
+        log_dir.rstrip("/"), day.year, day.month, day.day)
+
 
 # Fallback used ONLY when the configured driver cannot be loaded or its reading
 # is unusable. It is a placeholder, not a measurement: decisions built on it
@@ -178,8 +194,8 @@ def _transmit(action, target_power_kw, inverter_type, driver_dir):
             "inverter: driver %r transmit failed: %r" % (inverter_type, exc))
 
 
-def apply(action, target_power_kw, record, log_path=DEFAULT_LOG_PATH,
-          inverter_type="logging", driver_dir=None):
+def apply(action, target_power_kw, record, log_path=None,
+          inverter_type="logging", driver_dir=None, log_dir=DEFAULT_LOG_DIR):
     """Carry out a decision: log it, then hand it to the configured driver.
 
     The decision log line is ALWAYS written, for every driver, and FIRST. The
@@ -192,6 +208,9 @@ def apply(action, target_power_kw, record, log_path=DEFAULT_LOG_PATH,
     action           -- "charge" | "discharge" | "export" | "idle"
     target_power_kw  -- float, 0.0 when idle
     record           -- DecisionRecord, already complete
+    log_path         -- explicit file to append to (tests, back-compat); None
+                        means log_path_for(record.timestamp, log_dir), the
+                        record's own local day
     inverter_type    -- selects driver file inverter_<type>.py in driver_dir
 
     Returns True when the intent was durably recorded, False on any failure
@@ -214,6 +233,8 @@ def apply(action, target_power_kw, record, log_path=DEFAULT_LOG_PATH,
                 "inverter.apply refused: decision record line is not a "
                 "single physical line")
             return False
+        if log_path is None:
+            log_path = log_path_for(record.timestamp, log_dir)
         _append_line(log_path, line)
     except Exception as exc:
         log.warning(  # noqa: F821

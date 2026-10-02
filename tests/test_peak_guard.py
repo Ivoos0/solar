@@ -17,6 +17,8 @@ import importlib.util
 import re
 import subprocess
 import sys
+import types
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -1127,3 +1129,35 @@ def test_guard_stub_flag_comes_from_the_driver(make_guard):
     g.inv.stub = False
     g.tick(**PEAK_ARGS)
     assert "soc_stubbed" not in g.discharges[0][2].degraded_inputs
+
+
+# ---- daily rotation: the guard writes the same dated file as the planner ----------
+
+def test_guard_record_lands_in_the_dated_file_shared_with_the_planner(
+        make_guard, monkeypatch, tmp_path):
+    g = make_guard().at(23, 59, 30, day=30)
+    spec = importlib.util.spec_from_file_location(
+        "inverter_real_for_guard", MODULES / "inverter.py")
+    real = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(real)
+    logs = tmp_path / "logs"
+    seen = []
+
+    def apply(action, power, record, **k):
+        seen.append((action, power, record))
+        # The guard passes no log location, so apply() derives the dated file
+        # from the record timestamp; only the directory is redirected here.
+        return real.apply(action, power, record, log_dir=str(logs), **k)
+
+    monkeypatch.setattr(g.mod, "inverter", types.SimpleNamespace(
+        apply=apply, read_charge=g.inv.read_charge))
+    g.tick(**PEAK_ARGS)
+    day_file = logs / "decisions-2026-09-30.log"
+    assert [f.name for f in logs.iterdir()] == [day_file.name]
+    lines = day_file.read_text().splitlines()
+    assert len(lines) == 1 and "source=guard" in lines[0]
+    assert lines[0].startswith("2026-09-30T23:59:30")
+    action, power, rec = seen[0]
+    planner_rec = replace(rec, source="planner", selector="S3")
+    assert real.apply(action, power, planner_rec, log_dir=str(logs))
+    assert len(day_file.read_text().splitlines()) == 2

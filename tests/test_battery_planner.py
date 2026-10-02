@@ -94,7 +94,7 @@ class Env:
         self.log = builtins.log
         self.clock = T0
         self.config_path = tmp / "user_config.yaml"
-        self.log_path = tmp / "decisions.log"
+        self.log_dir = tmp / "logs"
         self.cache_dir = tmp / "cache"
 
     def run(self, now=None):
@@ -103,9 +103,19 @@ class Env:
         self.mod.run_cycle(self.clock)
 
     def lines(self):
-        if not self.log_path.exists():
+        out = []
+        for f in self.log_files():
+            out += f.read_text(encoding="utf-8").splitlines()
+        return out
+
+    def log_files(self):
+        if not self.log_dir.exists():
             return []
-        return self.log_path.read_text(encoding="utf-8").splitlines()
+        return sorted(self.log_dir.glob("decisions-*.log"))
+
+    def day_lines(self, day):
+        f = self.log_dir / ("decisions-%s.log" % day)
+        return f.read_text(encoding="utf-8").splitlines() if f.exists() else []
 
     def decisions(self):
         return [l for l in self.lines() if " | action=" in l]
@@ -167,7 +177,7 @@ def env(tmp_path):
         mod._ensure_core()
         mod.CONFIG_PATH = str(e.config_path)
         mod.CACHE_DIR = str(e.cache_dir) + "/"
-        mod.DECISIONS_LOG_PATH = str(e.log_path)
+        mod.DECISIONS_LOG_DIR = str(e.log_dir)
         mod._now = lambda: e.clock
         e.write_config()
         st = e.state
@@ -670,7 +680,7 @@ builtins.state, builtins.service, builtins.log = State(), Service(), Log()
 
 # Stand-in for pyscript's own import of the interpreted inverter module.
 stub = types.ModuleType("inverter")
-stub.DEFAULT_LOG_PATH = str(tmp / "decisions.log")
+stub.DEFAULT_LOG_DIR = str(tmp / "logs")
 sys.modules["inverter"] = stub
 spec = importlib.util.spec_from_file_location("bp", src)
 mod = importlib.util.module_from_spec(spec)
@@ -687,7 +697,7 @@ mod.inverter = real
     "battery:\n  capacity_kwh: 10.0\nalerts:\n  address: a@b.c\n")
 mod.CONFIG_PATH = str(tmp / "user_config.yaml")
 mod.CACHE_DIR = str(tmp / "cache") + "/"
-mod.DECISIONS_LOG_PATH = str(tmp / "decisions.log")
+mod.DECISIONS_LOG_DIR = str(tmp / "logs")
 mod._now = lambda: T0
 start = datetime(2026, 9, 29, 22, 0, tzinfo=UTC)
 mod_state = builtins.state
@@ -701,7 +711,9 @@ for ent in ("sensor.slimmelezer_power_consumed", mod.QUARTER_AVG_ENTITY,
     mod_state.d[ent] = ("0.8", {"unit_of_measurement": "kW"})
 mod.run_cycle(T0)
 assert not Log.errors, Log.errors
-lines = (tmp / "decisions.log").read_text().splitlines()
+files = sorted((tmp / "logs").glob("decisions-2026-09-30.log"))
+assert len(files) == 1, list((tmp / "logs").iterdir())
+lines = files[0].read_text().splitlines()
 assert len(lines) == 1 and " | action=" in lines[0], lines
 print("OK")
 '''
@@ -1060,3 +1072,75 @@ def test_unknown_driver_falls_back_to_logging_with_marker_and_error(
     assert len([m for m in env.log.by_level["error"]
                 if "NOT transmitting" in m]) == 2         # loud every cycle
     assert not any("cycle failed" in m for m in env.log.by_level["error"])
+
+
+# ---- daily rotation: one file per local day ---------------------------------------
+
+def test_cycle_writes_to_the_dated_file_of_its_local_day(env):
+    env.run(T0)
+    assert [f.name for f in env.log_files()] == ["decisions-2026-09-30.log"]
+    assert len(env.day_lines("2026-09-30")) == 1
+
+
+def test_local_date_not_utc_date_names_the_file(env):
+    # 22:30 UTC on 30 Sep is 00:30 on 1 Oct in Brussels (CEST, +02:00).
+    env.run(datetime(2026, 9, 30, 22, 30, tzinfo=UTC))
+    assert [f.name for f in env.log_files()] == ["decisions-2026-10-01.log"]
+
+
+def test_midnight_boundary_splits_files(env):
+    env.run(datetime(2026, 9, 30, 21, 59, 59, tzinfo=UTC))   # 23:59:59 local
+    env.mod._last_run = None                  # one second later is gated
+    env.run(datetime(2026, 9, 30, 22, 0, 0, tzinfo=UTC))     # 00:00:00 local
+    assert len(env.day_lines("2026-09-30")) == 1
+    assert len(env.day_lines("2026-10-01")) == 1
+    assert env.day_lines("2026-09-30")[0].startswith("2026-09-30T23:59:59")
+    assert env.day_lines("2026-10-01")[0].startswith("2026-10-01T00:00:00")
+
+
+def test_two_consecutive_days_make_two_files(env):
+    env.run(T0)
+    env.run(T0 + timedelta(days=1))
+    assert [f.name for f in env.log_files()] == [
+        "decisions-2026-09-30.log", "decisions-2026-10-01.log"]
+
+
+def test_halt_recovered_and_decision_share_the_days_file(env):
+    st, mod = env.state, env.mod
+    st.set(mod.PRICE_ENTITY, "unavailable", {})
+    env.run(T0)
+    st.set(mod.PRICE_ENTITY, "0.10", {mod.PRICE_ATTRIBUTE: price_entries()})
+    env.run(T0 + STEP)
+    env.run(T0 + 2 * STEP)
+    assert [f.name for f in env.log_files()] == ["decisions-2026-09-30.log"]
+    text = "\n".join(env.day_lines("2026-09-30"))
+    assert " | HALT | " in text and " | RECOVERED | " in text
+    assert "source=planner" in text
+
+
+def test_halt_line_after_midnight_goes_to_the_next_days_file(env):
+    env.run(T0)
+    env.state.set(env.mod.PRICE_ENTITY, "unavailable", {})
+    env.run(datetime(2026, 9, 30, 22, 5, tzinfo=UTC))        # 00:05 local, 1 Oct
+    assert any(" | HALT | " in l for l in env.day_lines("2026-10-01"))
+    assert not any(" | HALT | " in l for l in env.day_lines("2026-09-30"))
+
+
+def test_skip_line_uses_the_local_day_of_the_cycle_time(env):
+    env.run(T0)
+    late = datetime(2026, 9, 30, 22, 5, tzinfo=UTC)          # 00:05 local, 1 Oct
+    env.mod._cycle_started_at = late - timedelta(minutes=3)
+    env.run(late)
+    assert any(" | SKIP | " in l for l in env.day_lines("2026-10-01"))
+    assert not any(" | SKIP | " in l for l in env.day_lines("2026-09-30"))
+
+
+def test_recovered_line_goes_to_the_day_it_is_written_not_the_halt_day(env):
+    st, mod = env.state, env.mod
+    st.set(mod.PRICE_ENTITY, "unavailable", {})
+    env.run(datetime(2026, 9, 30, 21, 55, tzinfo=UTC))       # 23:55 local, 30 Sep
+    st.set(mod.PRICE_ENTITY, "0.10", {mod.PRICE_ATTRIBUTE: price_entries()})
+    env.run(datetime(2026, 9, 30, 22, 5, tzinfo=UTC))        # 00:05 local, 1 Oct
+    assert any(" | HALT | " in l for l in env.day_lines("2026-09-30"))
+    assert any(" | RECOVERED | " in l for l in env.day_lines("2026-10-01"))
+    assert not any(" | RECOVERED | " in l for l in env.day_lines("2026-09-30"))

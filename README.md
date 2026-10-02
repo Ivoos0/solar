@@ -10,7 +10,7 @@ Source: <https://github.com/Ivoos0/solar>
 ## Read this first: it decides and records, it does not control anything
 
 **Out of the box this project commands nothing.** It makes a decision every five minutes and
-appends it to a log file (`decisions.log`). The default inverter driver is `logging`
+appends it to a log file (`decisions-YYYY-MM-DD.log`, one file per day). The default inverter driver is `logging`
 (`pyscript/modules/inverter_logging.py`): it transmits nothing, so the log is the whole effect.
 A different inverter is a drop-in driver file selected by `inverter.type` in your config (see
 [Choosing an inverter driver](#choosing-an-inverter-driver) and
@@ -189,7 +189,7 @@ the send is retried on the next cycle. The halt itself still proceeds.
     modules/
   battery_planner/
     user_config.yaml          # created once from the example, never overwrite
-    decisions.log             # generated
+    decisions-YYYY-MM-DD.log  # generated, one file per local day
     cache/                    # generated
 ```
 
@@ -269,7 +269,7 @@ value loads that driver, so `type: alphaess` means `pyscript/modules/inverter_al
 responsibility of whoever wrote it and whoever enabled it.** None is shipped, and the project does
 not test against hardware.
 
-Whatever the driver, the decision line is always written to `decisions.log` first. A driver that
+Whatever the driver, the decision line is always written to that day's decision log first. A driver that
 raises, times out, returns `False` or is missing never removes or changes that line and never
 crashes the planner or the guard. A type with no usable driver file is an error in the Home Assistant
 log on every cycle, nothing is transmitted (the same as `logging`), and decisions carry
@@ -279,10 +279,21 @@ failed to load is retried on the next cycle, so adding a missing file needs no r
 
 ### Confirming it works
 
-A record should appear in `<ha-config>/battery_planner/decisions.log` within five minutes:
+A record should appear in today's file, `<ha-config>/battery_planner/decisions-YYYY-MM-DD.log`,
+within five minutes:
 
 ```bash
-tail -f <ha-config>/battery_planner/decisions.log
+tail -f <ha-config>/battery_planner/decisions-$(date +%F).log
+```
+
+The log is rotated daily by name: every record goes to the file of its own local date (in the
+`timezone` of your config), so `decisions-2026-09-30.log` holds exactly that calendar day, from
+00:00:00 to 23:59:59 local time. The planner, the peak guard and the HALT / RECOVERED / SKIP
+lines all write to the same day's file. **Nothing is deleted automatically**, so the directory
+grows by one file per day. Add your own cleanup, for example a daily cron job on the host:
+
+```bash
+find <ha-config>/battery_planner -name 'decisions-*.log' -mtime +30 -delete
 ```
 
 Each record has the action, power, state of charge, vetoes, the selector that produced it, a

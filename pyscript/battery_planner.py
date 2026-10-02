@@ -36,7 +36,7 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
 * Overlap: a module-level busy marker (_cycle_started_at), checked and set at
   the top of the trigger (no await between, so atomic in pyscript) and cleared
   in `finally`. A DUE cycle that finds it set logs a warning and writes a SKIP
-  line to decisions.log; a marker older than 2 intervals (a hung cycle, e.g. an
+  line to the day's decision log; a marker older than 2 intervals (a hung cycle, e.g. an
   executor blocked on NAS I/O) is logged as an error. Not @task_unique: its
   kill_me kills the NEW call before it can log (NFR-001).
 * Gate: cron fires at :00 of each minute, so elapsed time is compared with a
@@ -47,7 +47,7 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
   never re-keyed in local time (repeated fall-back hour).
 * Two degraded modes differ. Prices missing/stale/unknown/unavailable or last
   block elapsed -> HALT: no decision, one HALT line per halted cycle in
-  decisions.log (own small executor helper, since inverter.apply only accepts
+  the day's decision log (own small executor helper, since inverter.apply only accepts
   DecisionRecords), one alert on entry then at most one per
   alerts.realert_minutes, and a RECOVERED line when prices return. Halt state
   is in memory only: an HA restart during an outage alerts once more.
@@ -91,7 +91,7 @@ prices = rules = series = trajectory = None
 # ---- locations (tests redirect these) --------------------------------------
 CONFIG_PATH = "/config/battery_planner/user_config.yaml"
 CACHE_DIR = "/config/battery_planner/cache/"
-DECISIONS_LOG_PATH = inverter.DEFAULT_LOG_PATH
+DECISIONS_LOG_DIR = inverter.DEFAULT_LOG_DIR
 CORE_DIR = "/config/pyscript/modules"
 # Dependency order (rules needs capacity). inverter is NOT in this list.
 CORE_MODULES = ("config", "prices", "series", "battery", "trajectory",
@@ -252,9 +252,10 @@ def _append_line(path, line):
         os.fsync(handle.fileno())
 
 
-def _log_line(line):
+def _log_line(line, when):
+    """Append `line` to the decision log file of the local day of `when`."""
     try:
-        _append_line(DECISIONS_LOG_PATH, line)
+        _append_line(inverter.log_path_for(when, DECISIONS_LOG_DIR), line)
     except Exception as exc:
         log.error(f"battery_planner: cannot append to decision log: {exc!r}")  # noqa: F821
 
@@ -362,7 +363,7 @@ def _halt(cfg, local, cause):
         if _send_alert(cfg, _halt_state.cause, _halt_state.entered_at):
             _halt_state = decision.HaltState(
                 True, _halt_state.cause, _halt_state.entered_at, local)
-    _log_line(decision.format_halt(_halt_state, local))
+    _log_line(decision.format_halt(_halt_state, local), local)
 
 
 def _recover(local):
@@ -375,7 +376,7 @@ def _recover(local):
         local.isoformat(timespec="seconds"), "RECOVERED",
         "cause=%s" % _halt_state.cause,
         "entered=%s" % entered.isoformat(timespec="seconds"),
-        "halted_for=%dm" % minutes]))
+        "halted_for=%dm" % minutes]), local)
     log.info("battery_planner: prices recovered, resuming decisions")  # noqa: F821
     _halt_state = None
 
@@ -616,7 +617,7 @@ def _cycle(now):
     record = decision.build(d, traj, bat, price_now, degraded, now=local,
                             duration_ms=took, grid_state=grid, config=cfg)
     if not inverter.apply(d.action, d.target_power_kw, record,
-                          log_path=DECISIONS_LOG_PATH,
+                          log_dir=DECISIONS_LOG_DIR,
                           inverter_type=cfg.inverter_type,
                           driver_dir=CORE_DIR):
         log.error("battery_planner: decision could not be recorded")  # noqa: F821
@@ -643,7 +644,8 @@ def _skip(now, started):
     tz = ZoneInfo(_config.timezone) if _config else timezone.utc
     _log_line(" | ".join([
         now.astimezone(tz).isoformat(timespec="seconds"), "SKIP",
-        "cause=previous_cycle_running", "busy_for=%ds" % busy]))
+        "cause=previous_cycle_running", "busy_for=%ds" % busy]),
+        now.astimezone(tz))
 
 
 def run_cycle(now=None):

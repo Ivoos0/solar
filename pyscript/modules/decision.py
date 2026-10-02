@@ -1,6 +1,6 @@
 """Decision record: build and format the one auditable line per cycle. Pure.
 
-No file I/O (WP09 appends the line to decisions.log), no clock (the cycle
+No file I/O (WP09 appends the line to the day's decision log), no clock (the cycle
 time is a parameter), no third-party / Home Assistant imports.
 
 Public API

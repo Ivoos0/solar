@@ -1,7 +1,7 @@
 # Contract: Decision Record
 
 **Satisfies**: FR-018, FR-027, FR-028, NFR-004, NFR-008, SC-001, SC-002
-**Written to**: `battery_planner/decisions.log` (NAS only)
+**Written to**: `battery_planner/decisions-YYYY-MM-DD.log` (NAS only), one file per local calendar day of the record's own timestamp (in `timezone`); nothing is deleted automatically
 **Written by**: the inverter boundary, via the adapter
 **Read by**: a human, by eye
 
