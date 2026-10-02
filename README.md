@@ -215,6 +215,11 @@ A bad configuration is a startup error (logged, no decision made), not a quietly
 Check your provider's price coefficients (`prices.*`) and, for the capacity tariff, the rate on your
 own Fluvius bill (`capacity_tariff.rate_eur_per_kw_year`, revised annually).
 
+`usage.recency_weighting` (default `linear`, or `none`) makes newer weeks count more when the usage
+profile is averaged, so changes in routine are picked up faster: with `usage.history_weeks: 4` the last
+week weighs 4, the week before 3, then 2, then 1. `none` is the plain mean. Changing it discards the
+cached usage profile.
+
 `capacity_tariff.stay_under_percent` (default `80`, must be above 0 and at most 100) is a safety
 margin for **grid charging only**: charging from the grid must stay under that percentage of the
 ceiling (this month's peak, never below `billing_floor_kw`). With the 2.5 kW floor and 80, the

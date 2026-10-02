@@ -188,35 +188,66 @@ def usage_profile(history, config, start_time, horizon_end):
 
     Only readings within config.usage_history_weeks weeks before start_time
     are used. Buckets are (day group, time of day), the day group chosen by
-    config.usage_grouping; each bucket is the mean over the distinct dates
-    that contributed, and sample_days is that count. An empty bucket gets the
-    overall mean with sample_days 0. With no history every block is 0.0 with
-    sample_days 0 (never raises).
+    config.usage_grouping. A bucket's value is a weighted mean over the
+    distinct dates that contributed; sample_days is the plain count of those
+    dates (coverage, independent of weighting). An empty bucket gets the
+    overall mean over all contributing dates, weighted the same way, with
+    sample_days 0. With no history every block is 0.0 with sample_days 0
+    (never raises).
+
+    Recency weighting (config.usage_recency_weighting):
+      "none":   every date weighs 1 (plain mean).
+      "linear": week index = floor((start_time - reading) / 7 days) in UTC
+                instants, 0 being the most recent 7 days; weight =
+                usage_history_weeks - index (4,3,2,1 for four weeks). A date
+                takes the index of its LATEST reading in the window, so a date
+                straddling a week boundary counts as the newer week. Future
+                readings are clamped to index 0 and a reading exactly on the
+                cutoff to the oldest week (weight 1). Absent weeks simply
+                drop out; weights are not renormalised beyond the weighted
+                mean itself.
     """
     tz = _tz(config)
-    cutoff = (_aware(start_time, config)
-              - timedelta(weeks=config.usage_history_weeks)).astimezone(timezone.utc)
+    start = _aware(start_time, config)
+    weeks = config.usage_history_weeks
+    week = timedelta(weeks=1)
+    cutoff = (start - timedelta(weeks=weeks)).astimezone(timezone.utc)
+    start_utc = start.astimezone(timezone.utc)
+    linear = config.usage_recency_weighting == "linear"
     # (date, bucket) -> kWh, so finer-grained readings sum into their block.
     per_day = {}
+    day_index = {}  # date -> week index of its latest in-window reading
     for ts, kwh in history or ():
         aware = _aware(ts, config)
-        if aware.astimezone(timezone.utc) < cutoff:
+        instant = aware.astimezone(timezone.utc)
+        if instant < cutoff:
             continue
         local = aware.astimezone(tz)
-        key = (local.date(), _bucket(local, config))
+        d = local.date()
+        key = (d, _bucket(local, config))
         per_day[key] = per_day.get(key, 0.0) + float(kwh)
+        idx = min(max((start_utc - instant) // week, 0), weeks - 1)
+        day_index[d] = min(day_index.get(d, idx), idx)
 
-    sums, days = {}, {}
-    for (_, b), v in per_day.items():
-        sums[b] = sums.get(b, 0.0) + v
+    def weight(d):
+        return float(weeks - day_index[d]) if linear else 1.0
+
+    sums, wsum, days = {}, {}, {}
+    total, total_w = 0.0, 0.0
+    for (d, b), v in per_day.items():
+        w = weight(d)
+        sums[b] = sums.get(b, 0.0) + w * v
+        wsum[b] = wsum.get(b, 0.0) + w
         days[b] = days.get(b, 0) + 1
-    overall_mean = sum(per_day.values()) / len(per_day) if per_day else 0.0
+        total += w * v
+        total_w += w
+    overall_mean = total / total_w if total_w else 0.0
 
     out = []
     for t in _grid(config, start_time, horizon_end):
         b = _bucket(t.astimezone(tz) if t.tzinfo else t, config)
         if b in days:
-            out.append(UsageSlot(t, sums[b] / days[b], days[b]))
+            out.append(UsageSlot(t, sums[b] / wsum[b], days[b]))
         else:
             out.append(UsageSlot(t, overall_mean, 0))
     return out

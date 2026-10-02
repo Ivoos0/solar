@@ -113,7 +113,8 @@ def test_fingerprint_sensitivity():
                     ("solar__longitude", 4.0), ("solar__kwp", 9.0),
                     ("solar__declination", 40), ("solar__azimuth", 0),
                     ("usage__history_weeks", 8),
-                    ("usage__grouping", "day_type")]:
+                    ("usage__grouping", "day_type"),
+                    ("usage__recency_weighting", "none")]:
         assert from_dict(base(**{path: v})).fingerprint() != ref, path
 
 
@@ -133,6 +134,7 @@ def test_fingerprint_ignores_other_fields():
 def test_usage_defaults(site_config):
     assert site_config.usage_history_weeks == 4
     assert site_config.usage_grouping == "same_weekday"
+    assert site_config.usage_recency_weighting == "linear"
 
 
 def test_usage_section_parsed():
@@ -143,6 +145,8 @@ def test_usage_section_parsed():
 @pytest.mark.parametrize("key,bad_value", [
     ("history_weeks", 0), ("history_weeks", -2), ("history_weeks", 2.5),
     ("history_weeks", "four"), ("grouping", "weekly"), ("grouping", 3),
+    ("recency_weighting", "exponential"), ("recency_weighting", 1),
+    ("recency_weighting", True),
 ])
 def test_usage_validation_rejects(key, bad_value):
     with pytest.raises(ConfigError) as e:
@@ -163,9 +167,16 @@ def test_fingerprint_changes_per_usage_setting():
     ref = from_dict(base()).fingerprint()
     assert from_dict(base(usage__history_weeks=5)).fingerprint() != ref
     assert from_dict(base(usage__grouping="day_type")).fingerprint() != ref
+    assert from_dict(base(usage__recency_weighting="none")).fingerprint() != ref
     # explicit defaults equal the implicit ones
     assert from_dict(base(usage__history_weeks=4,
-                          usage__grouping="same_weekday")).fingerprint() == ref
+                          usage__grouping="same_weekday",
+                          usage__recency_weighting="linear")).fingerprint() == ref
+
+
+def test_recency_weighting_parsed():
+    assert from_dict(base(usage__recency_weighting="none")
+                     ).usage_recency_weighting == "none"
 
 
 def test_stay_under_percent_default_is_80():

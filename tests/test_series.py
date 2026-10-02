@@ -154,9 +154,12 @@ def test_usage_spans_horizon_when_history_is_short(site_config):
 # START is Tuesday 2026-06-02 10:00, so with the default 4-week window the
 # cutoff is Tuesday 2026-05-05 10:00. One reading per date, at 18:00 local.
 
-def _cfg(site_config, grouping, weeks=4):
+def _cfg(site_config, grouping, weeks=4, recency="none"):
+    # The hand-derived grouping tests below are plain-mean; recency weighting
+    # has its own section further down.
     return dataclasses.replace(site_config, usage_grouping=grouping,
-                               usage_history_weeks=weeks)
+                               usage_history_weeks=weeks,
+                               usage_recency_weighting=recency)
 
 
 def _at18(spec):
@@ -264,6 +267,133 @@ def test_flat_history_flat_profile_both_groupings(site_config, grouping):
 def test_no_history_zeros_both_groupings(site_config, grouping):
     u = series.usage_profile([], _cfg(site_config, grouping), START, _end(3))
     assert all(b.expected_kwh == 0.0 and b.sample_days == 0 for b in u)
+
+
+# ---- recency weighting -----------------------------------------------------
+# START is Tue 2026-06-02 10:00. Week index = floor((START - reading) / 7d):
+# Wed 27 May 18:00 -> 0, Wed 20 May -> 1, Wed 13 May -> 2, Wed 6 May -> 3.
+# Linear weights with 4 weeks: 4, 3, 2, 1.
+
+_WEDS = {(5, 6): 1.0, (5, 13): 2.0, (5, 20): 3.0, (5, 27): 4.0}
+
+
+def test_linear_weights_4_3_2_1_worked_example(site_config):
+    cfg = _cfg(site_config, "same_weekday", recency="linear")
+    wed = _slot(_profile(cfg, _at18(_WEDS)), 6, 3)
+    # (1*1 + 2*2 + 3*3 + 4*4) / (1+2+3+4) = 30 / 10
+    assert wed.expected_kwh == pytest.approx(3.0)
+    assert wed.sample_days == 4  # plain count, not the weight sum
+
+
+def test_none_is_the_plain_mean(site_config):
+    cfg = _cfg(site_config, "same_weekday", recency="none")
+    wed = _slot(_profile(cfg, _at18(_WEDS)), 6, 3)
+    assert wed.expected_kwh == pytest.approx(2.5) and wed.sample_days == 4
+
+
+def test_default_config_is_linear(site_config):
+    assert site_config.usage_recency_weighting == "linear"
+    wed = _slot(_profile(site_config, _at18(_WEDS)), 6, 3)
+    assert wed.expected_kwh == pytest.approx(3.0)
+
+
+def test_history_weeks_2_uses_weights_2_1(site_config):
+    cfg = _cfg(site_config, "same_weekday", weeks=2, recency="linear")
+    wed = _slot(_profile(cfg, _at18(_WEDS)), 6, 3)
+    # Wed 20 May = week index 1 -> weight 1, Wed 27 May -> weight 2
+    assert wed.expected_kwh == pytest.approx((3.0 * 1 + 4.0 * 2) / 3)
+    assert wed.sample_days == 2
+
+
+def test_history_weeks_1_degenerates_to_plain_mean(site_config):
+    cfg = _cfg(site_config, "day_type", weeks=1, recency="linear")
+    hist = _at18({(5, 27): 1.0, (5, 28): 3.0})
+    assert _slot(_profile(cfg, hist), 6, 3).expected_kwh == pytest.approx(2.0)
+
+
+def test_day_type_recent_weekdays_weigh_more(site_config):
+    cfg = _cfg(site_config, "day_type", recency="linear")
+    p = _profile(cfg, _at18(_MIXED))
+    # weekday weights: Wed 1,2,3,4 (0.2,0.4,0.6,0.8) = 6.0; Tue 2,3,4 (1.0) = 9.0;
+    # Thu 7 May weight 1 (5.0) = 5.0. Total 20.0 over weight 10+9+1 = 20.
+    assert _slot(p, 6, 3).expected_kwh == pytest.approx(1.0)
+    assert _slot(p, 6, 3).sample_days == 8
+    # weekend dates are all in week index 3 (weight 1): plain mean 3.0
+    assert _slot(p, 6, 6).expected_kwh == pytest.approx(3.0)
+
+
+def test_missing_middle_week_just_drops_out(site_config):
+    cfg = _cfg(site_config, "same_weekday", recency="linear")
+    hist = _at18({(5, 6): 1.0, (5, 20): 3.0, (5, 27): 4.0})
+    wed = _slot(_profile(cfg, hist), 6, 3)
+    assert wed.expected_kwh == pytest.approx((1 * 1 + 3 * 3 + 4 * 4) / 8)
+    assert wed.sample_days == 3
+
+
+def test_date_straddling_week_boundary_takes_latest_reading_index(site_config):
+    # Week boundary is Tue 26 May 10:00. Tue 26 May has a 09:00 reading (index
+    # 1) and an 18:00 reading (index 0): the date weighs as the newer week (4)
+    # in BOTH of its buckets. Tue 19 May (weight 3) is a plain 1.0.
+    cfg = _cfg(site_config, "same_weekday", recency="linear")
+    hist = [(datetime(2026, 5, 19, 9, 0, tzinfo=TZ), 1.0),
+            (datetime(2026, 5, 19, 18, 0, tzinfo=TZ), 1.0),
+            (datetime(2026, 5, 26, 9, 0, tzinfo=TZ), 3.0),
+            (datetime(2026, 5, 26, 18, 0, tzinfo=TZ), 3.0)]
+    p = _profile(cfg, hist)
+    expected = (3 * 1.0 + 4 * 3.0) / 7
+    for hour in (9, 18):
+        want = datetime(2026, 6, 9, hour, 0, tzinfo=TZ)
+        slot = next(b for b in p if b.block_start == want)
+        assert slot.expected_kwh == pytest.approx(expected)
+        assert slot.sample_days == 2
+
+
+def test_week_boundary_instant_belongs_to_the_older_week(site_config):
+    # Exactly 7 days before START (Tue 26 May 10:00) is index 1, not 0.
+    cfg = _cfg(site_config, "same_weekday", recency="linear")
+    hist = [(datetime(2026, 5, 19, 10, 0, tzinfo=TZ), 1.0),
+            (datetime(2026, 5, 26, 10, 0, tzinfo=TZ), 3.0)]  # idx 2 and 1
+    want = datetime(2026, 6, 9, 10, 0, tzinfo=TZ)
+    slot = next(b for b in _profile(cfg, hist) if b.block_start == want)
+    assert slot.expected_kwh == pytest.approx((2 * 1.0 + 3 * 3.0) / 5)
+
+
+def test_fallback_uses_the_same_weighting(site_config):
+    # Mon 25 May 0.4 (index 1, w3), Tue 26 May 1.0 (index 0, w4),
+    # Sun 24 May 2.2 (index 1, w3). Wednesday has no data under same_weekday.
+    hist = _at18({(5, 25): 0.4, (5, 26): 1.0, (5, 24): 2.2})
+    cfg = _cfg(site_config, "same_weekday", recency="linear")
+    wed = _slot(_profile(cfg, hist), 6, 3)
+    assert wed.sample_days == 0
+    assert wed.expected_kwh == pytest.approx((3 * 0.4 + 4 * 1.0 + 3 * 2.2) / 10)
+    plain = _slot(_profile(_cfg(site_config, "same_weekday"), hist), 6, 3)
+    assert plain.expected_kwh == pytest.approx(1.2)
+
+
+@pytest.mark.parametrize("grouping", ["same_weekday", "day_type"])
+def test_flat_history_stays_flat_under_weighting(site_config, grouping):
+    cfg = _cfg(site_config, grouping, recency="linear")
+    u = series.usage_profile(_history(28), cfg, START, _end(30))
+    assert all(b.expected_kwh == pytest.approx(0.25) for b in u)
+
+
+def test_weighting_across_fall_back_day(site_config):
+    # Start Mon 2 Nov 2026 10:00. Sun 25 Oct (the 25-hour day, index 1 -> w3)
+    # has both 02:30 occurrences, which sum into one bucket; Sun 1 Nov is
+    # index 0 (w4).
+    start = datetime(2026, 11, 2, 10, 0, tzinfo=TZ)
+    cfg = _cfg(site_config, "same_weekday", recency="linear")
+    hist = [(datetime(2026, 10, 25, 2, 30, tzinfo=TZ, fold=0), 0.5),
+            (datetime(2026, 10, 25, 2, 30, tzinfo=TZ, fold=1), 0.5),
+            (datetime(2026, 10, 25, 12, 0, tzinfo=TZ), 1.0),
+            (datetime(2026, 11, 1, 2, 30, tzinfo=TZ), 2.0),
+            (datetime(2026, 11, 1, 12, 0, tzinfo=TZ), 2.0)]
+    p = series.usage_profile(hist, cfg, start, start + timedelta(days=7))
+    for hour, minute in ((2, 30), (12, 0)):
+        want = datetime(2026, 11, 8, hour, minute, tzinfo=TZ)
+        slot = next(b for b in p if b.block_start == want)
+        assert slot.expected_kwh == pytest.approx((3 * 1.0 + 4 * 2.0) / 7)
+        assert slot.sample_days == 2
 
 
 # ---- DST grids (Europe/Brussels) ------------------------------------------

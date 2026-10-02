@@ -41,6 +41,7 @@ Loaded once per cycle from `battery_planner/user_config.yaml` by the adapter, pa
 | `capacity_rate_eur_per_kw_year` | float | EUR/kW/yr | 40.0 | Revised annually; check the bill |
 | `guard_interval_seconds` | int | seconds | 30 | NFR-010 |
 | `usage_history_weeks` | int | weeks | 4 | Trailing window for the usage profile (>= 1) (FR-005) |
+| `usage_recency_weighting` | str | — | `linear` | `linear` \| `none`. `linear` weights each date by `usage_history_weeks` minus its week index (0 = the most recent 7 days), so with four weeks the weights are 4, 3, 2, 1; `none` is a plain mean. Part of the cache fingerprint |
 | `usage_grouping` | str | — | `same_weekday` | `same_weekday` \| `day_type` (FR-059). Part of the cache fingerprint: changing it invalidates the cached usage profile |
 | `peak_averaging_months` | int | months | 13 | Length of the averaging window the meter reports (>= 1); the divisor when pricing a peak increase (FR-054). Cancels out of the total euro cost but sets how much the billed average moves |
 | `quarter_hour_average_mode` | str | — | `auto` | FR-055, FR-057 — `auto` \| `running` \| `accumulating` |
@@ -86,8 +87,8 @@ A block absent from the price map is still projected by the trajectory — the b
 | Field | Type | Unit | Notes |
 |---|---|---|---|
 | `block_start` | datetime | — | |
-| `expected_kwh` | float | kWh | Mean over the configured window for this block, grouped by `usage_grouping` (same weekday, or day type) |
-| `sample_days` | int | days | Distinct dates that contributed to this slot: up to `usage_history_weeks` under same-weekday grouping, up to about 5x that under day-type grouping. A genuine sample count, so it now does signal thin history; the adapter still reports overall coverage separately (FR-005, FR-059) |
+| `expected_kwh` | float | kWh | Recency-weighted mean (`usage_recency_weighting`) over the configured window for this block, grouped by `usage_grouping` (same weekday, or day type) |
+| `sample_days` | int | days | Distinct dates that contributed to this slot (a plain count, unaffected by recency weights): up to `usage_history_weeks` under same-weekday grouping, up to about 5x that under day-type grouping. A genuine sample count, so it now does signal thin history; the adapter still reports overall coverage separately (FR-005, FR-059) |
 
 ---
 

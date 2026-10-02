@@ -5,6 +5,7 @@ from dataclasses import dataclass, fields
 
 _MODES = ("auto", "running", "accumulating")
 _GROUPINGS = ("same_weekday", "day_type")
+_RECENCY = ("linear", "none")
 
 # (section, file key, attribute)
 _MAP = [
@@ -30,6 +31,7 @@ _MAP = [
     ("timing", "usage_cache_stale_minutes", "usage_cache_stale_minutes"),
     ("usage", "history_weeks", "usage_history_weeks"),
     ("usage", "grouping", "usage_grouping"),
+    ("usage", "recency_weighting", "usage_recency_weighting"),
     ("alerts", "address", "alert_address"),
     ("alerts", "notify_service", "notify_service"),
     ("alerts", "realert_minutes", "realert_minutes"),
@@ -47,12 +49,13 @@ _MAP = [
 _NON_NUMERIC = (
     "alert_address", "notify_service", "timezone", "offtake_sensor",
     "quarter_hour_average_mode", "capacity_enabled", "usage_grouping",
+    "usage_recency_weighting",
 )
 
 _FINGERPRINT_FIELDS = (
     "latitude", "longitude", "array_kwp",
     "array_declination", "array_azimuth", "block_minutes",
-    "usage_history_weeks", "usage_grouping",
+    "usage_history_weeks", "usage_grouping", "usage_recency_weighting",
 )
 
 
@@ -96,6 +99,7 @@ class SiteConfig:
     stay_under_percent: float = 80.0
     usage_history_weeks: int = 4
     usage_grouping: str = "same_weekday"
+    usage_recency_weighting: str = "linear"
 
     def fingerprint(self):
         """Stable 8-hex digest of the fields that change what a block means."""
@@ -160,6 +164,9 @@ def _errors(cfg):
     if cfg.usage_grouping not in _GROUPINGS:
         bad("usage_grouping", cfg.usage_grouping,
             "must be one of %s" % ", ".join(_GROUPINGS))
+    if cfg.usage_recency_weighting not in _RECENCY:
+        bad("usage_recency_weighting", cfg.usage_recency_weighting,
+            "must be one of %s" % ", ".join(_RECENCY))
     return errs
 
 

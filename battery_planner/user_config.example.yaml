@@ -52,6 +52,13 @@ usage:
                                 # day_type: a Wednesday block = mean over every
                                 #   weekday in the window; Saturday and Sunday
                                 #   pool as weekend days (smoother, fills faster)
+  recency_weighting: linear     # linear | none
+                                # linear: newer weeks count more, so changes in
+                                #   routine show up sooner. With history_weeks 4
+                                #   the last week weighs 4, the week before 3,
+                                #   then 2, then 1 (weight = history_weeks -
+                                #   weeks ago; missing weeks just drop out)
+                                # none: plain mean, every day counts equally
 
 timing:
   block_minutes: 15
