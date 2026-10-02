@@ -12,13 +12,21 @@ The boundary expresses **intent**, not transport. No register numbers, no connec
 ## Interface the adapters call (`inverter.py`)
 
 ```python
-def apply(action, target_power_kw, record, log_path=DEFAULT_LOG_PATH,
-          inverter_type="logging", driver_dir=None):
+def apply(action, target_power_kw, record, log_path=None,
+          inverter_type="logging", driver_dir=None, log_dir=DEFAULT_LOG_DIR):
     """Log the decision, THEN hand the intent to the configured driver.
+
+    The line goes to log_path when given (tests, back-compat); otherwise to
+    log_path_for(record.timestamp, log_dir), i.e.
+    <log_dir>/decisions-YYYY-MM-DD.log for the record's own local date.
 
     Returns True when the decision line was durably recorded, False on any
     refusal or logging failure. Never raises. Driver outcomes never change it.
     """
+
+
+def log_path_for(day, log_dir=DEFAULT_LOG_DIR):
+    """Pure: '<log_dir>/decisions-YYYY-MM-DD.log' from the year, month and day of `day`."""
 
 
 def read_charge(inverter_type="logging", driver_dir=None):
@@ -51,7 +59,7 @@ def read_charge_percent(): ...           # number, 0..100
 3. **Unknown or broken driver is safe and visible.** Nothing is transmitted (log-only behaviour), `apply` logs an error on every call, and `read_charge` returns the 50.0 placeholder with `is_stub=True` and marker `inverter_driver_unavailable`, which lands in `degraded=`. A failed load is not cached, so a fixed file is picked up on the next call. An unusable reading (exception, timeout, not a number in 0..100, a bool) gives the same placeholder with `inverter_read_failed`.
 4. **The stub is visible.** `logging` sets `SOC_IS_STUB = True`; its decisions are marked `soc_stubbed` (FR-027). A driver that reads real hardware leaves the flag unset, and the marker disappears, which is itself the signal that the switch happened.
 5. **Drivers never run on the event loop.** `inverter.py` loads them with importlib inside a `@pyscript_executor` helper (private name `inverter_driver_<type>`, no `sys.path` entry, no bare alias) and calls them through another executor helper that applies the timeout in a daemon thread. A driver is ordinary CPython and must not use pyscript globals. Drivers are cached after a successful load; changing one needs a Home Assistant restart.
-6. **`apply` is the only writer of the decision log lines for decisions**, which is why "record the intent" and "act on the intent" are one call rather than two. The planner also appends its own HALT/RECOVERED/SKIP lines, through its own helper.
+6. **`apply` is the only writer of the decision log lines for decisions**, which is why "record the intent" and "act on the intent" are one call rather than two. The planner also appends its own HALT/RECOVERED/SKIP lines, through its own helper, into the same day's file (`log_path_for`).
 7. **The planner never imports anything below this boundary.** The core does not know a driver exists; the adapters know only `apply` and `read_charge`.
 8. **File I/O lives here or in the adapter, never in the core**, run off the event loop with `@pyscript_executor` (`@pyscript_compile` alone does NOT move work off the loop; `research.md` R-02).
 9. **Concurrency.** The planner and the guard may call a driver at the same time from different threads; a driver serializes its own bus access.

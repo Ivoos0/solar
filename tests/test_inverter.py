@@ -10,7 +10,7 @@ import builtins
 import importlib.util
 import re
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -26,12 +26,12 @@ ALLOWED_IMPORTS = {"os", "decision", "importlib.util", "re", "sys", "threading"}
 ALLOWED_CALL_NAMES = {"open", "abs", "_append_line", "isinstance", "callable",
                       "getattr", "bool", "float", "ValueError", "AttributeError",
                       "FileNotFoundError", "repr", "_load_driver", "_invoke",
-                      "_driver", "_transmit", "run", "fn"}
+                      "_driver", "_transmit", "run", "fn", "log_path_for"}
 ALLOWED_CALL_ATTRS = {"write", "flush", "fileno", "fsync", "makedirs",
                       "dirname", "format_record", "warning", "error", "get",
                       "isfile", "join", "fullmatch", "spec_from_file_location",
                       "module_from_spec", "exec_module", "pop", "append",
-                      "Thread", "start"}
+                      "Thread", "start", "rstrip"}
 
 
 class FakeLog:
@@ -334,19 +334,19 @@ def test_no_transmission_vocabulary_in_source():
         assert not re.search(word, text, re.IGNORECASE), word
 
 
-def test_public_surface_is_exactly_two_functions_plus_constants(inverter):
+def test_public_surface_is_exactly_three_functions_plus_constants(inverter):
     public = {n for n in vars(inverter) if not n.startswith("_")}
     funcs = {n for n in public
              if callable(getattr(inverter, n))
              and getattr(getattr(inverter, n), "__module__", None)
              == inverter.__name__}
-    assert funcs == {"apply", "read_charge"}
+    assert funcs == {"apply", "read_charge", "log_path_for"}
     assert public == {"os", "decision", "apply", "read_charge",
-                      "DEFAULT_LOG_PATH", "DEFAULT_DRIVER_DIR",
+                      "DEFAULT_LOG_DIR", "DEFAULT_DRIVER_DIR", "log_path_for",
                       "STUBBED_CHARGE_PERCENT", "POWER_TOLERANCE_KW",
                       "DRIVER_TIMEOUT_SECONDS", "MARKER_UNAVAILABLE",
                       "MARKER_READ_FAILED"}
-    assert inverter.DEFAULT_LOG_PATH == "/config/battery_planner/decisions.log"
+    assert inverter.DEFAULT_LOG_DIR == "/config/battery_planner"
 
 
 # ---- drivers: selection, safety, logging-first ------------------------------------
@@ -603,3 +603,79 @@ def test_unexpected_failure_inside_the_boundary_never_reaches_the_caller(
     assert ok is True
     assert log.read_text() == decision.format_record(record) + "\n"
     assert "executor exploded" in builtins.log.errors[0]
+
+
+# ---- daily rotation: one file per local day ---------------------------------------
+
+def test_log_path_for_names_the_file_by_date(inverter):
+    assert (inverter.log_path_for(datetime(2026, 1, 5, 3, 0, tzinfo=TZ), "/x/y")
+            == "/x/y/decisions-2026-01-05.log")
+    assert (inverter.log_path_for(date(2026, 12, 31), "/x/y/")
+            == "/x/y/decisions-2026-12-31.log")
+    assert (inverter.log_path_for(date(2026, 9, 30))
+            == "/config/battery_planner/decisions-2026-09-30.log")
+
+
+def test_apply_derives_the_dated_file_from_the_record_timestamp(
+        inverter, tmp_path):
+    r = make_record(timestamp=datetime(2026, 9, 29, 14, 35, tzinfo=TZ))
+    assert inverter.apply("export", 2.5, r, log_dir=str(tmp_path)) is True
+    f = tmp_path / "decisions-2026-09-29.log"
+    assert f.read_text(encoding="utf-8") == decision.format_record(r) + "\n"
+    assert [p.name for p in tmp_path.iterdir()] == [f.name]
+
+
+def test_midnight_boundary_is_the_records_own_local_date(inverter, tmp_path):
+    before = make_record(timestamp=datetime(2026, 9, 29, 23, 59, 59, tzinfo=TZ))
+    after = make_record(timestamp=datetime(2026, 9, 30, 0, 0, 0, tzinfo=TZ))
+    assert inverter.apply("export", 2.5, before, log_dir=str(tmp_path))
+    assert inverter.apply("export", 2.5, after, log_dir=str(tmp_path))
+    assert (tmp_path / "decisions-2026-09-29.log").read_text().count("\n") == 1
+    assert (tmp_path / "decisions-2026-09-30.log").read_text().count("\n") == 1
+
+
+def test_date_is_local_not_utc(inverter, tmp_path):
+    # 00:30 on 30 Sep in Brussels is still 29 Sep in UTC.
+    r = make_record(timestamp=datetime(2026, 9, 30, 0, 30, tzinfo=TZ))
+    assert inverter.apply("export", 2.5, r, log_dir=str(tmp_path))
+    assert (tmp_path / "decisions-2026-09-30.log").exists()
+
+
+def test_dst_change_days_keep_one_file_per_calendar_date(inverter, tmp_path):
+    for day in (date(2026, 3, 29), date(2026, 10, 25)):      # spring, autumn
+        for hour in (0, 1, 3, 23):
+            ts = datetime(day.year, day.month, day.day, hour, 5, tzinfo=TZ)
+            assert inverter.apply("export", 2.5, make_record(timestamp=ts),
+                                  log_dir=str(tmp_path))
+    names = sorted(p.name for p in tmp_path.iterdir())
+    assert names == ["decisions-2026-03-29.log", "decisions-2026-10-25.log"]
+    assert all(p.read_text().count("\n") == 4 for p in tmp_path.iterdir())
+
+
+def test_two_days_two_files_and_same_day_appends(inverter, tmp_path):
+    days = (29, 29, 30)
+    for d in days:
+        r = make_record(timestamp=datetime(2026, 9, d, 12, 0, tzinfo=TZ))
+        assert inverter.apply("export", 2.5, r, log_dir=str(tmp_path))
+    assert (tmp_path / "decisions-2026-09-29.log").read_text().count("\n") == 2
+    assert (tmp_path / "decisions-2026-09-30.log").read_text().count("\n") == 1
+
+
+def test_explicit_log_path_wins_over_the_dated_name(inverter, tmp_path):
+    explicit = tmp_path / "mine.log"
+    assert inverter.apply("export", 2.5, make_record(), str(explicit),
+                          log_dir=str(tmp_path / "ignored"))
+    assert explicit.exists() and not (tmp_path / "ignored").exists()
+
+
+def test_planner_and_guard_records_of_one_day_share_a_file(inverter, tmp_path):
+    ts = datetime(2026, 9, 29, 9, 0, tzinfo=TZ)
+    assert inverter.apply("export", 2.5, make_record(timestamp=ts),
+                          log_dir=str(tmp_path))
+    guard = make_record(timestamp=ts.replace(hour=18), source="guard",
+                        selector="S0")
+    assert inverter.apply("export", 2.5, guard, log_dir=str(tmp_path))
+    f = tmp_path / "decisions-2026-09-29.log"
+    assert [p.name for p in tmp_path.iterdir()] == [f.name]
+    lines = f.read_text().splitlines()
+    assert "source=planner" in lines[0] and "source=guard" in lines[1]

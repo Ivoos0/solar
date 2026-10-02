@@ -59,7 +59,7 @@ The built-in Forecast.Solar integration is **not** used: it is UI config-flow on
 | `pyscript/` | `<config>/pyscript/` | **overwrite** |
 | `battery_planner/user_config.example.yaml` | `<config>/battery_planner/` | overwrite (the example only) |
 | — | `<config>/battery_planner/user_config.yaml` | **never touch** |
-| — | `<config>/battery_planner/decisions.log` | **never copy** |
+| — | `<config>/battery_planner/decisions-YYYY-MM-DD.log` | **never copy** (one file per local day; nothing is deleted automatically) |
 | — | `<config>/battery_planner/cache/` | **never copy** |
 
 Do not copy `tests/` or `kitty-specs/` to the NAS — they are development artifacts.
@@ -77,7 +77,7 @@ From here on, copying the repo over the top is safe. `user_config.yaml` is gitig
 ### 5. Restart and watch
 
 ```bash
-tail -f <config>/battery_planner/decisions.log
+tail -f <config>/battery_planner/decisions-$(date +%F).log
 ```
 
 Within five minutes a record should appear. A healthy first record looks roughly like:

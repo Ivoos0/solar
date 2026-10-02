@@ -76,7 +76,7 @@ pyscript/
 battery_planner/
 ├── user_config.example.yaml    # shipped; copied once to user_config.yaml on the NAS
 ├── user_config.yaml            # NAS only — gitignored, never overwritten
-├── decisions.log               # NAS only — planner output
+├── decisions-YYYY-MM-DD.log    # NAS only — planner output, one file per local day
 └── cache/                      # NAS only — derived series
 
 tests/
@@ -160,7 +160,7 @@ tests/
 
 - **Purpose**: Write one auditable line per cycle that a human can check by hand against the prices and forecast for that moment.
 - **Relevant requirements**: FR-018, FR-027, FR-028, NFR-004, NFR-008, SC-001, SC-002
-- **Affected surfaces**: `pyscript/modules/decision.py` (structure), adapter (the write), `battery_planner/decisions.log`, `contracts/decision-record.md`
+- **Affected surfaces**: `pyscript/modules/decision.py` (structure), adapter (the write), `battery_planner/decisions-YYYY-MM-DD.log`, `contracts/decision-record.md`
 - **Sequencing/depends-on**: IC-07
 - **Risks**: This is the mission's only output surface — trimming fields for brevity trades away the entire deliverable. Every field is mandatory, including an explicit "no veto applied" rather than an omitted field. Appends only, never rewrites.
 

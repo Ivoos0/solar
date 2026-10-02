@@ -100,7 +100,7 @@ Deriving prices in the core rather than in Home Assistant templates is deliberat
 
 ## R-05 — Where the numbers live and how copying stays safe
 
-**Decision**: Everything under the Home Assistant config directory. Code overwritten on every copy; `battery_planner/user_config.yaml` never overwritten; `decisions.log` and `cache/` never copied in either direction. The repository ships `user_config.example.yaml`; the live file is gitignored and created once by a deliberate rename.
+**Decision**: Everything under the Home Assistant config directory. Code overwritten on every copy; `battery_planner/user_config.yaml` never overwritten; the dated `decisions-YYYY-MM-DD.log` files and `cache/` never copied in either direction. The repository ships `user_config.example.yaml`; the live file is gitignored and created once by a deliberate rename.
 
 **Rationale**: Deployment is a manual copy to the NAS, which makes file lifecycle a correctness concern rather than a tidiness one. Three files change for three different reasons and at three different rates, and a careless recursive copy that treats them alike would silently destroy hand-entered provider coefficients, capacity, and alert address. Separating them by directory and by gitignore makes the safe action the default one.
 
