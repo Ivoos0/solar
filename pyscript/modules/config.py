@@ -35,6 +35,7 @@ _MAP = [
     ("alerts", "address", "alert_address"),
     ("alerts", "notify_service", "notify_service"),
     ("alerts", "realert_minutes", "realert_minutes"),
+    ("inverter", "type", "inverter_type"),
     (None, "timezone", "timezone"),
     ("capacity_tariff", "enabled", "capacity_enabled"),
     ("capacity_tariff", "billing_floor_kw", "billing_floor_kw"),
@@ -49,7 +50,7 @@ _MAP = [
 _NON_NUMERIC = (
     "alert_address", "notify_service", "timezone", "offtake_sensor",
     "quarter_hour_average_mode", "capacity_enabled", "usage_grouping",
-    "usage_recency_weighting",
+    "usage_recency_weighting", "inverter_type",
 )
 
 _FINGERPRINT_FIELDS = (
@@ -100,6 +101,7 @@ class SiteConfig:
     usage_history_weeks: int = 4
     usage_grouping: str = "same_weekday"
     usage_recency_weighting: str = "linear"
+    inverter_type: str = "logging"
 
     def fingerprint(self):
         """Stable 8-hex digest of the fields that change what a block means."""
@@ -146,6 +148,11 @@ def _errors(cfg):
             or not re.fullmatch(r"[a-z0-9_]+", cfg.notify_service)):
         bad("alerts.notify_service", cfg.notify_service,
             "must be a service slug: lowercase letters, digits, underscore")
+    if (not isinstance(cfg.inverter_type, str)
+            or not re.fullmatch(r"[a-z0-9_]+", cfg.inverter_type)):
+        bad("inverter.type", cfg.inverter_type,
+            "must be a driver name: lowercase letters, digits, underscore "
+            "(it selects pyscript/modules/inverter_<type>.py)")
     if cfg.peak_averaging_months < 1:
         bad("peak_averaging_months", cfg.peak_averaging_months, "must be >= 1")
     if cfg.max_charge_kw <= 0:
@@ -190,6 +197,9 @@ def from_dict(raw):
                 continue
         if key in container and container[key] is not None:
             kwargs[attr] = container[key]
+    if (isinstance(kwargs.get("inverter_type"), str)
+            and kwargs["inverter_type"].strip().lower() == "none"):
+        kwargs["inverter_type"] = "logging"      # "none" means log only
     for req, label in (("capacity_kwh", "battery.capacity_kwh"),
                        ("alert_address", "alerts.address")):
         if req not in kwargs:

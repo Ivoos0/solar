@@ -583,8 +583,11 @@ def _cycle(now):
     window_days = cfg.usage_history_weeks * 7
     coverage = history_days if history_days < window_days else None
 
-    charge = inverter.read_charge_percent()
-    bat = battery.from_percent(charge, cfg, is_stubbed=True)
+    charge, charge_is_stub, charge_marker = inverter.read_charge(
+        cfg.inverter_type, CORE_DIR)
+    if charge_marker:
+        markers.append(charge_marker)
+    bat = battery.from_percent(charge, cfg, is_stubbed=charge_is_stub)
     block_start = local.replace(
         minute=(local.minute // cfg.block_minutes) * cfg.block_minutes,
         second=0, microsecond=0)
@@ -613,7 +616,9 @@ def _cycle(now):
     record = decision.build(d, traj, bat, price_now, degraded, now=local,
                             duration_ms=took, grid_state=grid, config=cfg)
     if not inverter.apply(d.action, d.target_power_kw, record,
-                          log_path=DECISIONS_LOG_PATH):
+                          log_path=DECISIONS_LOG_PATH,
+                          inverter_type=cfg.inverter_type,
+                          driver_dir=CORE_DIR):
         log.error("battery_planner: decision could not be recorded")  # noqa: F821
     if took > SLOW_CYCLE_MS:
         log.warning(f"battery_planner: slow cycle {took}ms")  # noqa: F821

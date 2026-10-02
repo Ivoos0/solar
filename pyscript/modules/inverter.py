@@ -1,17 +1,29 @@
-"""Inverter boundary: records intent, transmits nothing (this mission).
+"""Inverter boundary: always records intent, then hands it to the configured driver.
 
 Public surface (contracts/inverter-boundary.md):
-    apply(action, target_power_kw, record, log_path=DEFAULT_LOG_PATH) -> bool
-    read_charge_percent() -> float
+    apply(action, target_power_kw, record, log_path=DEFAULT_LOG_PATH,
+          inverter_type="logging", driver_dir=None) -> bool
+    read_charge(inverter_type="logging", driver_dir=None)
+        -> (percent, is_stub, marker)
+driver_dir=None means DEFAULT_DRIVER_DIR.
 
-Everything that will one day talk to the real inverter lives behind these two
-signatures. They express intent, not transport.
+Everything that talks to a real inverter lives in a driver file,
+<driver_dir>/inverter_<inverter_type>.py (inverter_logging.py documents the
+interface). The default driver, `logging`, transmits nothing. This file does
+not change when an inverter is added.
 
 This is a pyscript MODULE (pyscript/modules/), not a top-level script. Top-level
 pyscript scripts cannot import each other; only files under <config>/pyscript/
 modules/ are importable by scripts. The planner adapter and the peak guard both
 need to call apply(), so this file must live here. Modules may still use
 pyscript features (@pyscript_executor, log).
+
+Drivers are loaded NATIVELY (importlib inside a @pyscript_executor helper), like
+the pure core: they are ordinary CPython, may block, and run in an executor
+thread under a timeout, never on the event loop. Each is registered only as
+inverter_driver_<type>; nothing is added to sys.path and no bare alias is made.
+A loaded driver is cached until pyscript reloads this file; a failed load is
+retried on the next call, so fixing the file needs no restart.
 """
 import os
 
@@ -20,15 +32,26 @@ import decision
 # Home Assistant config dir inside the container. Parameterised on apply() so
 # tests can redirect it.
 DEFAULT_LOG_PATH = "/config/battery_planner/decisions.log"
+DEFAULT_DRIVER_DIR = "/config/pyscript/modules"
 
-# STUB, NOT A MEASUREMENT. The inverter link is out of scope (C-003), so the
-# battery charge is a fixed placeholder. Decisions built on it carry
-# degraded=soc_stubbed (set from BatteryState.is_stubbed, not here). Do not
-# replace this with another Home Assistant entity as a proxy.
+# Fallback used ONLY when the configured driver cannot be loaded or its reading
+# is unusable. It is a placeholder, not a measurement: decisions built on it
+# carry degraded=soc_stubbed. Keep equal to inverter_logging.STUBBED_CHARGE_PERCENT.
 STUBBED_CHARGE_PERCENT = 50.0
 
 # Largest allowed gap between the target_power_kw argument and the record's.
 POWER_TOLERANCE_KW = 1e-9
+
+# A driver call that has not returned after this long counts as failed (the
+# worker thread is abandoned, so drivers should also set network timeouts).
+DRIVER_TIMEOUT_SECONDS = 10.0
+
+# Degraded markers for decisions taken while the driver is not working.
+MARKER_UNAVAILABLE = "inverter_driver_unavailable"
+MARKER_READ_FAILED = "inverter_read_failed"
+
+# {driver_dir + "/" + type: loaded driver module}. Successes only.
+_drivers = {}
 
 
 # WHY @pyscript_executor, two things in one decorator. (1) It compiles this
@@ -38,7 +61,8 @@ POWER_TOLERANCE_KW = 1e-9
 # Assistant's event loop (research.md R-02). @pyscript_compile alone only does
 # (1): the interpreted caller would still run the I/O on the loop and Home
 # Assistant would log a blocking-call warning and stall every cycle. Do not
-# downgrade the decorator or call this from a plain function.
+# downgrade the decorator or call this from a plain function. The same holds
+# for the driver helpers below.
 #
 # Concurrency assumption: the planner and the peak guard both call apply()
 # from separate tasks, so appends may come from different worker threads. Each
@@ -57,21 +81,122 @@ def _append_line(path, line):
         os.fsync(handle.fileno())
 
 
-def apply(action, target_power_kw, record, log_path=DEFAULT_LOG_PATH):
-    """Carry out a decision.
+@pyscript_executor  # noqa: F821
+def _load_driver(driver_dir, inverter_type):
+    """Import <driver_dir>/inverter_<type>.py as CPython. Raises when unusable."""
+    import importlib.util
+    import re
+    import sys
+    if not isinstance(inverter_type, str) or not re.fullmatch(
+            r"[a-z0-9_]+", inverter_type):
+        raise ValueError("invalid driver name %r" % (inverter_type,))
+    path = os.path.join(driver_dir, "inverter_%s.py" % inverter_type)
+    if not os.path.isfile(path):
+        raise FileNotFoundError("no driver file %s" % path)
+    full = "inverter_driver_" + inverter_type
+    spec = importlib.util.spec_from_file_location(full, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[full] = module          # dataclasses etc. look themselves up
+    try:
+        spec.loader.exec_module(module)
+        for name in ("send", "read_charge_percent"):
+            if not callable(getattr(module, name, None)):
+                raise AttributeError("%s defines no %s()" % (path, name))
+    except BaseException:
+        sys.modules.pop(full, None)
+        raise
+    return module
 
-    This mission: append `record` to the decision log and return. Nothing is
-    transmitted to the inverter. `record` is authoritative for the logged
-    content; action and target_power_kw are the intent a later implementation
-    will act on, so they must match the record or nothing is written.
+
+@pyscript_executor  # noqa: F821
+def _invoke(driver, method, args, timeout):
+    """Call driver.<method>(*args) with a deadline. Never raises.
+
+    Returns (ok, value, error_text). The call runs in a daemon thread that is
+    abandoned on timeout, so a hung driver cannot hold up the cycle or the guard.
+    """
+    import threading
+    box = []
+
+    def run():
+        try:
+            fn = getattr(driver, method)
+            box.append((True, fn(*args), None))
+        except BaseException as exc:
+            box.append((False, None, repr(exc)))
+
+    worker = threading.Thread(target=run, name="inverter-driver", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if not box:
+        return (False, None, "timed out after %ss" % timeout)
+    return box[0]
+
+
+def _driver(inverter_type, driver_dir):
+    """(module, None) when the driver is usable, else (None, reason)."""
+    if driver_dir is None:
+        driver_dir = DEFAULT_DRIVER_DIR
+    key = driver_dir + "/" + inverter_type
+    cached = _drivers.get(key)
+    if cached is not None:
+        return cached, None
+    try:
+        module = _load_driver(driver_dir, inverter_type)
+    except Exception as exc:
+        return None, "driver %r cannot be loaded: %r" % (inverter_type, exc)
+    _drivers[key] = module
+    return module, None
+
+
+def _transmit(action, target_power_kw, inverter_type, driver_dir):
+    """Hand the intent to the driver. Called only AFTER the log line is on disk.
+
+    Never raises and never changes what apply() returns: the log already
+    explains the intent, whatever the driver does. A missing driver means
+    nothing is sent (logging behaviour), loudly.
+    """
+    try:
+        driver, problem = _driver(inverter_type, driver_dir)
+        if driver is None:
+            log.error(  # noqa: F821  (pyscript global)
+                "inverter: %s; NOT transmitting %s %s kW, decision logged "
+                "only" % (problem, action, target_power_kw))
+            return
+        ok, value, err = _invoke(driver, "send", (action, target_power_kw),
+                                 DRIVER_TIMEOUT_SECONDS)
+        if not ok:
+            log.error(  # noqa: F821
+                "inverter: driver %r send(%s, %s) failed: %s"
+                % (inverter_type, action, target_power_kw, err))
+        elif value is False:
+            log.warning(  # noqa: F821
+                "inverter: driver %r send(%s, %s) reported failure"
+                % (inverter_type, action, target_power_kw))
+    except Exception as exc:
+        log.error(  # noqa: F821
+            "inverter: driver %r transmit failed: %r" % (inverter_type, exc))
+
+
+def apply(action, target_power_kw, record, log_path=DEFAULT_LOG_PATH,
+          inverter_type="logging", driver_dir=None):
+    """Carry out a decision: log it, then hand it to the configured driver.
+
+    The decision log line is ALWAYS written, for every driver, and FIRST. The
+    driver is called only once the line is durably on disk, and nothing the
+    driver does (exception, timeout, False, missing file) can prevent or alter
+    the line or change the return value. `record` is authoritative for the
+    logged content; action and target_power_kw are the intent given to the
+    driver, so they must match the record or nothing is logged or sent.
 
     action           -- "charge" | "discharge" | "export" | "idle"
     target_power_kw  -- float, 0.0 when idle
     record           -- DecisionRecord, already complete
+    inverter_type    -- selects driver file inverter_<type>.py in driver_dir
 
     Returns True when the intent was durably recorded, False on any failure
     or mismatch (never raises into the caller; the reason goes to log.warning).
-    This function is the ONLY writer of the decision log.
+    This function is the ONLY writer of the decision log lines for decisions.
     """
     try:
         # Written as not (<= tol) so a NaN or infinite gap is refused too:
@@ -95,20 +220,41 @@ def apply(action, target_power_kw, record, log_path=DEFAULT_LOG_PATH):
             f"inverter.apply: decision log append failed: {exc!r}")
         return False
 
-    # ---- FUTURE TRANSMISSION POINT ----------------------------------------
-    # Real inverter control is added HERE, and only here.
-    # Ordering rule: LOG FIRST, TRANSMIT SECOND. The intent is already on
-    # disk above, so the log explains a failure even if sending fails. The
-    # transmission result must not change what was logged.
-    # Not implemented in this mission (C-001, NFR-005).
-    # -----------------------------------------------------------------------
+    # Ordering rule: LOG FIRST, TRANSMIT SECOND (above, then here). A command
+    # that could not be recorded is not sent.
+    _transmit(action, target_power_kw, inverter_type, driver_dir)
     return True
 
 
-def read_charge_percent():
-    """Current battery charge, 0-100.
+def read_charge(inverter_type="logging", driver_dir=None):
+    """Battery charge from the configured driver: (percent, is_stub, marker).
 
-    This mission: returns the stub STUBBED_CHARGE_PERCENT (FR-007, C-003).
-    Later: reads the real value from the inverter.
+    percent  -- 0-100
+    is_stub  -- True when the value is a placeholder (driver says SOC_IS_STUB);
+                the caller marks its decisions degraded=soc_stubbed
+    marker   -- None, or a degraded marker string the caller must add to its
+                decisions: the driver is unavailable or its reading unusable.
+                Then percent is the safe placeholder and is_stub is True.
     """
-    return STUBBED_CHARGE_PERCENT
+    driver, problem = _driver(inverter_type, driver_dir)
+    if driver is None:
+        return STUBBED_CHARGE_PERCENT, True, MARKER_UNAVAILABLE
+    try:
+        ok, value, err = _invoke(driver, "read_charge_percent", (),
+                                 DRIVER_TIMEOUT_SECONDS)
+        if not ok:
+            log.warning(  # noqa: F821
+                "inverter: driver %r read_charge_percent failed: %s"
+                % (inverter_type, err))
+            return STUBBED_CHARGE_PERCENT, True, MARKER_READ_FAILED
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not (0.0 <= value <= 100.0)):
+            log.warning(  # noqa: F821
+                "inverter: driver %r read_charge_percent returned %r, "
+                "expected a number 0-100" % (inverter_type, value))
+            return STUBBED_CHARGE_PERCENT, True, MARKER_READ_FAILED
+        return float(value), bool(getattr(driver, "SOC_IS_STUB", False)), None
+    except Exception as exc:
+        log.warning(  # noqa: F821
+            "inverter: driver %r read failed: %r" % (inverter_type, exc))
+        return STUBBED_CHARGE_PERCENT, True, MARKER_READ_FAILED

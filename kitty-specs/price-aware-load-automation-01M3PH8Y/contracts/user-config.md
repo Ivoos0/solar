@@ -105,6 +105,10 @@ alerts:
   notify_service: gmail_alert   # HA notify service name (notify.<name>); default gmail_alert
   realert_minutes: 60           # not per cycle - that would be 288 emails/day
 
+inverter:
+  type: logging                 # selects pyscript/modules/inverter_<type>.py; default logging
+                                # (log only). missing, null or "none" mean logging
+
 timezone: Europe/Brussels
 ```
 
@@ -121,6 +125,7 @@ Checked at load. A failure is a **startup error, not a degraded cycle** — bad 
 | `-180 <= azimuth <= 180`, `0 <= declination <= 90` | forecast.solar's accepted ranges |
 | `address` non-empty | A halt with nowhere to alert is a silent failure |
 | `notify_service` matches `[a-z0-9_]+` | It is the service name under the `notify` domain; a dotted, spaced or upper-case value can never resolve. It does not join the cache fingerprint |
+| `inverter.type` matches `[a-z0-9_]+`; missing, null or `none` become `logging` | It names the driver file `inverter_<type>.py`, so path separators, dots, spaces and upper case can never select a file outside the modules directory. It does not join the cache fingerprint. Whether the driver file exists is checked at run time, not here: a missing driver falls back to log-only behaviour with an error and a degraded marker (see `inverter-boundary.md`) |
 | `max_charge_kw > 0`, `max_discharge_kw > 0` | Zero would make the trajectory meaningless |
 
 ## Cache invalidation

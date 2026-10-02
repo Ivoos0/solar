@@ -177,6 +177,7 @@ _flags = {
     "vetoed_window": None,
     "warned": {},
     "primed": False,       # entity reconciled to "off" since import/reload
+    "inverter_marker": None,  # degraded marker from the last charge reading
     "stale_window": None,  # window a stale-average warning was already logged
 }
 
@@ -378,6 +379,8 @@ def _make_record(now, cfg, grid, batt, verdict, took_ms, action, power_kw,
                  vetoes, reasoning):
     """Full DecisionRecord for a guard decision (see docstring for renderings)."""
     degraded = decision.degraded_markers(batt)
+    if _flags["inverter_marker"]:
+        degraded.append(_flags["inverter_marker"])
     if verdict.confidence == "assumed":
         degraded.append("avg_mode_assumed")
     if grid.is_restored:
@@ -399,8 +402,10 @@ def _make_record(now, cfg, grid, batt, verdict, took_ms, action, power_kw,
         degraded_inputs=degraded, source="guard")
 
 
-def _emit(action, power_kw, record):
-    if not inverter.apply(action, power_kw, record):
+def _emit(action, power_kw, record, cfg):
+    if not inverter.apply(action, power_kw, record,
+                          inverter_type=cfg.inverter_type,
+                          driver_dir=CORE_DIR):
         _warn("apply", "inverter.apply did not record the %s decision" % action)
 
 
@@ -503,8 +508,10 @@ def _evaluate(trigger_type, started):
         mode_confidence=verdict.confidence)
     shave = capacity.shave_kw(grid, cfg)
 
-    batt = battery.from_percent(inverter.read_charge_percent(), cfg,
-                                is_stubbed=True)
+    charge, charge_is_stub, charge_marker = inverter.read_charge(
+        cfg.inverter_type, CORE_DIR)
+    _flags["inverter_marker"] = charge_marker
+    batt = battery.from_percent(charge, cfg, is_stubbed=charge_is_stub)
     forbidden, fired = rules.establish_vetoes(
         batt, None, cfg, grid, usage_history_available=True)   # never grid-charges: V4 is moot
     blocking = "+".join([v for v in fired
@@ -530,7 +537,7 @@ def _evaluate(trigger_type, started):
                 % (blocking, batt.charge_percent, cfg.reserve_percent,
                    grid.offtake_kw, grid.running_average_kw,
                    capacity.ceiling_kw(grid, cfg)))
-            _emit("idle", 0.0, record)
+            _emit("idle", 0.0, record, cfg)
             record_written = True
 
     if shave > 0:
@@ -552,7 +559,7 @@ def _evaluate(trigger_type, started):
             _flags["shave_kw"] = shave
             _flags["shaving"] = True
             _set_shaving_entity(True, window, shave)
-            _emit("discharge", shave, record)
+            _emit("discharge", shave, record, cfg)
         return
 
     # nothing to shave (or vetoed): only a transition is worth a line
@@ -570,7 +577,7 @@ def _evaluate(trigger_type, started):
                 "running average %.2f kW)"
                 % (capacity.ceiling_kw(grid, cfg), grid.offtake_kw,
                    grid.running_average_kw))
-            _emit("idle", 0.0, record)
+            _emit("idle", 0.0, record, cfg)
     elif _flags["shaving"] is None:
         _flags["shaving"] = False              # fresh start: reconcile silently
         _set_shaving_entity(False, window, 0.0)
