@@ -22,14 +22,8 @@ Loaded once per cycle from `battery_planner/user_config.yaml` by the adapter, pa
 | `max_charge_kw` | float | kW | 5.0 | Binding constraint per block, independent of capacity |
 | `max_discharge_kw` | float | kW | 5.0 | |
 | `round_trip_efficiency` | float | fraction | 0.90 | FR-016; also gates S2 |
-| `latitude` | float | degrees | 51.12 | the installation site — verify to ~10 m |
-| `longitude` | float | degrees | 3.85 | |
-| `array_kwp` | float | kWp | 8.1 | 20 × 405 Wp |
-| `array_declination` | int | degrees | 50 | 0 = horizontal |
-| `array_azimuth` | int | degrees | −10 | 0 = south, negative = east |
 | `block_minutes` | int | minutes | 15 | FR-029 |
 | `evaluation_interval_minutes` | int | minutes | 5 | NFR-001 |
-| `forecast_refresh_minutes` | int | minutes | 60 | NFR-002 |
 | `forecast_retry_minutes` | int | minutes | 10 | FR-024 |
 | `solar_cache_stale_minutes` | int | minutes | 120 | FR-036 — twice the refresh interval |
 | `usage_cache_stale_minutes` | int | minutes | 2880 | FR-036 — twice the daily rebuild |
@@ -38,16 +32,14 @@ Loaded once per cycle from `battery_planner/user_config.yaml` by the adapter, pa
 | `timezone` | str | — | `Europe/Brussels` | C-008 |
 | `capacity_enabled` | bool | — | true | FR-053 |
 | `billing_floor_kw` | float | kW | 2.5 | C-013 — no saving below it |
-| `capacity_rate_eur_per_kw_year` | float | EUR/kW/yr | 40.0 | Revised annually; check the bill |
 | `guard_interval_seconds` | int | seconds | 30 | NFR-010 |
 | `usage_history_weeks` | int | weeks | 4 | Trailing window for the usage profile (>= 1) (FR-005) |
 | `usage_recency_weighting` | str | — | `linear` | `linear` \| `none`. `linear` weights each date by `usage_history_weeks` minus its week index (0 = the most recent 7 days), so with four weeks the weights are 4, 3, 2, 1; `none` is a plain mean. Part of the cache fingerprint |
 | `usage_grouping` | str | — | `same_weekday` | `same_weekday` \| `day_type` (FR-059). Part of the cache fingerprint: changing it invalidates the cached usage profile |
-| `peak_averaging_months` | int | months | 13 | Length of the averaging window the meter reports (>= 1); the divisor when pricing a peak increase (FR-054). Cancels out of the total euro cost but sets how much the billed average moves |
 | `quarter_hour_average_mode` | str | — | `auto` | FR-055, FR-057 — `auto` \| `running` \| `accumulating` |
 | `offtake_sensor` | str | — | `sensor.slimmelezer_power_consumed` | C-012 — the **netted** total, never a per-phase sum |
 
-**Validation**: `capacity_kwh > 0`; `0 ≤ reserve_percent < 100`; `0 < round_trip_efficiency ≤ 1`; `block_minutes` divides 60; `−180 ≤ array_azimuth ≤ 180`; `0 ≤ array_declination ≤ 90`. A failed validation is a startup error, not a degraded cycle — bad configuration must not silently produce plausible-looking decisions.
+**Validation**: `capacity_kwh > 0`; `0 ≤ reserve_percent < 100`; `0 < round_trip_efficiency ≤ 1`; `block_minutes` divides 60. A failed validation is a startup error, not a degraded cycle — bad configuration must not silently produce plausible-looking decisions.
 
 ---
 
@@ -149,7 +141,7 @@ One step of the projection. The heart of the mission.
 | `kind` | str | `"solar"` or `"usage"` |
 | `computed_at` | datetime | FR-035 — mandatory; a file outlives the process |
 | `source` | str | What it was derived from |
-| `config_fingerprint` | str | Of the fields that change a block's meaning: array geometry, location, `block_minutes` (FR-037) |
+| `config_fingerprint` | str | Of the fields that change a block's meaning: `block_minutes` and the usage settings (FR-037). The roof is not part of it: a changed forecast payload rebuilds the solar series through its own signature |
 | `blocks` | list | The series itself |
 
 **Staleness** (FR-036): stale past its configured bound → refresh; if refresh is impossible, use it and mark the decision degraded — old is not the same as missing. **Disposable** (FR-038): deleting the file costs a recomputation and never changes a decision.

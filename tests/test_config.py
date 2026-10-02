@@ -19,7 +19,7 @@ def test_defaults_applied(site_config):
     assert c.reserve_percent == 10.0
     assert c.block_minutes == 15
     assert c.timezone == "Europe/Brussels"
-    assert c.array_azimuth == -10
+    assert not hasattr(c, "array_azimuth")
     assert c.offtake_sensor == "sensor.slimmelezer_power_consumed"
 
 
@@ -27,7 +27,7 @@ def test_full_parse_flattens():
     c = from_dict({
         "prices": {"consumption_multiplier": 1.2},
         "battery": {"capacity_kwh": 12, "reserve_percent": 5},
-        "solar": {"kwp": 6.0, "azimuth": 20},
+        "solar": {"forecast_attribute": "wh"},
         "timing": {"block_minutes": 30},
         "alerts": {"address": "x@y.z", "realert_minutes": 30},
         "capacity_tariff": {"enabled": False,
@@ -37,7 +37,7 @@ def test_full_parse_flattens():
     })
     assert c.consumption_multiplier == 1.2
     assert c.capacity_kwh == 12
-    assert c.array_kwp == 6.0 and c.array_azimuth == 20
+    assert c.forecast_attribute == "wh"
     assert c.block_minutes == 30 and c.realert_minutes == 30
     assert c.capacity_enabled is False
     assert c.quarter_hour_average_mode == "running"
@@ -52,9 +52,6 @@ def test_full_parse_flattens():
     ("battery__round_trip_efficiency", 1.1, "round_trip_efficiency"),
     ("timing__block_minutes", 7, "block_minutes"),
     ("timing__block_minutes", 0, "block_minutes"),
-    ("solar__azimuth", 181, "azimuth"),
-    ("solar__declination", 91, "declination"),
-    ("solar__declination", -1, "declination"),
     ("alerts__address", "  ", "address"),
     ("alerts__notify_service", "", "notify_service"),
     ("alerts__notify_service", "Gmail_Alert", "notify_service"),
@@ -67,7 +64,6 @@ def test_full_parse_flattens():
     ("battery__max_discharge_kw", 0, "max_discharge_kw"),
     ("capacity_tariff__quarter_hour_average_mode", "bogus",
      "quarter_hour_average_mode"),
-    ("capacity_tariff__peak_averaging_months", 0, "peak_averaging_months"),
     ("capacity_tariff__stay_under_percent", 0, "stay_under_percent"),
     ("capacity_tariff__stay_under_percent", -5, "stay_under_percent"),
     ("capacity_tariff__stay_under_percent", 100.5, "stay_under_percent"),
@@ -109,9 +105,7 @@ def test_fingerprint_stable_and_short(site_config):
 
 def test_fingerprint_sensitivity():
     ref = from_dict(base()).fingerprint()
-    for path, v in [("timing__block_minutes", 30), ("solar__latitude", 50.0),
-                    ("solar__longitude", 4.0), ("solar__kwp", 9.0),
-                    ("solar__declination", 40), ("solar__azimuth", 0),
+    for path, v in [("timing__block_minutes", 30),
                     ("usage__history_weeks", 8),
                     ("usage__grouping", "day_type"),
                     ("usage__recency_weighting", "none")]:
@@ -127,7 +121,8 @@ def test_fingerprint_ignores_other_fields():
                     ("battery__reserve_percent", 20),
                     ("capacity_tariff__enabled", False),
                     ("capacity_tariff__stay_under_percent", 50),
-                    ("timing__forecast_refresh_minutes", 30)]:
+                    ("solar__forecast_entity", "sensor.other"),
+                    ("solar__forecast_attribute", "other")]:
         assert from_dict(base(**{path: v})).fingerprint() == ref, path
 
 
@@ -367,3 +362,32 @@ def test_history_not_in_fingerprint():
     ref = from_dict(base()).fingerprint()
     assert from_dict(hist(enabled=False, sensors={
         "solar": ["sensor.pv"]})).fingerprint() == ref
+
+
+OLD_STYLE_KEYS = {
+    "solar": {"latitude": 50.0, "longitude": 4.0, "kwp": 9.0,
+              "declination": 40, "azimuth": 0},
+    "capacity_tariff": {"rate_eur_per_kw_year": 53.4,
+                        "peak_averaging_months": 12},
+    "timing": {"forecast_refresh_minutes": 30},
+}
+
+
+def test_old_config_with_removed_keys_still_loads():
+    """Keys dropped from the schema are ignored, never an error."""
+    raw = base()
+    for section, keys in OLD_STYLE_KEYS.items():
+        raw.setdefault(section, {}).update(keys)
+    c = from_dict(raw)
+    assert c.fingerprint() == from_dict(base()).fingerprint()
+    for attr in ("latitude", "longitude", "array_kwp", "array_declination",
+                 "array_azimuth", "capacity_rate_eur_per_kw_year",
+                 "peak_averaging_months", "forecast_refresh_minutes"):
+        assert not hasattr(c, attr), attr
+
+
+def test_removed_keys_are_not_validated():
+    raw = base()
+    raw["solar"] = {"azimuth": 999, "declination": -5, "kwp": "lots"}
+    raw["capacity_tariff"] = {"peak_averaging_months": 0}
+    from_dict(raw)

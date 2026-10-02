@@ -48,7 +48,7 @@ rest:
         unit_of_measurement: "Wh"
 ```
 
-Path parameters are `lat/lon/declination/azimuth/kwp`. Azimuth is **0 = south, negative = east**, so `-10` is ten degrees east of south. Keep these in step with `user_config.yaml` — the REST URL and the config file must describe the same roof.
+Path parameters are `lat/lon/declination/azimuth/kwp`. Azimuth is **0 = south, negative = east**, so `-10` is ten degrees east of south. The roof lives only in this URL; `user_config.yaml` has no roof settings.
 
 The built-in Forecast.Solar integration is **not** used: it is UI config-flow only with no YAML form, which C-005 forbids, and it exposes aggregates rather than the per-block series the trajectory needs (`research.md` R-03).
 

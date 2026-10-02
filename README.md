@@ -91,8 +91,11 @@ Do these in order.
    one):
    - `forecast_solar_url`: `https://api.forecast.solar/estimate/<lat>/<lon>/<declination>/<azimuth>/<kwp>`.
      Azimuth 0 is south and negative is east, so `-10` is ten degrees east of south. This is the
-     easiest value to get backwards. The roof described here must match the `solar:` section of
-     `user_config.yaml`.
+     easiest value to get backwards. The roof lives only in this URL; `user_config.yaml` has no roof
+     settings. After you change the URL, the planner picks up the new forecast at the next cycle once
+     the sensor has refreshed (hourly, or restart Home Assistant). It serves the previous forecast
+     only while the sensor is unavailable, and for at most `timing.solar_cache_stale_minutes`
+     (default 120).
    - `smtp_sender`, `smtp_password`, `smtp_recipient`: the sending account, its app password (not
      the normal password; Gmail needs 2-step verification first) and the address that receives alerts.
    - `smtp_server`, `smtp_port`, `smtp_encryption` (`starttls`, `tls` or `none`; ports 587, 465, 25):
@@ -151,22 +154,16 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `prices.entity` | `sensor.entso_prices_average_electricity_price` | entity id | Sensor that carries the price list |
 | `prices.attribute` | `prices` | attribute name | Attribute of that sensor holding the `{time, price}` list |
 | `battery.capacity_kwh` | **required** | kWh | Battery size the planner uses |
-| `battery.reserve_percent` | `10.0` | % | Charge level the planner will not discharge or export below (veto V1) |
+| `battery.reserve_percent` | `10.0` | % | Charge level the planner will not discharge or export below (the reserve limit) |
 | `battery.max_charge_kw` | `5.0` | kW | Highest charge power the planner proposes |
 | `battery.max_discharge_kw` | `5.0` | kW | Power used when exporting |
 | `battery.round_trip_efficiency` | `0.90` | 0 to 1 | Share of stored energy you get back. A later price only counts at this fraction |
-| `solar.latitude`, `solar.longitude` | `51.12`, `3.85` | degrees | Roof position. The forecast itself comes from `forecast_solar_url`; these only reset the cached solar and usage series when you change them |
-| `solar.kwp` | `8.1` | kWp | As above |
-| `solar.declination` | `50` | degrees (0 to 90) | As above |
-| `solar.azimuth` | `-10` | degrees (-180 to 180) | As above. 0 is south, negative is east |
 | `solar.forecast_entity` | `sensor.forecast_solar_estimate` | entity id | The REST sensor from `configuration.yaml` |
 | `solar.forecast_attribute` | `watt_hours_period` | attribute name | Attribute holding the Wh per period |
-| `capacity_tariff.enabled` | `true` | true/false | `false` turns off all peak logic (V3, S0, the peak guard's shaving, grid-charge cap) |
+| `capacity_tariff.enabled` | `true` | true/false | `false` turns off all peak logic (the peak budget limit, peak shaving, the peak guard's shaving, the grid-charge cap) |
 | `capacity_tariff.billing_floor_kw` | `2.5` | kW | Peaks at or below this cost nothing extra. Sets the lowest ceiling |
-| `capacity_tariff.rate_eur_per_kw_year` | `40.0` | EUR per kW per year | Only used for the cost estimate in the peak notice e-mail. `0` leaves the estimate out |
 | `capacity_tariff.stay_under_percent` | `80` | % (above 0, up to 100) | Grid charging stays under this share of the ceiling |
 | `capacity_tariff.guard_interval_seconds` | `30` | seconds | Minimum gap between peak guard runs. The guard's timer is fixed at 30, so values below 30 change nothing |
-| `capacity_tariff.peak_averaging_months` | `13` | months | Number of monthly peaks your bill averages. Used for the cost estimate |
 | `capacity_tariff.quarter_hour_average_mode` | `auto` | `auto`, `running`, `accumulating` | How the meter's quarter-hour average is read |
 | `capacity_tariff.offtake_sensor` | `sensor.slimmelezer_power_consumed` | entity id | Netted total offtake |
 | `capacity_tariff.quarter_hour_average_sensor` | `sensor.slimmelezer_huidig_kwartiervermogen` | entity id | Meter register 1-0:1.4.0 |
@@ -179,7 +176,6 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `history.sensors.solar`, `.battery_charge`, `.battery_discharge`, `.load` | `[]` | entity ids (list) | Cumulative kWh counters. See [Energy history](#energy-history) |
 | `timing.block_minutes` | `15` | minutes | Planning block length. Must divide 60. Keep 15 to match the price list |
 | `timing.evaluation_interval_minutes` | `5` | minutes | How often the planner runs |
-| `timing.forecast_refresh_minutes` | `60` | minutes | Accepted but not used by the current code. The REST sensor refreshes hourly (`scan_interval` in `configuration.yaml`) |
 | `timing.forecast_retry_minutes` | `10` | minutes | Minimum gap between forced forecast refreshes after failures |
 | `timing.solar_cache_stale_minutes` | `120` | minutes | Age after which the cached solar series is rebuilt |
 | `timing.usage_cache_stale_minutes` | `2880` | minutes | Age after which the cached usage profile is rebuilt |
@@ -200,17 +196,15 @@ more cautious and cheaper for you. Where no direction is safe, use the exact val
 
 | Setting | Round | Why |
 |---|---|---|
-| `prices.consumption_multiplier`, `prices.consumption_offset` | up | A higher buying price makes grid charging (S1, S5) less attractive |
-| `prices.injection_multiplier`, `prices.injection_offset` | down | A lower selling price makes arbitrage (S5) less attractive and makes the negative-injection veto (V2) fire sooner |
-| `capacity_tariff.rate_eur_per_kw_year` | up | It only sets the euro estimate in the peak e-mail, so a high figure never understates the cost |
+| `prices.consumption_multiplier`, `prices.consumption_offset` | up | A higher buying price makes grid charging (for a negative price or for arbitrage) less attractive |
+| `prices.injection_multiplier`, `prices.injection_offset` | down | A lower selling price makes arbitrage less attractive and stops exporting at a negative price sooner |
 | `battery.capacity_kwh` | down | Use usable capacity, not nameplate. The planner then never counts on energy the battery does not have |
 | `battery.reserve_percent` | up | The planner stops discharging and exporting earlier |
 | `battery.max_charge_kw`, `battery.max_discharge_kw` | down | Commanded power never exceeds what the inverter does |
-| `battery.round_trip_efficiency` | down | Arbitrage (S2, S5) needs a bigger price spread |
+| `battery.round_trip_efficiency` | down | Arbitrage needs a bigger price spread |
 | `capacity_tariff.stay_under_percent` | lower is safer | Less grid charging near the peak ceiling, at the cost of fewer cheap charges |
-| `forecast_solar_url` (kWp part) | down | A lower forecast means less counted-on solar. `solar.kwp` itself does not feed the forecast |
-| `capacity_tariff.billing_floor_kw`, `peak_averaging_months` | exact | Take the value from your bill. A wrong floor changes what the ceiling protects |
-| `solar.latitude`, `longitude`, `declination`, `azimuth` | exact | They must describe the roof in the forecast URL |
+| `forecast_solar_url` (kWp part) | down | A lower forecast means less counted-on solar |
+| `capacity_tariff.billing_floor_kw` | exact | Take the value from your bill. A wrong floor changes what the ceiling protects |
 | `timing.*`, `capacity_tariff.guard_interval_seconds`, `alerts.*_minutes` | exact | Timing preferences with no safe direction |
 
 All-in consumption price: the consumption price must be the price you actually pay per kWh, because the planner compares it with
@@ -264,7 +258,7 @@ find <ha-config>/battery_planner -name 'decisions-*.log' -mtime +30 -delete
 
 A normal record is one line of `|`-separated fields: timestamp, `action`, `power`, `soc`, `cons` and
 `inj` (prices), forecast and usage remaining, `saturation`, `spill`, `breach`, `end_soc`, `took`,
-`avg`, `ceiling`, `budget`, `vetoes`, `selector`, `why` (the reason in words), `degraded` and
+`avg`, `ceiling`, `budget`, `vetoes`, `selector`, `why` (the reason in words; `vetoes` and `selector` use the labels explained under [Labels in the decision log](#labels-in-the-decision-log)), `degraded` and
 `source` (`planner` or `guard`). Fields that do not apply show `n/a`.
 
 Markers you can expect in `degraded=` on a fresh install:
@@ -272,7 +266,7 @@ Markers you can expect in `degraded=` on a fresh install:
 | Marker | Meaning |
 |---|---|
 | `soc_stubbed` | The battery charge is the 50 % placeholder. Normal until a driver reads the real charge |
-| `usage_history_unavailable` | No household usage history yet. Normal until a load source is configured; grid charging is vetoed meanwhile |
+| `usage_history_unavailable` | No household usage history yet. Normal until a load source is configured; grid charging is blocked meanwhile |
 | `usage_samples=N` | The usage profile rests on fewer than `usage.history_weeks` x 7 days of history (N days). Disappears as history builds up |
 | `cache_age_solar=...`, `cache_age_usage=...` | A cached series was used, with its age |
 | `solar_zero_fallback` | The forecast was unavailable, so solar was treated as zero. The planner retries and does not halt |
@@ -280,7 +274,7 @@ Markers you can expect in `degraded=` on a fresh install:
 | `inverter_driver_unavailable`, `inverter_read_failed` | The configured driver is missing or its charge reading failed |
 
 When the peak guard is shaving a peak it writes its own records: when a shave starts, changes
-materially, is vetoed or stops, not once per 30-second tick.
+materially, is blocked or stops, not once per 30-second tick.
 
 ### Troubleshooting
 
@@ -300,23 +294,28 @@ materially, is vetoed or stops, not once per 30-second tick.
 ## What the planner does
 
 The planner builds a projection of the battery over the coming hours (as far as the price list
-reaches) from the price list, the solar forecast and your usage profile. Then it applies vetoes, which
-forbid certain actions, and tries the selectors in order. The first selector whose proposal is not
-vetoed wins. The log shows the vetoes that fired, the selector that produced the decision and the
-reason.
+reaches) from the price list, the solar forecast and your usage profile. Then it checks a few
+rules that forbid certain actions, and tries the possible actions in a fixed order. The first action
+that none of the rules forbids is the decision. The log records the reason in words (`why`).
+
+### Labels in the decision log
+
+The decision log prints short labels for the rules and actions. These are the labels the log prints,
+and nothing else in this README uses them. A rule that forbids an action is called a veto and shows
+under `vetoes=`; an action the planner can pick is called a selector and shows under `selector=`.
 
 Vetoes:
 
-| Veto | Forbids | When |
+| Label | Forbids | When |
 |---|---|---|
 | V1 | discharge, export | Charge is at or below `battery.reserve_percent` |
 | V2 | export | The injection price is negative |
 | V3 | grid charging | No capacity budget is left in this quarter-hour |
 | V4 | grid charging | There is no usable usage history |
 
-Selectors, in order:
+Selectors, in the order they are tried:
 
-| Selector | Action |
+| Label | Action |
 |---|---|
 | S0 | Peak shave: discharge to the house when the quarter-hour is heading above the ceiling |
 | S1 | Charge from the grid while the consumption price is negative |
@@ -366,9 +365,7 @@ does not mean you were billed.
 Peak notice, after (`alerts.peak_enabled`). Sent when this month's peak from the meter
 (`capacity_tariff.month_peak_sensor`) goes above `capacity_tariff.billing_floor_kw`: one e-mail for the
 first crossing in a calendar month, then one for each new peak at least 0.05 kW higher than the last
-one mailed. It contains the peak, the floor, when the planner first saw it and an estimated cost: the
-rise over the floor, at `rate_eur_per_kw_year`, over `capacity_tariff.peak_averaging_months` months
-(default 13). The estimate is left out when no rate is configured, and it is not an invoice. The meter
+one mailed. It contains the peak, the floor and when the planner first saw it. The meter
 only reports a new maximum after the quarter-hour has ended, so this arrives after the peak is set. It
 works during a price outage. When you get one, nothing needs fixing; note which appliance caused it so
 you can avoid repeating it this month. A failed send is retried on the next cycle.
