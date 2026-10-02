@@ -1,529 +1,453 @@
 # Price-aware battery planner for Home Assistant (Flanders)
 
-A Home Assistant [pyscript](https://github.com/custom-components/pyscript) project that decides,
-every five minutes, what a home battery should do: charge, discharge, export or idle. It weighs
-dynamic electricity prices (ENTSO-e), a solar forecast (forecast.solar), expected household usage,
-and the Flemish capacity tariff (capaciteitstarief), which bills on your monthly quarter-hour peaks.
+A Home Assistant [pyscript](https://github.com/custom-components/pyscript) project. Every five
+minutes it decides what a home battery should do (charge, discharge, export or idle), using dynamic
+electricity prices (ENTSO-e), a solar forecast (forecast.solar), your expected household usage and
+the Flemish capacity tariff (capaciteitstarief), which bills your monthly quarter-hour peaks.
 
 Source: <https://github.com/Ivoos0/solar>
 
-## Read this first: it decides and records, it does not control anything
+## What it does today
 
-**Out of the box this project commands nothing.** It makes a decision every five minutes and
-appends it to a log file (`decisions-YYYY-MM-DD.log`, one file per day). The default inverter driver is `logging`
-(`pyscript/modules/inverter_logging.py`): it transmits nothing, so the log is the whole effect.
-A different inverter is a drop-in driver file selected by `inverter.type` in your config (see
-[Choosing an inverter driver](#choosing-an-inverter-driver) and
-[Adding an inverter](#adding-an-inverter)); the decision is logged first, whatever the driver.
-There is no dashboard; the log is the only output.
+- It decides and writes the decision to a log file, one line per cycle. That is the only output.
+  There is no dashboard.
+- It does not control your inverter. The default driver, `logging`, sends nothing. To act on the
+  decisions you add a driver for your inverter (see [Adding an inverter driver](#adding-an-inverter-driver)).
+  None is shipped.
+- With the `logging` driver the battery charge is a fixed 50 %. Every record carries
+  `degraded=soc_stubbed`. A driver that reads the real charge removes the marker.
+- Household usage history comes from energy counters you configure (see [Energy history](#energy-history)).
+  Until a `load` counter (or `solar` plus both battery counters) is configured, records carry
+  `usage_history_unavailable` and the planner never charges from the grid. Charging from surplus
+  solar, discharging and exporting still work.
 
-If you install it, **your battery will not start behaving differently.** Nothing is broken when
-nothing happens. What you get is a week of logged decisions you can compare with what your battery
-actually did, and a base to build real inverter control on.
+If you install it, your battery behaves exactly as before. What you get is a log of decisions you can
+compare with what the battery actually did.
 
-Two more things you should know before spending an evening on this:
+## Does it fit your setup
 
-- **With the `logging` driver, battery state of charge is a stub.** The planner always assumes 50%.
-  Every record carries `degraded=soc_stubbed`. That is expected, not a fault. A driver that reads
-  the real charge removes the marker.
-- **Household usage history is not available until you configure a load source.** The planner
-  records its own energy history (see [Energy history](#energy-history)), but household consumption
-  can only be derived once a `load` counter, or a `solar` production counter together with the
-  battery charge and discharge counters, is configured. Until then every record carries
-  `usage_history_unavailable` and the planner **does not charge from the grid at all** (veto V4, see
-  [Known gaps](#known-gaps)). Grid import and injection are recorded from now on regardless.
+| You need | Notes |
+|---|---|
+| Belgian digital meter with a P1 port | The capacity-tariff features read the meter's own demand registers |
+| SlimmeLezer P1 reader | Stock firmware does not publish the demand registers. You must reflash it (see [step 3](#install)) |
+| Home Assistant with HACS and pyscript | Container installs work, no add-ons needed |
+| ENTSO-e API key | Free. Used by the Home Assistant ENTSO-e integration for dynamic prices |
+| Solar array | One roof plane. The forecast logic assumes it |
+| Home battery with a hybrid inverter | The planner decides what the battery should do; acting on it needs a driver |
+| A working SMTP account | For the alert e-mails. Optional, but the price-outage alert needs it |
 
-## Does this fit your setup? (two-minute check)
+The capacity-tariff logic is specific to the Flemish tariff: billing on the average of the monthly
+quarter-hour peaks, with a 2.5 kW floor, on grid offtake only. Elsewhere the price logic may still be
+useful; set `capacity_tariff.enabled: false`.
 
-| Component | Required? | Notes |
-|---|---|---|
-| Belgian digital meter with P1 port | Yes | The capacity-tariff features read the meter's own demand registers |
-| SlimmeLezer (or another P1 reader) | Yes | Must expose the demand fields below. Stock firmware does not: **reflash needed** |
-| Home Assistant | Yes | Container installs work (no add-ons needed) |
-| HACS + pyscript | Yes | pyscript is the host for the code |
-| Solar array | Effectively yes | The forecast and solar-absorption logic assume one, on a single plane |
-| Home battery + hybrid inverter | Yes, for any value | The planner decides what a battery should do. Today it cannot act on it |
-| ENTSO-e API key | Yes | Free. Used for dynamic prices via the Home Assistant ENTSO-e integration |
-| A `notify` service | For alerts | SMTP notifier named `battery_alert`, provider chosen in `secrets.yaml`; see [Alert e-mail](#alert-e-mail) |
+The planner reads the meter's netted total offtake (`sensor.slimmelezer_power_consumed`) and never sums
+per-phase sensors, because on a three-phase connection one phase can export while another imports. If
+your reader only offers per-phase sensors, the capacity features will read the wrong value.
 
-**Geography.** The capacity-tariff logic is specific to the **Flemish** capaciteitstarief
-(billing on the average of monthly quarter-hour peaks, with a 2.5 kW floor, on grid offtake only).
-In the Netherlands, Germany or Wallonia the price-arbitrage half may be useful; set
-`capacity_tariff.enabled: false` for the rest. The provider price coefficients are set in
-`user_config.yaml`.
+Not supported: control of anything but the battery (EV charger, heat pump, boiler), several solar
+planes, paid forecast tiers, solar curtailment.
 
-**Three-phase connections.** The code reads the meter's **netted** total offtake
-(`sensor.slimmelezer_power_consumed`) and deliberately never sums per-phase sensors. On the
-installation this was built for, one phase exports while others import, so a per-phase sum read
-0.937 kW where the meter itself read 0.003 kW. If your reader only offers per-phase sensors, this
-project will read the wrong number.
+## Install
 
-**Not supported:** control of anything but the battery (no EV charger, heat pump, boiler),
-multi-plane solar, paid forecast tiers, solar curtailment.
+Do these in order.
 
-## SlimmeLezer firmware configuration
+1. Install HACS, then install pyscript through HACS (Integrations). Restart Home Assistant.
+2. Install the ENTSO-e integration and enter your API key. Day-ahead prices are published around
+   13:00 local time.
+3. Reflash the SlimmeLezer with the demand registers. In its ESPHome configuration, add this to the
+   `dsmr` sensor block, then flash it (see the SlimmeLezer documentation):
 
-The capacity-tariff half needs the meter's e-MUCS demand registers. Stock SlimmeLezer firmware does
-not publish them, so **you must reflash the device** with the fields below added. This is an ESPHome
-change, not a Home Assistant setting. See the SlimmeLezer documentation for how to flash and edit the
-configuration.
+   ```yaml
+   - platform: dsmr
+     active_energy_import_current_average_demand:
+       name: "Huidig kwartiervermogen"
+     active_energy_import_maximum_demand_running_month:
+       name: "Maandpiek"
+     active_energy_import_maximum_demand_last_13_months:
+       name: "Gemiddelde maandpiek 13 maanden"
+   ```
 
-Add to the ESPHome `dsmr` sensor block:
+   Home Assistant then shows these entities (all in kW):
 
-```yaml
-- platform: dsmr
-  active_energy_import_current_average_demand:
-    name: "Huidig kwartiervermogen"
-  active_energy_import_maximum_demand_running_month:
-    name: "Maandpiek"
-  active_energy_import_maximum_demand_last_13_months:
-    name: "Gemiddelde maandpiek 13 maanden"
-```
-
-This produces the following Home Assistant entities (all in kW):
-
-| Entity | Register | Role | Read by this code? |
-|---|---|---|---|
-| `sensor.slimmelezer_huidig_kwartiervermogen` | `1-0:1.4.0` | Quarter-hour average of the current window | Yes (planner and peak guard) |
-| `sensor.slimmelezer_maandpiek` | `1-0:1.6.0` | This month's peak: the level to defend | Yes (planner and peak guard) |
-| `sensor.slimmelezer_gemiddelde_maandpiek_13_maanden` | none listed | Average of the last 13 months: what the grid fee is billed on | **No.** Exposed by the firmware but not read by any code today |
-| `sensor.slimmelezer_power_consumed` | (existing) | Netted total offtake | Yes (default `capacity_tariff.offtake_sensor`) |
-
-A reader with differently named entities can match them by role and register and set
-`capacity_tariff.offtake_sensor`, `capacity_tariff.quarter_hour_average_sensor` and
-`capacity_tariff.month_peak_sensor` in `user_config.yaml`. The planner and the peak guard both read
-these from the config.
-
-**Peak guard trigger limitation.** The guard's `@state_trigger` names
-`sensor.slimmelezer_power_consumed` literally, because decorator arguments are evaluated once at
-load time, before any config is read, so they cannot come from `user_config.yaml`. If your
-netted offtake sensor has a different name, the guard still *reads* the configured sensor on every
-run, but it only runs on its 30-second periodic tick, not on every meter update. To trigger on
-your sensor's updates, edit the `@state_trigger(...)` argument in `pyscript/peak_guard.py`.
-
-### The quarter-hour average has two possible meanings
-
-A meter may report the quarter-hour average as (a) an **accumulating** value (energy so far divided
-by the full 15 minutes, climbing from zero) or (b) a true **running** average (energy so far divided
-by elapsed time). One minute into a window they differ by a factor of 15. The software detects which
-applies at runtime by comparing samples from different points in the same window. The setting is
-`capacity_tariff.quarter_hour_average_mode` (`auto`, `running` or `accumulating`; default `auto`).
-The peak guard states the detected mode in its records, so you can see what it decided and pin it
-once you are sure. The detection state is kept in memory only, so after a restart the mode is
-"assumed" until enough windows have been seen. It is detected rather than measured because a battery
-behind the meter masks household draw, so a manual test with a known load gives no clean reading.
-
-## Home Assistant setup
-
-Install in this order.
-
-1. **HACS, then pyscript.** HACS -> Integrations -> pyscript, then restart Home Assistant. The
-   version tested was not recorded; note yours so a later upgrade is a deliberate act.
-2. **ENTSO-e integration.** Provides the dynamic market price. Needs a free API key. Day-ahead prices
-   publish around 13:00 local time.
-3. **Use the repository's `configuration.yaml` as-is.** It contains the `pyscript:`, `rest:` and
-   `notify:` blocks the planner needs, and you never edit them. Everything personal comes from
-   `secrets.yaml` (below) and `battery_planner/user_config.yaml`. If your Home Assistant already has
-   a `configuration.yaml`, see [Updating](#updating) for the one-time merge.
-
-   The forecast.solar REST sensor takes its whole URL from the secret `forecast_solar_url`. Put your
-   own roof in it in `secrets.yaml`; the template `secrets.example.yaml` shows the form
-   (`https://api.forecast.solar/estimate/lat/lon/declination/azimuth/kwp`, with generic example
-   values). **Azimuth: 0 = south, negative = east**, so `-10` is ten degrees east of south. This is
-   the easiest thing to get backwards. The URL and `user_config.yaml` (`solar.*`) must describe the
-   same roof.
-
-   The built-in Forecast.Solar integration is not used: it is UI-configured only and exposes
-   aggregates rather than the per-block series the planner needs.
-4. **Check the entity names on your install.** Entity and attribute names are configuration, not
-   code (`user_config.yaml`):
-
-   | Key | Default | Status |
+   | Entity | Register | Meaning |
    |---|---|---|
-   | `prices.entity` | `sensor.entso_prices_average_electricity_price` | Confirmed on a live entsoe custom-integration install |
-   | `prices.attribute` | `prices` | Confirmed: a list of `{time, price}`, time like `2026-10-02 00:00:00+02:00`, 15-minute steps, EUR/kWh |
-   | `solar.forecast_entity` | `sensor.forecast_solar_estimate` | **Unconfirmed**: set to your REST sensor's name |
-   | `solar.forecast_attribute` | `watt_hours_period` | Unconfirmed |
-   | `capacity_tariff.quarter_hour_average_sensor` | `sensor.slimmelezer_huidig_kwartiervermogen` | SlimmeLezer default |
-   | `capacity_tariff.month_peak_sensor` | `sensor.slimmelezer_maandpiek` | SlimmeLezer default |
+   | `sensor.slimmelezer_huidig_kwartiervermogen` | `1-0:1.4.0` | Average of the current quarter-hour |
+   | `sensor.slimmelezer_maandpiek` | `1-0:1.6.0` | This month's peak, the level the planner defends |
+   | `sensor.slimmelezer_gemiddelde_maandpiek_13_maanden` | - | Average of the last 13 months. Not read by the code |
+   | `sensor.slimmelezer_power_consumed` | - | Netted total offtake |
 
-   In Developer Tools -> States, filter "entso" and open the sensor: the right one has an attribute
-   holding the list of `{time, price}` entries. Other ENTSO-e sensors (for example the "current
-   market price" one) may show a price but carry no list. A wrong name makes the planner halt every
-   cycle, and the alert and log line name the entity and attribute it tried.
+   If your reader names these differently, set `capacity_tariff.offtake_sensor`,
+   `capacity_tariff.quarter_hour_average_sensor` and `capacity_tariff.month_peak_sensor` in
+   `user_config.yaml` (step 6).
+4. Copy the `pyscript/` folder from this repository to `<ha-config>/pyscript/`. Copy
+   `configuration.yaml` to `<ha-config>/configuration.yaml`. If you already have a
+   `configuration.yaml`, merge the `pyscript:`, `rest:` and `notify:` blocks into it once, by hand or
+   with `!include`; the other blocks in the file are optional price helpers. The shipped file also
+   includes `automations.yaml`, `scripts.yaml` and `scenes.yaml`; Home Assistant needs those files to
+   exist. You never edit the blocks afterwards: personal values come from `secrets.yaml` and
+   `user_config.yaml`. Loading the blocks as a Home Assistant package or from split `!include` files
+   is untested.
+5. Create `<ha-config>/secrets.yaml` from `secrets.example.yaml` (or add the keys to your existing
+   one):
+   - `forecast_solar_url`: `https://api.forecast.solar/estimate/<lat>/<lon>/<declination>/<azimuth>/<kwp>`.
+     Azimuth 0 is south and negative is east, so `-10` is ten degrees east of south. This is the
+     easiest value to get backwards. The roof described here must match the `solar:` section of
+     `user_config.yaml`.
+   - `smtp_sender`, `smtp_password`, `smtp_recipient`: the sending account, its app password (not
+     the normal password; Gmail needs 2-step verification first) and the address that receives alerts.
+   - `smtp_server`, `smtp_port`, `smtp_encryption` (`starttls`, `tls` or `none`; ports 587, 465, 25):
+     keep exactly one provider preset uncommented. The presets for Gmail, Outlook / Microsoft 365,
+     Yahoo and iCloud are from the providers' public documentation and are not tested against live
+     accounts. Outlook may not work at all, because many Microsoft accounts have basic-auth SMTP
+     disabled.
+6. Create the planner config:
 
-### Alert e-mail
+   ```bash
+   mkdir -p <ha-config>/battery_planner
+   cp battery_planner/user_config.example.yaml <ha-config>/battery_planner/user_config.yaml
+   ```
 
-When prices are unavailable the planner halts and sends an e-mail through the Home Assistant
-notify service `notify.<alerts.notify_service>` (default `notify.battery_alert`), to
-`alerts.address`. `configuration.yaml` defines that notifier with no provider-specific values: the
-server, port, encryption and credentials all come from `secrets.yaml`. No address or credential is
-stored in the repository.
+   Edit it (see [Configure](#configure)). At minimum set `battery.capacity_kwh` and `alerts.address`.
+7. Restart Home Assistant. Core modules under `pyscript/modules/` are loaded natively and are not
+   hot-reloaded, so any change to them needs a restart. A notifier is also only created at startup.
+8. Test the notifier: Developer Tools -> Actions, choose `notify.battery_alert`, give it a message
+   and run it. The mail should arrive within a minute. If Home Assistant reports the SMTP YAML
+   platform as unsupported in your version (it may have moved to the UI), create the notifier in the
+   UI and set its service name in `alerts.notify_service`.
 
-1. **Pick your provider** in `secrets.example.yaml`. It has ready-made presets for Gmail, Outlook /
-   Microsoft 365, Yahoo and iCloud, plus a CUSTOM block (`smtp_server`, `smtp_port`,
-   `smtp_encryption` = `starttls` | `tls` | `none`; typical ports 587 / 465 / 25). Keep exactly one
-   preset uncommented. Most providers need an app password (Gmail: turn on 2-step verification, then
-   Google Account -> Security -> App passwords); the normal account password will not work.
-   **The preset hostnames and ports come from the providers' public documentation as known at the
-   time of writing and have not been verified against live accounts.** Confirm them with your
-   provider. Outlook / Microsoft 365 may not work at all, because basic-auth SMTP is disabled on many
-   Microsoft accounts.
-2. **Fill HA's `secrets.yaml`** (in your HA config folder; it is gitignored). Copy the keys from
-   the tracked template `secrets.example.yaml` and put real values in: the provider block
-   (`smtp_server`, `smtp_port`, `smtp_encryption`), `smtp_sender` (the sending account),
-   `smtp_password` (the app password), `smtp_recipient` (where alerts go), and `forecast_solar_url`.
-3. **Set `battery_planner/user_config.yaml`**: `alerts.address` to the same address as
-   `smtp_recipient`, and `alerts.notify_service` to the notifier name (default `battery_alert`, which
-   matches `configuration.yaml`; leave it out to use the default).
-
-   *Rename note:* earlier versions named the notifier `gmail_alert`. If you set
-   `alerts.notify_service: gmail_alert` before, either keep the old name (and keep that name in your
-   merged notifier) or update the setting to `battery_alert`.
-4. **Restart Home Assistant** (a notifier is only created at startup).
-5. **Test the notifier** before relying on it: Developer Tools -> Actions, choose
-   `notify.battery_alert` (or your service name), give it a message, and run it. The mail should
-   arrive within a minute.
-
-**Caveat, not verified.** I could not verify against a live Home Assistant that the SMTP YAML
-platform is still supported in your HA version. SMTP notify may be deprecated or moved to the UI in
-recent releases. Check the HA release notes; if it moved, create the notifier through the UI and put
-its service name in `alerts.notify_service`.
-
-**When the service does not exist.** pyscript's `service.call` needs the service to exist at call
-time. If it does not (wrong name, notifier not loaded, restart pending), the error (for example
-`ServiceNotFound`) is logged as an alert-send failure, the decision record shows `alerted=none`, and
-the send is retried on the next cycle. The halt itself still proceeds.
-
-### Capacity-tariff e-mails: a warning before, a notice after
-
-Two optional e-mails use the same notifier as the halt alert. Both read the thresholds from
-`user_config.yaml`; nothing is hardcoded to 2.5 kW.
-
-**Notice after (`alerts.peak_enabled`, default on).** The Belgian capacity tariff bills the highest
-quarter-hour average of each month, with a floor (`capacity_tariff.billing_floor_kw`, default 2.5).
-Once this month's peak as reported by the meter (`capacity_tariff.month_peak_sensor`, 1-0:1.6.0)
-goes strictly above that floor, you start paying more. The planner checks the sensor every cycle and
-sends ONE e-mail for the first crossing in a calendar month (local time, `timezone`), and one more
-each time the peak rises to a new value at least 0.05 kW (`PEAK_ALERT_MIN_STEP_KW` in
-`pyscript/modules/capacity.py`) above the last one mailed. An unchanged peak is never repeated, and
-a new month starts afresh (the meter resets its monthly register, so a lower peak then is fine). The
-mail gives the peak, the floor, when the planner first saw it and an **estimated** cost effect, and
-it needs capacity logic enabled and a readable sensor. It works during a price halt too.
-This is a notice, not a prevention: the meter only reports a new maximum when the quarter-hour has
-completed, so it arrives after the peak is set. The prevention is the peak guard.
-
-*Interpretation.* "Goes above 2.5" was read as the month peak passing `billing_floor_kw`. The cost
-estimate uses `capacity.peak_increase_cost_eur` on the rise over the floor, assuming the month would
-otherwise have stayed at the floor and that the other months in the averaging window are unchanged.
-It is the cost across the `capacity_tariff.peak_averaging_months` months the peak stays in the
-average (about a year at the default 13), at `rate_eur_per_kw_year`. It is an estimate, not an
-invoice, and is left out when no rate is configured.
-
-The last mailed `(month, peak)` is kept in `<ha-config>/battery_planner/state/peak_alert.json`, so a
-restart does not repeat a notice. If that file is missing or unreadable the planner treats it as
-"nothing sent yet" and so may mail once for an old peak after a restart (at most once per start).
-A failed send is logged and retried on the next cycle; it is only recorded after it succeeded.
-
-**Warning before (`alerts.peak_warning_enabled`, default on).** The peak guard (every ~30 s) projects
-this quarter-hour's average from the energy so far and the current offtake, the same projection it
-uses to shave. When the projection exceeds the ceiling (this month's peak, never below the billing
-floor) on `alerts.peak_warning_ticks` consecutive evaluations (default 2, at least ~20 s apart; 1
-warns on the first), it e-mails a PREDICTION: projected average, ceiling, time left in the
-quarter-hour, current offtake and what the guard is doing (shaving at some kW, or unable to shave
-because the battery is at its reserve, plus notes when the battery reading is a stub or the inverter
-driver only logs). Noise control: not in the first minute of a quarter-hour nor in its last minute,
-at most one warning per quarter-hour, at most one per `alerts.peak_warning_min_interval_minutes`
-(default 60; kept in memory, so a restart forgets it), and a failed send is retried on the next tick.
-A warning can turn out wrong (the load may drop), and one that is right does not mean you were
-billed. Neither e-mail ever changes a decision.
-
-### File layout on the Home Assistant side
+Files on the Home Assistant side:
 
 ```
 <ha-config>/
-  configuration.yaml          # taken as-is from this repo (merged once by hand if you had your own)
-  secrets.yaml                # yours, gitignored: provider, credentials, forecast URL
-  pyscript/                   # copied from this repo, overwrite freely
-    battery_planner.py
-    peak_guard.py
-    modules/
+  configuration.yaml
+  secrets.yaml                  yours, do not publish
+  pyscript/                     copied from this repository
   battery_planner/
-    user_config.yaml          # created once from the example, never overwrite
-    decisions-YYYY-MM-DD.log  # generated, one file per local day
-    cache/                    # generated
-    state/peak_alert.json     # generated, last month-peak notice sent
-    history/                  # generated, energy history (never deleted by the planner)
+    user_config.yaml            yours, created in step 6
+    decisions-YYYY-MM-DD.log    generated, one file per local day
+    cache/                      generated
+    state/peak_alert.json       generated, last month-peak e-mail sent
+    history/                    generated, energy history
 ```
 
-Copy `pyscript/` to `<ha-config>/pyscript/` and `battery_planner/user_config.example.yaml` to
-`<ha-config>/battery_planner/`. Do not copy `tests/` or `kitty-specs/`. Then, once:
+Do not copy `tests/` to Home Assistant.
 
-```bash
-cd <ha-config>/battery_planner
-cp user_config.example.yaml user_config.yaml
+## Configure
+
+`battery_planner/user_config.example.yaml` lists every setting with comments. A bad configuration
+is a startup error: it is logged and no decision is made.
+
+### Settings reference
+
+Every key in `user_config.yaml`. Keys you leave out use the default. Only `battery.capacity_kwh` and
+`alerts.address` have no default and must be set.
+
+| Key | Default | Unit | What it changes |
+|---|---|---|---|
+| `prices.consumption_multiplier` | `1.07` | factor | Buying price = market price x this + offset. Must be all-in (see below) |
+| `prices.consumption_offset` | `0.007` | EUR/kWh | Added to the buying price. Put per-kWh network costs, taxes and VAT here |
+| `prices.injection_multiplier` | `0.94` | factor | Selling price = market price x this + offset |
+| `prices.injection_offset` | `-0.011` | EUR/kWh | Added to the selling price. Negative: injection can turn negative while the market price is still positive |
+| `prices.entity` | `sensor.entso_prices_average_electricity_price` | entity id | Sensor that carries the price list |
+| `prices.attribute` | `prices` | attribute name | Attribute of that sensor holding the `{time, price}` list |
+| `battery.capacity_kwh` | **required** | kWh | Battery size the planner uses |
+| `battery.reserve_percent` | `10.0` | % | Charge level the planner will not discharge or export below (veto V1) |
+| `battery.max_charge_kw` | `5.0` | kW | Highest charge power the planner proposes |
+| `battery.max_discharge_kw` | `5.0` | kW | Power used when exporting |
+| `battery.round_trip_efficiency` | `0.90` | 0 to 1 | Share of stored energy you get back. A later price only counts at this fraction |
+| `solar.latitude`, `solar.longitude` | `51.12`, `3.85` | degrees | Roof position. The forecast itself comes from `forecast_solar_url`; these only reset the cached solar and usage series when you change them |
+| `solar.kwp` | `8.1` | kWp | As above |
+| `solar.declination` | `50` | degrees (0 to 90) | As above |
+| `solar.azimuth` | `-10` | degrees (-180 to 180) | As above. 0 is south, negative is east |
+| `solar.forecast_entity` | `sensor.forecast_solar_estimate` | entity id | The REST sensor from `configuration.yaml` |
+| `solar.forecast_attribute` | `watt_hours_period` | attribute name | Attribute holding the Wh per period |
+| `capacity_tariff.enabled` | `true` | true/false | `false` turns off all peak logic (V3, S0, the peak guard's shaving, grid-charge cap) |
+| `capacity_tariff.billing_floor_kw` | `2.5` | kW | Peaks at or below this cost nothing extra. Sets the lowest ceiling |
+| `capacity_tariff.rate_eur_per_kw_year` | `40.0` | EUR per kW per year | Only used for the cost estimate in the peak notice e-mail. `0` leaves the estimate out |
+| `capacity_tariff.stay_under_percent` | `80` | % (above 0, up to 100) | Grid charging stays under this share of the ceiling |
+| `capacity_tariff.guard_interval_seconds` | `30` | seconds | Minimum gap between peak guard runs. The guard's timer is fixed at 30, so values below 30 change nothing |
+| `capacity_tariff.peak_averaging_months` | `13` | months | Number of monthly peaks your bill averages. Used for the cost estimate |
+| `capacity_tariff.quarter_hour_average_mode` | `auto` | `auto`, `running`, `accumulating` | How the meter's quarter-hour average is read |
+| `capacity_tariff.offtake_sensor` | `sensor.slimmelezer_power_consumed` | entity id | Netted total offtake |
+| `capacity_tariff.quarter_hour_average_sensor` | `sensor.slimmelezer_huidig_kwartiervermogen` | entity id | Meter register 1-0:1.4.0 |
+| `capacity_tariff.month_peak_sensor` | `sensor.slimmelezer_maandpiek` | entity id | Meter register 1-0:1.6.0 |
+| `usage.history_weeks` | `4` | weeks | How many weeks are averaged into the usage profile |
+| `usage.grouping` | `same_weekday` | `same_weekday`, `day_type` | `same_weekday` averages the same weekday; `day_type` pools weekdays and weekend days |
+| `usage.recency_weighting` | `linear` | `linear`, `none` | `linear` weights newer weeks more (4 weeks: 4, 3, 2, 1). Changing it discards the cached profile |
+| `history.enabled` | `true` | true/false | Records the energy history |
+| `history.sensors.import`, `.export` | the SlimmeLezer tariff 1 and 2 counters | entity ids (list) | Cumulative kWh from and to the grid |
+| `history.sensors.solar`, `.battery_charge`, `.battery_discharge`, `.load` | `[]` | entity ids (list) | Cumulative kWh counters. See [Energy history](#energy-history) |
+| `timing.block_minutes` | `15` | minutes | Planning block length. Must divide 60. Keep 15 to match the price list |
+| `timing.evaluation_interval_minutes` | `5` | minutes | How often the planner runs |
+| `timing.forecast_refresh_minutes` | `60` | minutes | Accepted but not used by the current code. The REST sensor refreshes hourly (`scan_interval` in `configuration.yaml`) |
+| `timing.forecast_retry_minutes` | `10` | minutes | Minimum gap between forced forecast refreshes after failures |
+| `timing.solar_cache_stale_minutes` | `120` | minutes | Age after which the cached solar series is rebuilt |
+| `timing.usage_cache_stale_minutes` | `2880` | minutes | Age after which the cached usage profile is rebuilt |
+| `alerts.address` | **required** | e-mail address | Recipient passed to the notifier. Use the same address as `smtp_recipient` |
+| `alerts.notify_service` | `battery_alert` | service name | Notifier `notify.<name>`; lowercase letters, digits, underscore |
+| `alerts.realert_minutes` | `60` | minutes | Minimum gap between price-outage e-mails |
+| `alerts.peak_enabled` | `true` | true/false | Peak notice e-mail (after) |
+| `alerts.peak_warning_enabled` | `true` | true/false | Peak warning e-mail (before) |
+| `alerts.peak_warning_min_interval_minutes` | `60` | minutes (whole number, 1 or more) | Minimum gap between peak warnings |
+| `alerts.peak_warning_ticks` | `2` | evaluations (whole number, 1 or more) | Consecutive guard evaluations above the ceiling before a warning. Fewer is earlier and noisier |
+| `inverter.type` | `logging` | driver name | Selects `pyscript/modules/inverter_<type>.py`. `none` means `logging` |
+| `timezone` | `Europe/Brussels` | time zone name | Local day for log files, history and monthly peak e-mails |
+
+### Rounding: which way to err
+
+When a value is a rounded figure or you are unsure of it, pick the direction that makes the planner
+more cautious and cheaper for you. Where no direction is safe, use the exact value.
+
+| Setting | Round | Why |
+|---|---|---|
+| `prices.consumption_multiplier`, `prices.consumption_offset` | up | A higher buying price makes grid charging (S1, S5) less attractive |
+| `prices.injection_multiplier`, `prices.injection_offset` | down | A lower selling price makes arbitrage (S5) less attractive and makes the negative-injection veto (V2) fire sooner |
+| `capacity_tariff.rate_eur_per_kw_year` | up | It only sets the euro estimate in the peak e-mail, so a high figure never understates the cost |
+| `battery.capacity_kwh` | down | Use usable capacity, not nameplate. The planner then never counts on energy the battery does not have |
+| `battery.reserve_percent` | up | The planner stops discharging and exporting earlier |
+| `battery.max_charge_kw`, `battery.max_discharge_kw` | down | Commanded power never exceeds what the inverter does |
+| `battery.round_trip_efficiency` | down | Arbitrage (S2, S5) needs a bigger price spread |
+| `capacity_tariff.stay_under_percent` | lower is safer | Less grid charging near the peak ceiling, at the cost of fewer cheap charges |
+| `forecast_solar_url` (kWp part) | down | A lower forecast means less counted-on solar. `solar.kwp` itself does not feed the forecast |
+| `capacity_tariff.billing_floor_kw`, `peak_averaging_months` | exact | Take the value from your bill. A wrong floor changes what the ceiling protects |
+| `solar.latitude`, `longitude`, `declination`, `azimuth` | exact | They must describe the roof in the forecast URL |
+| `timing.*`, `capacity_tariff.guard_interval_seconds`, `alerts.*_minutes` | exact | Timing preferences with no safe direction |
+
+All-in consumption price: the consumption price must be the price you actually pay per kWh, because the planner compares it with
+selling prices and tests it against zero. Fold the per-kWh lines of your bill into the offset:
+
+```
+fees per kWh = (yearly EUR of each per-kWh bill line) / (yearly kWh taken from the grid)
+all-in price = (market x m + o + fees) x (1 + VAT)
+multiplier   = m x (1 + VAT)
+offset       = (o + fees) x (1 + VAT)
 ```
 
-**Restart Home Assistant after copying.** The script files (`battery_planner.py`, `peak_guard.py`)
-hot-reload, but the core under `pyscript/modules/` is loaded natively by an executor loader and is
-**not** hot-reloaded. Any change to a core file needs a Home Assistant restart.
+`m` and `o` are your supplier's multiplier and offset. Do not include fixed charges or the capacity
+tariff. Check first whether your supplier's coefficients already include VAT. Households are normally
+not charged these fees or VAT on injection, so keep the injection coefficients as the supplier states
+them.
 
-### Updating
+Find the right ENTSO-e sensor in Developer Tools -> States: filter "entso" and open the sensor whose
+attributes include a list of `{time, price}` entries (15-minute steps, EUR/kWh). Other ENTSO-e sensors,
+such as the current market price, show a price but carry no list. A wrong name makes the planner halt
+every cycle; the log line and the alert e-mail name the entity and attribute it tried. The forecast
+sensor name and attribute have not been checked on other installs, so confirm them the same way.
 
-You edit exactly two files, both gitignored, so updating from git never produces a merge conflict:
+Quarter-hour average mode: some meters report the quarter-hour average as energy so far divided by the
+full 15 minutes (`accumulating`), others divide by elapsed time (`running`). One minute into a window
+the two differ by a factor of 15. With `auto` the peak guard works out which applies by comparing
+samples from several windows, and says so in its records. Pin the value once it is stable. The
+detection state is held in memory, so after a restart the mode is "assumed" until enough windows have
+been seen.
 
-- `battery_planner/user_config.yaml` (your site, battery, tariff and alert settings)
-- Home Assistant's `secrets.yaml` (e-mail provider and credentials, forecast.solar URL)
+The peak guard's `@state_trigger` names `sensor.slimmelezer_power_consumed` literally, because
+decorator arguments are fixed at load time. If your netted offtake sensor has another name, the guard
+still reads the configured sensor on every run but only runs on its 30-second tick. To run on every
+sensor update, change the `@state_trigger(...)` argument in `pyscript/peak_guard.py`.
 
-Everything else is taken as shipped. To update: pull the new version, copy `pyscript/` over
-`<ha-config>/pyscript/`, and take the tracked `configuration.yaml` as-is. **Never overwrite
-`battery_planner/user_config.yaml` or `secrets.yaml`.** If a release adds new keys, compare
-`user_config.example.yaml` and `secrets.example.yaml` with your files and add only what is missing.
-Restart Home Assistant afterwards (see above).
+## Check that it works
 
-If your Home Assistant already has its own `configuration.yaml`, you cannot just overwrite it. Merge
-this repository's blocks (`pyscript:`, `rest:`, `notify:`, and the helper and template blocks you
-want) into yours **once, by hand**, or pull them in with `!include`. After that, no further edits to
-`configuration.yaml` are needed, because every personal value is a `!secret`.
-
-**Not tested:** loading these blocks as a Home Assistant package or via split `!include` files was
-not tested. Only the single `configuration.yaml` form is what this repository ships.
-
-### Configuring `user_config.yaml`
-
-The full schema, with comments and validation rules, is in
-`kitty-specs/price-aware-load-automation-01M3PH8Y/contracts/user-config.md`; the annotated example is
-`battery_planner/user_config.example.yaml`. Sections: `prices`, `battery`, `solar`,
-`capacity_tariff`, `usage`, `timing`, `alerts`, `inverter`, `timezone`. Two fields have no sensible default and
-must be set:
-
-- `battery.capacity_kwh` (shipped as `CHANGE_ME`)
-- `alerts.address` (shipped as `CHANGE_ME@example.com`)
-
-A bad configuration is a startup error (logged, no decision made), not a quietly degraded cycle.
-Check your provider's price coefficients (`prices.*`) and, for the capacity tariff, the rate on your
-own Fluvius bill (`capacity_tariff.rate_eur_per_kw_year`, revised annually).
-
-`usage.recency_weighting` (default `linear`, or `none`) makes newer weeks count more when the usage
-profile is averaged, so changes in routine are picked up faster: with `usage.history_weeks: 4` the last
-week weighs 4, the week before 3, then 2, then 1. `none` is the plain mean. Changing it discards the
-cached usage profile.
-
-`capacity_tariff.stay_under_percent` (default `80`, must be above 0 and at most 100) is a safety
-margin for **grid charging only**: charging from the grid must stay under that percentage of the
-ceiling (this month's peak, never below `billing_floor_kw`). With the 2.5 kW floor and 80, the
-planner will not charge from the grid if the quarter-hour looks like passing 2.0 kW; with a 3.0 kW
-month peak the limit is 2.4 kW. Peak shaving and the `ceiling=` value in the log still use the real
-ceiling, and `budget=` is the grid charging power still available under the reduced charging level after the household's own draw (the planner never charges at a rate that, added to what the house is drawing, would push the quarter-hour above that level). Set `100` to charge right up
-to the ceiling.
-
-### Choosing an inverter driver
-
-```yaml
-inverter:
-  type: logging      # default. Nothing, or "none", means the same.
-```
-
-`inverter.type` is a lowercase name (letters, digits, underscore) that selects the file
-`pyscript/modules/inverter_<type>.py`. `logging` ships with the project and only logs. Any other
-value loads that driver, so `type: alphaess` means `pyscript/modules/inverter_alphaess.py`.
-
-**Any driver other than `logging` transmits real commands to a real inverter. What it does is the
-responsibility of whoever wrote it and whoever enabled it.** None is shipped, and the project does
-not test against hardware.
-
-Whatever the driver, the decision line is always written to that day's decision log first. A driver that
-raises, times out, returns `False` or is missing never removes or changes that line and never
-crashes the planner or the guard. A type with no usable driver file is an error in the Home Assistant
-log on every cycle, nothing is transmitted (the same as `logging`), and decisions carry
-`degraded=inverter_driver_unavailable` (or `inverter_read_failed` when only the charge reading is
-unusable). Driver files are loaded once; after editing one, restart Home Assistant. A driver that
-failed to load is retried on the next cycle, so adding a missing file needs no restart.
-
-### Confirming it works
-
-A record should appear in today's file, `<ha-config>/battery_planner/decisions-YYYY-MM-DD.log`,
-within five minutes:
+A record appears in today's log within five minutes:
 
 ```bash
 tail -f <ha-config>/battery_planner/decisions-$(date +%F).log
 ```
 
-The log is rotated daily by name: every record goes to the file of its own local date (in the
-`timezone` of your config), so `decisions-2026-09-30.log` holds exactly that calendar day, from
-00:00:00 to 23:59:59 local time. The planner, the peak guard and the HALT / RECOVERED / SKIP
-lines all write to the same day's file. **Nothing is deleted automatically**, so the directory
-grows by one file per day. Add your own cleanup, for example a daily cron job on the host:
+Each file holds one local calendar day, in your configured `timezone`. The planner, the peak guard
+and the HALT / RECOVERED / SKIP lines all write to it. Nothing is deleted automatically, so add your
+own cleanup, for example a daily cron job:
 
 ```bash
 find <ha-config>/battery_planner -name 'decisions-*.log' -mtime +30 -delete
 ```
 
-Each record has the action, power, state of charge, vetoes, the selector that produced it, a
-reason, and a `degraded=` field. Expect `degraded=soc_stubbed` (and, until a household load source is
-configured, `usage_history_unavailable`). If the peak guard is shaving a peak, it writes its own records
-(one when a shave starts, changes materially, is vetoed, or stops; not one per 30-second tick).
+A normal record is one line of `|`-separated fields: timestamp, `action`, `power`, `soc`, `cons` and
+`inj` (prices), forecast and usage remaining, `saturation`, `spill`, `breach`, `end_soc`, `took`,
+`avg`, `ceiling`, `budget`, `vetoes`, `selector`, `why` (the reason in words), `degraded` and
+`source` (`planner` or `guard`). Fields that do not apply show `n/a`.
+
+Markers you can expect in `degraded=` on a fresh install:
+
+| Marker | Meaning |
+|---|---|
+| `soc_stubbed` | The battery charge is the 50 % placeholder. Normal until a driver reads the real charge |
+| `usage_history_unavailable` | No household usage history yet. Normal until a load source is configured; grid charging is vetoed meanwhile |
+| `usage_samples=N` | The usage profile rests on fewer than `usage.history_weeks` x 7 days of history (N days). Disappears as history builds up |
+| `cache_age_solar=...`, `cache_age_usage=...` | A cached series was used, with its age |
+| `solar_zero_fallback` | The forecast was unavailable, so solar was treated as zero. The planner retries and does not halt |
+| `grid_sensors_unavailable` | Capacity logic is on but the grid sensors are unreadable. Grid charging is suppressed |
+| `inverter_driver_unavailable`, `inverter_read_failed` | The configured driver is missing or its charge reading failed |
+
+When the peak guard is shaving a peak it writes its own records: when a shave starts, changes
+materially, is vetoed or stops, not once per 30-second tick.
 
 ### Troubleshooting
 
-| Symptom | Likely cause |
+| Symptom | Cause | Fix |
+|---|---|---|
+| No records at all | pyscript not loaded, or the `pyscript:` block is missing | Add the block from `configuration.yaml`, restart Home Assistant |
+| `ImportError` in the HA log | `allow_all_imports: true` is missing | Add it to the `pyscript:` block |
+| HA log warns about blocking I/O | A file operation ran on the event loop | It must use `@pyscript_executor` |
+| Forecast always zero | The REST sensor is failing | Check `forecast_solar_url` and the forecast.solar free-tier rate limit |
+| Constant HALT with "attribute prices missing or empty on ..." | `prices.entity` or `prices.attribute` does not match your install | Open the entity in Developer Tools -> States and copy the sensor and attribute name into `user_config.yaml` |
+| `peak_guard: ... not refreshed since window ...` | The quarter-hour average sensor has not published since this window began | At INFO level with a low value this is normal for a quiet house. At WARNING level with a high average and an old timestamp, the meter or its link is stuck and the guard is doing nothing |
+| Config edits have no effect | You edited the repository copy | Edit `<ha-config>/battery_planner/user_config.yaml` and restart |
+| Core code change has no effect | Core modules are not hot-reloaded | Restart Home Assistant |
+| `SKIP` line in the log | A cycle was due while the previous one was still running | Occasional lines are harmless. If they repeat, the HA log shows a warning (an error when the earlier cycle looks hung); check for a slow or blocked price or forecast source |
+| Alert not sent, `alerted=none` in HALT lines | The notify service does not exist (wrong name, notifier not loaded, restart pending) | Fix `alerts.notify_service` or the notifier and restart. The send is retried each cycle; the halt itself proceeds |
+
+## What the planner does
+
+The planner builds a projection of the battery over the coming hours (as far as the price list
+reaches) from the price list, the solar forecast and your usage profile. Then it applies vetoes, which
+forbid certain actions, and tries the selectors in order. The first selector whose proposal is not
+vetoed wins. The log shows the vetoes that fired, the selector that produced the decision and the
+reason.
+
+Vetoes:
+
+| Veto | Forbids | When |
+|---|---|---|
+| V1 | discharge, export | Charge is at or below `battery.reserve_percent` |
+| V2 | export | The injection price is negative |
+| V3 | grid charging | No capacity budget is left in this quarter-hour |
+| V4 | grid charging | There is no usable usage history |
+
+Selectors, in order:
+
+| Selector | Action |
 |---|---|
-| No records at all | pyscript not loaded, or the `pyscript:` block is missing from `configuration.yaml` |
-| `ImportError` in the HA log | `allow_all_imports: true` missing |
-| HA log warns about blocking I/O | A file operation ran on the event loop; it must use `@pyscript_executor` |
-| Forecast always zero | REST sensor failing: check the URL and the free-tier rate limit |
-| Prices always missing, constant HALT; cause "attribute prices missing or empty on ..." | `prices.entity` or `prices.attribute` does not match your install: open the entity in Developer Tools -> States and copy the sensor and the attribute holding the `{time, price}` list into `user_config.yaml` (step 4) |
-| `peak_guard: ... not refreshed since window ...` | The quarter-hour average sensor has not published since this window began. SlimmeLezer sensors may publish only on change, so with a low value (logged at INFO) this is normal for a quiet house and harmless. Worry only if it appears at WARNING level: a high average with an old stamp (stamp, age and value are in the message), meaning the meter or its link is stuck and the guard is doing nothing |
-| Config edits have no effect | You edited the repo copy instead of `<ha-config>/battery_planner/user_config.yaml` |
-| Core code change has no effect | Core modules are not hot-reloaded: restart Home Assistant |
+| S0 | Peak shave: discharge to the house when the quarter-hour is heading above the ceiling |
+| S1 | Charge from the grid while the consumption price is negative |
+| S2 | Charge from surplus solar when storing it beats exporting now |
+| S3 | Export when the battery would otherwise overflow and now is the best injection price in the window |
+| S4 | Charge from the grid in the cheapest blocks when the battery would otherwise drop to the reserve |
+| S5 | Charge from the grid when a later injection price, after round-trip losses, beats the price now |
+| S6 | Idle |
 
-## How it behaves
+Grid charging never exceeds the budget: the charging level (`stay_under_percent` of the ceiling) minus
+what the house is drawing. In the last minute of a quarter-hour the budget is 0.
 
-- **Price outage:** no decisions are made. A `HALT` line is written to the log each cycle, one alert
-  is sent on entry and then at most one per `alerts.realert_minutes`, and a `RECOVERED` line is
-  written when prices return.
-- **Capacity e-mails:** a warning before a predicted crossing (peak guard) and a notice after the
-  month peak passes the billing floor (planner); see
-  [Capacity-tariff e-mails](#capacity-tariff-e-mails-a-warning-before-a-notice-after).
-- **Forecast outage:** solar is treated as zero, the record is marked, and a bounded number of
-  refresh attempts are made. It does not halt.
-- **Peak guard** (`pyscript/peak_guard.py`): every ~30 seconds and on each change of the offtake
-  sensor, it checks whether the current quarter-hour is heading above the month's peak (floored at
-  2.5 kW) and, if so, records a shaving discharge. While it is shaving it sets
-  `pyscript.peak_guard_shaving` to `on`, and the planner then refuses to grid-charge. The guard is
-  **reactive only**: it defends a window already forming. It does not hold charge back for a
-  foreseeable evening peak. It reads the netted offtake sensor. Like the planner, it only logs.
-- **Grid sensors unreadable** (capacity enabled): grid charging is suppressed and the record is
-  marked `grid_sensors_unavailable`.
-- **No usage history:** grid charging is vetoed (V4) and the record shows it, for example
-  `vetoes=V4(suppressed S1 charge)`. Solar-surplus charging is not affected. See
-  [Known gaps](#known-gaps).
+Price outage: if prices are missing, unparseable or already elapsed, no decisions are made. A `HALT`
+line is logged each cycle, one e-mail is sent on entry and then at most one per
+`alerts.realert_minutes`, and a `RECOVERED` line is logged when prices return. The e-mail names the
+cause. Check the price entity and attribute (see [Configure](#configure)). If the ENTSO-e integration
+itself is down, wait for it; the planner resumes by itself.
+
+Forecast outage: solar counts as zero, the record is marked `solar_zero_fallback`, and the planner
+retries. It does not halt.
+
+### Peak guard
+
+`pyscript/peak_guard.py` runs every 30 seconds and on each update of the netted offtake sensor. If the
+current quarter-hour is heading above the ceiling (this month's peak, never below the 2.5 kW floor),
+it records a shaving discharge and sets `pyscript.peak_guard_shaving` to `on`. While that is on, the
+planner does not grid-charge. The guard only reacts to a window that is already forming. It does not
+hold charge back for an evening peak it could foresee. Like the planner, it only logs unless you add
+an inverter driver.
+
+### Alert e-mails
+
+All e-mails go through the notifier `notify.<alerts.notify_service>` to `alerts.address`.
+
+Price outage (halt). Sent when prices become unavailable, then at most once per
+`alerts.realert_minutes`. Fix the price source as described above.
+
+Peak warning, before (`alerts.peak_warning_enabled`). The peak guard projects the current
+quarter-hour's average from the energy so far and the current offtake. If the projection is above the
+ceiling on `alerts.peak_warning_ticks` consecutive evaluations (default 2), it sends a prediction: the
+projected average, the ceiling, the time left, the current offtake and what the guard is doing. It is
+not sent in the first or last minute of a quarter-hour, at most once per quarter-hour and at most once
+per `alerts.peak_warning_min_interval_minutes` (default 60, forgotten on restart). When you get one,
+reduce load now (oven, dryer, EV, heating) if you can. The prediction can be wrong, and a correct one
+does not mean you were billed.
+
+Peak notice, after (`alerts.peak_enabled`). Sent when this month's peak from the meter
+(`capacity_tariff.month_peak_sensor`) goes above `capacity_tariff.billing_floor_kw`: one e-mail for the
+first crossing in a calendar month, then one for each new peak at least 0.05 kW higher than the last
+one mailed. It contains the peak, the floor, when the planner first saw it and an estimated cost: the
+rise over the floor, at `rate_eur_per_kw_year`, over `capacity_tariff.peak_averaging_months` months
+(default 13). The estimate is left out when no rate is configured, and it is not an invoice. The meter
+only reports a new maximum after the quarter-hour has ended, so this arrives after the peak is set. It
+works during a price outage. When you get one, nothing needs fixing; note which appliance caused it so
+you can avoid repeating it this month. A failed send is retried on the next cycle.
+
+The last mailed month and peak are kept in `<ha-config>/battery_planner/state/peak_alert.json`. If
+that file is lost, you may get one extra e-mail for an old peak after a restart.
 
 ## Energy history
 
-The planner keeps its own 15-minute energy history. Home Assistant's recorder keeps raw states only
-about ten days and long-term statistics only hourly, which is too coarse and too short for usage
-profiles and forecast calibration. The history is written to
-`<ha-config>/battery_planner/history/blocks-YYYY-MM-DD.jsonl` (one file per local day of the block,
-one JSON object per line) and `last_snapshot.json` (the counters at the last boundary, so a restart
-does not lose the block in progress).
+Home Assistant's recorder keeps raw states for only about ten days and long-term statistics hourly.
+The planner therefore keeps its own 15-minute energy history in
+`<ha-config>/battery_planner/history/blocks-YYYY-MM-DD.jsonl` (one JSON object per block, one file per
+local day) and `last_snapshot.json` (the counters at the last boundary, so a restart does not lose the
+block in progress). Set `history.enabled: false` to stop recording. A recording failure is logged
+(at most once an hour per kind) and never affects a decision.
 
-**How it works.** You list cumulative kWh counters under `history.sensors` in `user_config.yaml`
-(several counters per quantity are summed, for example tariff 1 plus tariff 2). On the first planner
-cycle at or after each block boundary the counters are read, and the difference to the previous
-reading is the finished block's energy. Defaults: `import` and `export` use the four SlimmeLezer
-tariff counters. `solar`, `battery_charge`, `battery_discharge` and `load` are empty (not
-available) until you add them. `history.enabled: false` stops recording. A recorder failure is
-logged (at most once an hour per kind) and never affects a decision.
+You list cumulative kWh counters under `history.sensors` in `user_config.yaml`. Several counters for
+one quantity are summed (tariff 1 plus tariff 2). The planner reads them at each block boundary and
+records the difference. Defaults: `import` and `export` use the four SlimmeLezer tariff counters;
+`solar`, `battery_charge`, `battery_discharge` and `load` are empty.
 
-**Fields per block** (energy in kWh; any field is `null` when unknown):
+To get usage history, and with it grid charging, configure either a `load` counter, or `solar` together
+with `battery_charge` and `battery_discharge`. Solar alone is not enough while a battery is installed.
+With only the default counters, import and export are recorded but `load_kwh` stays `null`.
+
+Fields per block (energy in kWh; any field is `null` when unknown):
 
 | Field | Meaning |
 |---|---|
 | `block_start`, `local_date`, `block_minutes` | Block start (UTC ISO), local date (the file it is in), length |
-| `import_kwh`, `export_kwh` | Energy from the grid and injected into it (injection history). `from_net_kwh` equals `import_kwh` (household plus battery charging from the grid) |
+| `import_kwh`, `export_kwh` | Energy taken from the grid and injected into it. `from_net_kwh` equals `import_kwh` |
 | `solar_kwh` | Measured PV production |
 | `battery_charge_kwh`, `battery_discharge_kwh` | Energy into and out of the battery |
-| `load_kwh`, `load_source` | Household consumption: `measured` from a `load` counter, else `derived` (below), else `null` |
-| `load_from_solar_kwh`, `load_from_battery_kwh`, `load_from_net_kwh`, `split_method` | Where the load came from (below) |
-| `forecast_solar_kwh` | What the forecast said for the block when it started; `null` when the forecast was missing (zero fallback) |
+| `load_kwh`, `load_source` | Household consumption: `measured` from a `load` counter, else `derived`, else `null` |
+| `load_from_solar_kwh`, `load_from_battery_kwh`, `load_from_net_kwh`, `split_method` | Where the load came from |
+| `forecast_solar_kwh` | The forecast for the block when it started; `null` if the forecast was missing |
 | `consumption_price`, `injection_price` | Prices of the block, as known when it started |
-| `soc_percent` | State of charge at the start; `null` while the state of charge is a stub |
+| `soc_percent` | Charge at the start; `null` while the charge is a stub |
 | `complete` | `true` only if every configured counter was readable at both readings and gave a valid difference |
-| `start_read_at`, `snapshot_read_at` | When the counters were actually read at the start and end of the block |
+| `start_read_at`, `snapshot_read_at` | When the counters were actually read |
 
-**Formulas.**
+Derived load = `import - export + solar + battery_discharge - battery_charge`, only when all five terms
+are known. The split (`priority_v1`) assumes solar serves the load first, then the battery, then the
+grid. The counters are block totals, so this is a convention, not a measurement.
 
-- Derived load = `import - export + solar + battery_discharge - battery_charge`, only when all five
-  terms are known; otherwise `null`. Nothing is assumed: a missing battery counter does not count as
-  zero, because the battery exists.
-- Split (convention `priority_v1`, needs load, solar and battery discharge): solar serves the load
-  first, then the battery, the rest comes from the grid. `load_from_solar = min(load, solar)`,
-  `load_from_battery = min(load - load_from_solar, battery_discharge)`,
-  `load_from_net = load - load_from_solar - load_from_battery`. The counters are block totals, so
-  this is a convention for the usual case, not a measurement.
-- A negative difference (counter reset or replacement) makes that field `null`. A missing earlier
-  reading, or a gap of more than one block (planner stopped, Home Assistant restarted), writes
-  `null` records for the missed blocks (at most one day of them): one difference is never spread
-  over several blocks. An unreadable counter makes its whole quantity `null` (never a partial sum).
+A negative difference (counter reset or replacement) makes that field `null`. A gap of more than one
+block (planner stopped, Home Assistant restarted) writes `null` records for the missed blocks, at most
+one day of them. A difference is never spread over several blocks, and an unreadable counter makes its
+whole quantity `null`.
 
-**Timing imprecision.** The planner runs every `evaluation_interval_minutes`, so a block's counters
-are read up to one interval after the boundary, and the block's energy covers
-`[start_read_at, snapshot_read_at)`, not exactly the 15 minutes. With a 1-minute interval the error
-is at most a minute; with 5 minutes, up to five. Both read times are in every record.
+The planner runs every `timing.evaluation_interval_minutes`, so a block's counters are read up to one
+interval after the boundary. Both read times are in every record.
 
-**What unlocks usage history.** The usage profile needs a known `load_kwh`. That requires a `load`
-counter, or a `solar` production counter together with `battery_charge` and `battery_discharge`
-(solar alone is not enough while a battery is installed, because energy going into or out of the
-battery would be misattributed). With only the default grid counters, import and injection are
-recorded from now on, but `load_kwh` stays `null`, usage history stays empty, and the safe
-behaviour holds: no grid charging (veto V4).
-
-**Not used yet.** `solar_realisation_ratio` in `pyscript/modules/history.py` (sum of measured solar over sum of forecast
-solar, over the blocks that have both) is implemented and tested but not applied to any decision.
-The idea is that if the panels consistently produce, say, 80 % of what the forecast says, that 80 %
-can later be applied to the solar series. The recorded prices, injection, battery and split fields
-are likewise for later analysis.
-
-**Cleanup is manual.** The planner never deletes history. To keep one year, for example:
+The planner never deletes history. To keep one year:
 
 ```bash
 find <ha-config>/battery_planner/history -name 'blocks-*.jsonl' -mtime +365 -delete
 ```
 
-## Known gaps
+## Updating
 
-Stated as facts, so you can tell what is deliberate and what is not done yet.
+You edit two files, and updating never touches them: `battery_planner/user_config.yaml` and Home
+Assistant's `secrets.yaml`.
 
-Deliberate scope decisions (out of scope for this mission):
+1. Copy the new `pyscript/` folder over `<ha-config>/pyscript/`.
+2. Copy the new `configuration.yaml`, or merge its changed blocks into yours.
+3. Never overwrite `user_config.yaml` or `secrets.yaml`. If a release adds keys, compare
+   `user_config.example.yaml` and `secrets.example.yaml` with your files and add what is missing.
+4. Restart Home Assistant.
 
-- **No inverter driver is shipped except `logging`.** No inverter control, no HF2211 or Modbus
-  transport. By default decisions are logged only; a driver for your inverter is a single file (see
-  [Adding an inverter](#adding-an-inverter)).
-- **Battery state of charge is a stub** (fixed at 50%) until a driver reads the real value.
-- **Predictive peak protection** is not implemented. The trajectory projects battery charge but not
-  grid offtake, so protection is reactive.
-- **Only the battery is controlled.** No other loads, no solar curtailment, no change of supply
-  contract.
-- **Single solar plane**, free forecast tier only.
-- **Flanders-specific** capacity logic.
-- **No dashboard, and no replay or analysis tooling.** The log is designed so that both can be built
-  later.
+Upgrade note: older versions named the notifier `gmail_alert`. If you set
+`alerts.notify_service: gmail_alert`, either keep that name in your notifier or change the setting to
+`battery_alert`.
 
-Not done yet (known, with a planned follow-up):
+## Adding an inverter driver
 
-- **Household usage history needs a load source.** `read_usage_history` reads the planner's own
-  energy history, which only holds a household load when a `load` counter (or `solar` plus both
-  battery counters) is configured. Until then household load is treated as zero and
-  **the planner never charges from the grid**: veto V4 ("no usage profile")
-  forbids every grid-charging proposal while there is no history, because without it a grid charge
-  could land on top of an unseen household peak and raise the capacity tariff. Charging from surplus
-  solar, discharging and exporting are unaffected.
-- **Alert delivery is unverified end to end.** The notifier is configured (see
-  [Alert e-mail](#alert-e-mail)), but it was not tested against a live Home Assistant, and the SMTP
-  YAML platform may have moved to the UI in your HA version. If sending fails the error is logged and
-  the halt still proceeds.
-- **ENTSO-e entity and attribute names are unconfirmed** on other installs (see step 4 above).
-- **Future risk in the guard:** it reads net offtake, which its own discharge would lower. Before real
-  inverter transmission exists, the commanded power must be added back or the shave will switch on
-  and off repeatedly.
-- The 13-month average sensor is exposed by the firmware but not read by the code.
-
-## If you want to adapt this
-
-- **Provider price coefficients:** `prices.*` in `user_config.yaml`. No code change.
-- **A different grid operator or tariff:** the capacity-tariff logic is in
-  `pyscript/modules/capacity.py` and the `capacity_tariff` config block.
-- **Real inverter control:** add a driver file, see [Adding an inverter](#adding-an-inverter). You do
-  not edit `inverter.py`, the planner or the guard.
-- **Usage history:** configure the counters under `history.sensors`; the reader is
-  `read_usage_history` in `pyscript/battery_planner.py`.
-
-### Adding an inverter
-
-A driver is one file, `pyscript/modules/inverter_<name>.py`, selected with `inverter.type: <name>`.
-It provides two functions and one optional flag. Copy `inverter_logging.py` and replace the bodies.
-Skeleton for a hypothetical `alphaess`:
+A driver is one file, `pyscript/modules/inverter_<name>.py`, selected with `inverter.type: <name>`
+(lowercase letters, digits, underscore). Copy `inverter_logging.py` and replace the bodies. Skeleton
+for a hypothetical `alphaess`:
 
 ```python
 # pyscript/modules/inverter_alphaess.py
@@ -541,49 +465,74 @@ def read_charge_percent():
     ...
 ```
 
-Then set `inverter.type: alphaess`, restart Home Assistant and watch the log. What the framework does
-for you: it writes the decision line before calling you; runs your code as ordinary Python in an
-executor thread (blocking network I/O is fine, the event loop is never blocked); gives each call
-10 seconds, after which it is treated as failed; catches every failure and logs it; and marks
-decisions `soc_stubbed` while `SOC_IS_STUB` is true. A driver is loaded under a private name; it is
-not on `sys.path`, so it can import the standard library and installed packages but not the other
-files in `pyscript/modules/`, and it cannot use pyscript names such as `log` or `state`.
+Then set `inverter.type: alphaess`, restart Home Assistant and watch the log. Any driver other than
+`logging` sends real commands to a real inverter, and nothing in this project is tested against
+hardware. You are responsible for the driver you enable.
 
-Checklist before you enable a real driver:
+What the framework does for you:
 
-- [ ] **Thread safety.** The planner (every cycle, whatever the action, including `idle`) and the peak
-      guard (only when its state changes) may call `send` at the same time from different threads.
-      Serialize access to your bus, for instance with a `threading.Lock`.
-- [ ] **Network timeouts of your own.** After 10 seconds the call is abandoned, but its thread keeps
+- It writes the decision line before calling your driver. A driver that raises, times out, returns
+  `False` or is missing never changes that line and never crashes the planner or the guard.
+- It runs your code in an executor thread, so blocking network calls are fine.
+- It gives each call 10 seconds, then treats it as failed and logs it.
+- It marks decisions `soc_stubbed` while `SOC_IS_STUB` is true.
+- If the driver file is missing, the HA log shows an error every cycle, nothing is sent and decisions
+  carry `degraded=inverter_driver_unavailable`. Adding the file needs no restart. After editing an
+  existing driver, restart Home Assistant.
+
+A driver is loaded under a private name. It can import the standard library and installed packages
+but not the other files in `pyscript/modules/`, and it cannot use pyscript names such as `log` or
+`state`.
+
+Before you enable a real driver:
+
+- [ ] Serialize access to your inverter bus, for example with a `threading.Lock`. The planner (every
+      cycle, including `idle`) and the peak guard (when its state changes) can call `send` at the
+      same time from different threads.
+- [ ] Set your own network timeouts. After 10 seconds the call is abandoned, but its thread keeps
       running until it returns.
-- [ ] **Idempotent commands.** `send("discharge", 2.5)` may arrive again unchanged on the next cycle.
-      Some inverters also need a periodic re-send (heartbeat) or they fall back to their own mode;
-      the planner's every-cycle calls give you that, the guard's change-only calls do not.
-- [ ] **Guard feedback, FUTURE RISK.** The peak guard reads net grid offtake, and its own commanded
-      discharge lowers that reading. With real control the commanded power must be added back to the
-      reading, or the shave will switch on and off repeatedly. This is not implemented; do not enable
-      a real driver together with the capacity-tariff guard until it is.
-- [ ] **Failures are your call.** The framework only logs a failed `send`; it does not retry or fall
-      back. Decide what your inverter should do when commands stop arriving.
-- [ ] **Run `logging` first** and compare a week of logged decisions with what the battery should have
-      done before sending anything real.
-- [ ] Return the real charge from `read_charge_percent` and leave `SOC_IS_STUB` unset, or the
-      decisions stay marked `soc_stubbed`.
+- [ ] Make commands idempotent. `send("discharge", 2.5)` may arrive again unchanged. If your inverter
+      needs a periodic re-send to hold its mode, the planner's every-cycle calls provide it; the
+      guard's change-only calls do not.
+- [ ] Decide what the inverter does when commands stop. A failed `send` is only logged, not retried.
+- [ ] Do not combine a real driver with the capacity-tariff guard yet. The guard reads net grid
+      offtake, which its own discharge lowers, and the commanded power is not added back, so the
+      shave would switch on and off repeatedly.
+- [ ] Run with `logging` first and compare a week of decisions with what the battery should have done.
+- [ ] Return the real charge from `read_charge_percent` and leave `SOC_IS_STUB` unset.
 
-The decision logic (`pyscript/modules/`) contains no Home Assistant code and is tested without it:
+The decision logic in `pyscript/modules/` contains no Home Assistant code and is tested without it:
 
-```powershell
-py -3.12 -m pip install pytest
-py -3.12 -m pytest tests/ -v
+```bash
+python3.12 -m pip install pytest
+python3.12 -m pytest tests/ -v
 ```
 
-If you fork, scrub before publishing: no API keys, no e-mail addresses, no coordinates more precise
-than you want public, and no `battery_planner/user_config.yaml`. Make sure your `.gitignore` covers
-`secrets.yaml` and `battery_planner/user_config.yaml`, and verify it with `git check-ignore -v`
-rather than assuming.
+If you fork, do not publish `secrets.yaml` or `battery_planner/user_config.yaml`, and check with
+`git check-ignore -v` that your `.gitignore` covers them.
+
+## Known gaps
+
+- No inverter driver is shipped except `logging`, so nothing controls a battery.
+- Battery charge is a fixed 50 % until a driver reads the real value.
+- Grid charging stays off until a household load source is configured.
+- Peak protection is reactive. The projection covers battery charge, not grid offtake, so the planner
+  does not hold charge back for a foreseeable evening peak.
+- The peak guard does not add its own commanded discharge back to the offtake reading (see the driver
+  checklist).
+- Single solar plane, free forecast tier only, Flemish capacity tariff only, battery only.
+- The alert e-mails and the entity names on installs other than the original one have not been tested
+  against a live Home Assistant. Send a test mail (install step 8) and check the entity names as
+  described above.
+- `solar_realisation_ratio` in `pyscript/modules/history.py` (measured over forecast solar) is
+  implemented and tested but not applied to any decision. The recorded prices, battery and split
+  fields are for later analysis.
+
+To adapt the planner: provider prices are `prices.*` in `user_config.yaml`; the capacity-tariff logic
+is in `pyscript/modules/capacity.py`; usage history is read by `read_usage_history` in
+`pyscript/battery_planner.py`.
 
 ## Licence
 
-MIT, see [LICENSE](LICENSE). Anyone may use, copy and adapt this. There is no fee; the only request
-(and, in the licence text, the condition) is that you keep the copyright notice, and if you build on
-this, a reference to the original repository, <https://github.com/Ivoos0/solar>, is appreciated.
+MIT, see [LICENSE](LICENSE). If you build on this, a reference to the original repository,
+<https://github.com/Ivoos0/solar>, is appreciated.
