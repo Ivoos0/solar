@@ -317,7 +317,7 @@ Selectors, in the order they are tried:
 
 | Label | Action |
 |---|---|
-| S0 | Peak shave: discharge to the house when the quarter-hour is heading above the ceiling |
+| S0 | Peak shave: discharge to the house when the quarter-hour is heading above the ceiling. Mostly relevant when the planner is holding energy back (see [Peak guard](#peak-guard)) |
 | S1 | Charge from the grid while the consumption price is negative |
 | S2 | Charge from surplus solar when storing it beats exporting now |
 | S3 | Export when the battery would otherwise overflow and now is the best injection price in the window |
@@ -345,6 +345,14 @@ it records a shaving discharge and sets `pyscript.peak_guard_shaving` to `on`. W
 planner does not grid-charge. The guard only reacts to a window that is already forming. It does not
 hold charge back for an evening peak it could foresee. Like the planner, it only logs unless you add
 an inverter driver.
+
+Shaving matters mainly when the planner itself is holding energy back from the house. The planner
+does that when it charges the battery from the grid or stores surplus solar. The grid then supplies
+the household plus the charge, and a sudden load can push the quarter-hour over the ceiling. The
+guard then discharges to cut the grid draw, and the planner stops grid-charging while it shaves. If
+your inverter already runs the house from the battery whenever it has charge, the grid draw is low
+and the guard has nothing to do. It cannot add discharge beyond what the inverter allows, and it
+does nothing at or below the reserve.
 
 ### Alert e-mails
 
