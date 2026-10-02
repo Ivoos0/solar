@@ -328,6 +328,7 @@ in, `usage_history_unavailable`). If the peak guard is shaving a peak, it writes
 | HA log warns about blocking I/O | A file operation ran on the event loop; it must use `@pyscript_executor` |
 | Forecast always zero | REST sensor failing: check the URL and the free-tier rate limit |
 | Prices always missing, constant HALT; cause "attribute prices missing or empty on ..." | `prices.entity` or `prices.attribute` does not match your install: open the entity in Developer Tools -> States and copy the sensor and the attribute holding the `{time, price}` list into `user_config.yaml` (step 4) |
+| `peak_guard: ... not refreshed since window ...` | The quarter-hour average sensor has not published since this window began. SlimmeLezer sensors may publish only on change, so with a low value (logged at INFO) this is normal for a quiet house and harmless. Worry only if it appears at WARNING level: a high average with an old stamp (stamp, age and value are in the message), meaning the meter or its link is stuck and the guard is doing nothing |
 | Config edits have no effect | You edited the repo copy instead of `<ha-config>/battery_planner/user_config.yaml` |
 | Core code change has no effect | Core modules are not hot-reloaded: restart Home Assistant |
 
