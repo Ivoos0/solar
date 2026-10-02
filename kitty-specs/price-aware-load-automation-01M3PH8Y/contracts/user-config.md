@@ -84,6 +84,13 @@ usage:
                                 # day_type: a Wednesday block = mean over every
                                 #   weekday in the window; Saturday and Sunday
                                 #   pool as weekend days (smoother, fills faster)
+  recency_weighting: linear     # linear | none
+                                # linear: newer weeks count more, so changes in
+                                #   routine show up sooner. With history_weeks 4
+                                #   the last week weighs 4, the week before 3,
+                                #   then 2, then 1 (weight = history_weeks -
+                                #   weeks ago; missing weeks just drop out)
+                                # none: plain mean, every day counts equally
 
 timing:
   block_minutes: 15
@@ -118,7 +125,7 @@ Checked at load. A failure is a **startup error, not a degraded cycle** — bad 
 
 ## Cache invalidation
 
-Changing `solar.*`, `timing.block_minutes`, `usage.history_weeks` or `usage.grouping` changes what a cached block *means*, so cached series built under the old values are discarded (FR-037). (The usage settings only affect the usage profile, but they share the fingerprint for simplicity; a rare change costs one extra solar refetch.) The cache stores a fingerprint of exactly these fields; a mismatch is a miss, not an error.
+Changing `solar.*`, `timing.block_minutes`, `usage.history_weeks`, `usage.grouping` or `usage.recency_weighting` changes what a cached block *means*, so cached series built under the old values are discarded (FR-037). (The usage settings only affect the usage profile, but they share the fingerprint for simplicity; a rare change costs one extra solar refetch.) The cache stores a fingerprint of exactly these fields; a mismatch is a miss, not an error.
 
 ## Secrets
 
