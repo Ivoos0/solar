@@ -47,7 +47,7 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   stale; last_reported moves on every write. Older HA: .last_updated. Values
   may be datetime or ISO string; naive = UTC. The stamp must be at or after
   the current window start PLUS GUARD_BOUNDARY_MARGIN_S (2 s), otherwise the
-  tick is a no-op with one warning per window. The margin covers clock skew:
+  tick is a no-op (logging below). The margin covers clock skew:
   if the meter (ESPHome) clock runs a few seconds behind HA, the previous
   window's average could be rewritten just after HA's boundary and carry a
   "fresh" stamp. ASSUMPTION: the meter rewrites the average after each window
@@ -56,6 +56,16 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   no-timestamp fallback below is unchanged. If neither timestamp exists (nothing measured) the average is
   ignored for the first STALE_FALLBACK_SECONDS (15 s) of every window, with no
   warning. A stale value NEVER produces a discharge.
+  LIVE FINDING: the SlimmeLezer sensors can publish to HA only when their
+  value CHANGES (a quiet house read 0.0 with a 50-minute-old last_reported and
+  last_updated while the device was alive). A stale stamp with a low value is
+  therefore normal for a quiet house and harmless. Logging: stale and below
+  GUARD_STALE_WARN_FRACTION * billing_floor_kw (half the floor, 1.25 kW by
+  default): one INFO line per window. Stale and at or above it: one WARNING
+  per window, with the stamp (local ISO), its age in seconds and the value; a
+  high average with an old stamp is the case worth investigating. When a stale
+  sensor becomes fresh again one INFO line "refreshed (stamp ...)" is logged
+  per stale episode. Logging only: the no-action-while-stale logic is unchanged.
 * The billed 13-month average sensor is NOT read: GridState has no field for it
   and costing belongs to the planner.
 * Entities: the quarter-hour average and month-peak sensors are read from
@@ -163,6 +173,12 @@ STALE_FALLBACK_SECONDS = 15.0
 # A stamp must be this far past the window start to count as fresh (meter
 # clock skew; see the docstring). Only used when a timestamp exists.
 GUARD_BOUNDARY_MARGIN_S = 2
+# A stale average below GUARD_STALE_WARN_FRACTION * billing_floor_kw is logged
+# at INFO, at or above it at WARNING. Why: below half the billing floor
+# nothing could need shaving even if the stale value were real (nothing under
+# the floor is ever billed), and it is what a quiet house on a publish-on-change
+# meter looks like. A fraction (not a fixed kW) follows a changed floor.
+GUARD_STALE_WARN_FRACTION = 0.5
 _UNIT_FACTORS = {"kW": 1.0, "W": 0.001}
 _BAD = ("unavailable", "unknown", "none", "")
 
@@ -183,7 +199,9 @@ _flags = {
     "warned": {},
     "primed": False,       # entity reconciled to "off" since import/reload
     "inverter_marker": None,  # degraded marker from the last charge reading
-    "stale_window": None,  # window a stale-average warning was already logged
+    "stale_window": None,  # window a stale-average WARNING was already logged
+    "stale_info_window": None,  # window a low stale-average INFO was logged
+    "stale_episode": False,  # a stale average was seen and has not refreshed yet
 }
 
 
@@ -457,6 +475,33 @@ def _avg_staleness(stamp, now, start):
     return None
 
 
+def _stamp_text(stamp, now):
+    if stamp is None:
+        return "none"
+    return stamp.astimezone(now.tzinfo).isoformat()
+
+
+def _log_stale(cfg, now, start, stamp, value_kw):
+    """Log a stale average once per window and level; never affects decisions."""
+    entity = cfg.quarter_hour_average_sensor
+    if value_kw < cfg.billing_floor_kw * GUARD_STALE_WARN_FRACTION:
+        if _flags["stale_info_window"] != start:
+            _flags["stale_info_window"] = start
+            log.info(  # noqa: F821
+                "peak_guard: %s not refreshed since window %s began (last "
+                "stamp %s, age %.0fs, value %.3f kW, low: harmless for a "
+                "quiet house); no action until it is" % (
+                    entity, start.isoformat(), _stamp_text(stamp, now),
+                    (now - stamp).total_seconds(), value_kw))
+    elif _flags["stale_window"] != start:
+        _flags["stale_window"] = start
+        log.warning(  # noqa: F821
+            "peak_guard: %s not refreshed since window %s began (last stamp "
+            "%s, age %.0fs, value %.3f kW); no action until it is" % (
+                entity, start.isoformat(), _stamp_text(stamp, now),
+                (now - stamp).total_seconds(), value_kw))
+
+
 def _render(action, power, fired, suppressed=()):
     return decision.render_vetoes(rules.Decision(
         action, power, "S0", "", list(fired), list(suppressed)))
@@ -500,13 +545,15 @@ def _evaluate(trigger_type, started):
     start = _roll_window(now)
     staleness = _avg_staleness(avg_updated, now, start)
     if staleness:
-        if staleness == "stale" and _flags["stale_window"] != start:
-            _flags["stale_window"] = start
-            log.warning(  # noqa: F821
-                "peak_guard: %s not refreshed since window %s began; no "
-                "action until it is" % (
-                    cfg.quarter_hour_average_sensor, start.isoformat()))
+        if staleness == "stale":
+            _flags["stale_episode"] = True
+            _log_stale(cfg, now, start, avg_updated, reported)
         return
+    if _flags["stale_episode"]:
+        _flags["stale_episode"] = False
+        log.info(  # noqa: F821
+            "peak_guard: %s refreshed (stamp %s)" % (
+                cfg.quarter_hour_average_sensor, _stamp_text(avg_updated, now)))
 
     verdict = _feed_detector(cfg, now, reported, offtake)
     grid = capacity.build_state(

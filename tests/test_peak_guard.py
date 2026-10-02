@@ -85,11 +85,24 @@ class FakeState:
 class FakeLog:
     def __init__(self):
         self.messages = []
+        self.leveled = []     # (level, message)
 
-    def _add(self, msg, *args):
-        self.messages.append(msg % args if args else msg)
+    def _add(self, msg, *args, level="?"):
+        text = msg % args if args else msg
+        self.messages.append(text)
+        self.leveled.append((level, text))
 
-    warning = info = error = debug = _add
+    def warning(self, msg, *args):
+        self._add(msg, *args, level="warning")
+
+    def info(self, msg, *args):
+        self._add(msg, *args, level="info")
+
+    def error(self, msg, *args):
+        self._add(msg, *args, level="error")
+
+    def debug(self, msg, *args):
+        self._add(msg, *args, level="debug")
 
 
 class FakeInverter:
@@ -1189,3 +1202,111 @@ def test_guard_trigger_stays_literal_default_offtake(make_guard):
     g = make_guard(extra="  offtake_sensor: sensor.other_meter\n")
     assert ("state_trigger", (OFFTAKE,)) in g.triggers
     assert "LITERALLY" in g.mod.__doc__ and "KNOWN LIMITATION" in g.mod.__doc__
+
+
+# ---- stale-average logging levels (behaviour unchanged, logging only) -------
+
+def _lv(g, level, needle):
+    return [m for lv, m in g.log.leveled if lv == level and needle in m]
+
+
+def test_guard_stale_warn_fraction_is_half_the_floor(make_guard):
+    assert make_guard().mod.GUARD_STALE_WARN_FRACTION == 0.5
+
+
+def test_low_stale_value_logs_info_only_and_never_acts(make_guard):
+    g = make_guard(mode="accumulating").at(17, 6, 0)
+    g.st.reported[AVG] = _stamp(16, 15, 2)             # 51 min old, quiet house
+    g.tick(offtake="0.3", avg="0.0", peak="4.0")
+    assert g.inv.calls == [] and g.st.values[SHAVING] == "off"
+    assert not _lv(g, "warning", "not refreshed")
+    (msg,) = _lv(g, "info", "not refreshed")
+    assert "16:15:02" in msg and "age 3058s" in msg and "0.000 kW" in msg
+    g.at(17, 6, 30).tick()                              # same window: silent
+    assert len(_lv(g, "info", "not refreshed")) == 1
+
+
+def test_low_stale_watt_value_is_normalised_before_threshold(make_guard):
+    g = make_guard(mode="accumulating", ).at(12, 20)
+    g.st.units[AVG] = "W"
+    g.st.reported[AVG] = _stamp(12, 1)
+    g.tick(offtake="0.3", avg="900", peak="4.0")        # 0.9 kW: low
+    assert _lv(g, "info", "not refreshed")
+    assert not _lv(g, "warning", "not refreshed")
+    g.at(12, 35).tick(avg="3000")                       # 3 kW: high
+    (msg,) = _lv(g, "warning", "not refreshed")
+    assert "3.000 kW" in msg
+
+
+def test_threshold_boundary_value_at_half_floor_warns(make_guard):
+    g = make_guard(mode="accumulating").at(12, 20)
+    g.st.reported[AVG] = _stamp(12, 1)
+    g.tick(offtake="0.3", avg="1.249", peak="4.0")
+    assert _lv(g, "info", "not refreshed") and not _lv(g, "warning", "")
+    g.at(12, 35).tick(avg="1.25")
+    assert _lv(g, "warning", "not refreshed")
+
+
+def test_high_stale_value_warns_with_stamp_and_age_and_never_acts(make_guard):
+    g = make_guard(mode="accumulating").at(12, 15, 2)
+    g.st.updated[AVG] = _stamp(12, 14, 58)
+    g.tick(offtake="3.5", avg="3.9", peak="4.0", trigger_type="state")
+    assert g.inv.calls == [] and g.st.values[SHAVING] == "off"
+    assert not _lv(g, "info", "not refreshed")
+    (msg,) = _lv(g, "warning", "not refreshed")
+    assert "2026-09-30T12:14:58+02:00" in msg
+    assert "age 4s" in msg and "3.900 kW" in msg
+    assert "no action until it is" in msg
+
+
+def test_one_warning_per_window_and_again_next_window(make_guard):
+    g = make_guard(mode="accumulating").at(12, 15, 2)
+    g.st.updated[AVG] = _stamp(12, 14, 58)
+    g.tick(offtake="3.5", avg="3.9", peak="4.0", trigger_type="state")
+    g.at(12, 15, 5).tick(trigger_type="state")
+    g.at(12, 20).tick(trigger_type="state")
+    assert len(_lv(g, "warning", "not refreshed")) == 1
+    g.at(12, 30, 1).tick(trigger_type="state")          # next window, stale
+    assert len(_lv(g, "warning", "not refreshed")) == 2
+    assert g.inv.calls == []
+
+
+def test_refresh_line_once_per_stale_episode(make_guard):
+    g = make_guard(mode="accumulating").at(12, 15, 2)
+    g.st.updated[AVG] = _stamp(12, 14, 58)
+    g.tick(offtake="3.5", avg="3.9", peak="4.0", trigger_type="state")
+    assert not _lv(g, "info", "refreshed (")
+    g.at(12, 15, 5)
+    g.st.updated[AVG] = _stamp(12, 15, 5)
+    g.tick(offtake="3.5", avg="0.0", peak="4.0", trigger_type="state")
+    (msg,) = _lv(g, "info", "refreshed (")
+    assert "2026-09-30T12:15:05+02:00" in msg and AVG in msg
+    for sec in (10, 40):                                # fresh ticks: silent
+        g.at(12, 15, sec)
+        g.st.updated[AVG] = _stamp(12, 15, sec)
+        g.tick(offtake="3.5", avg="0.0", peak="4.0", trigger_type="state")
+    assert len(_lv(g, "info", "refreshed (")) == 1
+    g.at(12, 30, 1).tick(trigger_type="state")          # new episode
+    g.at(12, 30, 9)
+    g.st.updated[AVG] = _stamp(12, 30, 9)
+    g.tick(trigger_type="state")
+    assert len(_lv(g, "info", "refreshed (")) == 2
+
+
+def test_refresh_in_a_later_window_is_logged(make_guard):
+    g = make_guard(mode="accumulating").at(12, 20)
+    g.st.reported[AVG] = _stamp(12, 1)
+    g.tick(offtake="0.3", avg="0.0", peak="4.0")
+    g.at(12, 50)
+    g.st.reported[AVG] = _stamp(12, 49, 59)
+    g.tick(offtake="0.3", avg="0.0", peak="4.0")
+    assert len(_lv(g, "info", "refreshed (")) == 1
+
+
+def test_never_stale_logs_nothing_about_refresh(make_guard):
+    g = make_guard(mode="accumulating")
+    for m in (16, 20):
+        g.at(12, m)
+        g.st.reported[AVG] = _stamp(12, m)
+        g.tick(offtake="0.3", avg="0.0", peak="4.0")
+    assert not [m for m in g.log.messages if "refreshed" in m]
