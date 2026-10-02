@@ -58,9 +58,16 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   warning. A stale value NEVER produces a discharge.
 * The billed 13-month average sensor is NOT read: GridState has no field for it
   and costing belongs to the planner.
-* Triggers: @state_trigger names the default offtake sensor literally
-  (decorator arguments are static); a changed config.offtake_sensor changes
-  what is READ but not what triggers, the 30 s tick still covers it.
+* Entities: the quarter-hour average and month-peak sensors are read from
+  config (capacity_tariff.quarter_hour_average_sensor and month_peak_sensor),
+  as is the offtake sensor (capacity_tariff.offtake_sensor).
+* Triggers - KNOWN LIMITATION: @state_trigger names the default offtake sensor
+  sensor.slimmelezer_power_consumed LITERALLY (decorator arguments are
+  evaluated once, at decoration time, before any config is read, so they
+  cannot come from config). A changed config.offtake_sensor changes what is
+  READ but not what triggers: with a different name the guard runs only on the
+  30 s tick, not on every meter update. To trigger on a different sensor, edit
+  the decorator argument in this file.
   @time_trigger period is fixed at 30 s; guard_interval_seconds > 30 is honoured
   by skipping time ticks that arrive sooner than the interval. State-triggered
   runs are only debounced (MIN_STATE_GAP_SECONDS).
@@ -144,8 +151,6 @@ CORE_DIR = "/config/pyscript/modules"
 # Dependency order (rules needs capacity). Deliberately narrow: never
 # trajectory, prices, series or cache (FR-051). inverter is NOT in this list.
 CORE_MODULES = ("config", "capacity", "battery", "rules", "decision")
-ENTITY_QUARTER_AVG = "sensor.slimmelezer_huidig_kwartiervermogen"
-ENTITY_MONTH_PEAK = "sensor.slimmelezer_maandpiek"
 SHAVING_ENTITY = "pyscript.peak_guard_shaving"
 
 MIN_STATE_GAP_SECONDS = 1.0
@@ -479,11 +484,12 @@ def _evaluate(trigger_type, started):
         return
 
     offtake, _, p_off = _read_sensor(cfg.offtake_sensor)
-    reported, avg_updated, p_avg = _read_sensor(ENTITY_QUARTER_AVG)
-    month_peak, _, p_peak = _read_sensor(ENTITY_MONTH_PEAK)
+    reported, avg_updated, p_avg = _read_sensor(cfg.quarter_hour_average_sensor)
+    month_peak, _, p_peak = _read_sensor(cfg.month_peak_sensor)
     missing = ["%s (%s)" % (name, problem) for name, problem in (
-        (cfg.offtake_sensor, p_off), (ENTITY_QUARTER_AVG, p_avg),
-        (ENTITY_MONTH_PEAK, p_peak)) if problem]
+        (cfg.offtake_sensor, p_off),
+        (cfg.quarter_hour_average_sensor, p_avg),
+        (cfg.month_peak_sensor, p_peak)) if problem]
     if missing:
         _handle_unreadable(missing)
         return
@@ -498,7 +504,8 @@ def _evaluate(trigger_type, started):
             _flags["stale_window"] = start
             log.warning(  # noqa: F821
                 "peak_guard: %s not refreshed since window %s began; no "
-                "action until it is" % (ENTITY_QUARTER_AVG, start.isoformat()))
+                "action until it is" % (
+                    cfg.quarter_hour_average_sensor, start.isoformat()))
         return
 
     verdict = _feed_detector(cfg, now, reported, offtake)

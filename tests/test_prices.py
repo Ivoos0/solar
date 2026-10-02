@@ -183,3 +183,44 @@ def test_expand_to_blocks_drops_blocks_before_zoneinfo_start_by_instant(site_con
            {"time": "2026-10-25T02:00:00+01:00", "price": 0.13}]
     pm = prices.expand_to_blocks(raw, site_config, start)
     assert len(pm) == 2  # only 02:30 and 02:45 (+01:00) survive
+
+
+# --- the live ENTSO-e entity shape ------------------------------------------
+
+LIVE_ENTRIES = [
+    {"time": "2026-10-02 00:00:00+02:00", "price": 0.19622},
+    {"time": "2026-10-02 00:15:00+02:00", "price": 0.19019},
+]
+
+
+def test_live_shape_space_separated_string_times(site_config):
+    series = prices.expand_to_blocks(
+        LIVE_ENTRIES, site_config,
+        datetime(2026, 10, 1, 21, 0, tzinfo=timezone.utc))
+    assert len(series) == 2
+    first, second = sorted(series, key=lambda s: s.astimezone(timezone.utc))
+    assert first.astimezone(timezone.utc) == datetime(
+        2026, 10, 1, 22, 0, tzinfo=timezone.utc)
+    assert series[first].market_price == 0.19622
+    assert series[second].market_price == 0.19019
+    assert series[first].source_resolution_minutes == 15
+    assert prices.horizon_end(series, 15) is not None
+
+
+def test_time_formats_are_equivalent(site_config):
+    start = datetime(2026, 10, 1, 21, 0, tzinfo=timezone.utc)
+    tz2 = timezone(timedelta(hours=2))
+    variants = [
+        LIVE_ENTRIES,
+        [{"time": "2026-10-02T00:00:00+02:00", "price": 0.19622},
+         {"time": "2026-10-02T00:15:00+02:00", "price": 0.19019}],
+        [{"time": datetime(2026, 10, 2, 0, 0, tzinfo=tz2), "price": 0.19622},
+         {"time": datetime(2026, 10, 2, 0, 15, tzinfo=tz2), "price": 0.19019}],
+    ]
+    results = [prices.expand_to_blocks(v, site_config, start) for v in variants]
+
+    def norm(r):
+        return sorted((k.astimezone(timezone.utc), p.market_price)
+                      for k, p in r.items())
+    assert norm(results[0]) == norm(results[1]) == norm(results[2])
+    assert len(norm(results[0])) == 2

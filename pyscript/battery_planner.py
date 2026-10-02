@@ -98,16 +98,13 @@ CORE_MODULES = ("config", "prices", "series", "battery", "trajectory",
                 "capacity", "rules", "decision", "cache")
 
 # ---- Home Assistant entities -----------------------------------------------
-# UNCONFIRMED on the live install (research.md open item 2 / WP08 T039): verify
-# in Developer Tools -> States. A wrong name shows as a constant price halt.
-PRICE_ENTITY = "sensor.entso_prices_current_electricity_market_price"
-PRICE_ATTRIBUTE = "prices"            # list of {"time": ..., "price": ...}
-FORECAST_ENTITY = "sensor.forecast_solar_estimate"
-FORECAST_ATTRIBUTE = "watt_hours_period"
-QUARTER_AVG_ENTITY = "sensor.slimmelezer_huidig_kwartiervermogen"
-MONTH_PEAK_ENTITY = "sensor.slimmelezer_maandpiek"
-# The netted offtake sensor id comes from config (capacity_tariff.offtake_sensor,
-# default sensor.slimmelezer_power_consumed).
+# The price, forecast and SlimmeLezer entity ids and attribute names come from
+# the config (prices.entity, prices.attribute, solar.forecast_entity,
+# solar.forecast_attribute, capacity_tariff.quarter_hour_average_sensor and
+# month_peak_sensor). A wrong name shows as a constant price halt whose cause
+# names the configured entity and attribute.
+# The netted offtake sensor id also comes from config
+# (capacity_tariff.offtake_sensor, default sensor.slimmelezer_power_consumed).
 GUARD_FLAG_ENTITY = "pyscript.peak_guard_shaving"   # set by the peak guard (WP12)
 _BAD_STATES = (None, "", "unknown", "unavailable", "none", "None")
 
@@ -320,11 +317,12 @@ def _load_config():
 
 def _read_prices(cfg, local):
     """(price_map, cause). cause is None when usable prices are present."""
-    if _state_value(PRICE_ENTITY) is None:
-        return None, "price entity %s unavailable" % PRICE_ENTITY
-    entries = _state_attr(PRICE_ENTITY, PRICE_ATTRIBUTE)
+    if _state_value(cfg.price_entity) is None:
+        return None, "price entity %s unavailable" % cfg.price_entity
+    entries = _state_attr(cfg.price_entity, cfg.price_attribute)
     if not isinstance(entries, list) or not entries:
-        return None, "attribute %s missing or empty" % PRICE_ATTRIBUTE
+        return None, "attribute %s missing or empty on %s" % (
+            cfg.price_attribute, cfg.price_entity)
     try:
         price_map = prices.expand_to_blocks(entries, cfg, local)
     except (KeyError, TypeError, ValueError) as exc:
@@ -383,8 +381,8 @@ def _recover(local):
 
 # ---- forecast and solar series -----------------------------------------------
 
-def _read_forecast():
-    payload = _state_attr(FORECAST_ENTITY, FORECAST_ATTRIBUTE)
+def _read_forecast(cfg):
+    payload = _state_attr(cfg.forecast_entity, cfg.forecast_attribute)
     return payload if isinstance(payload, dict) and payload else None
 
 
@@ -407,7 +405,7 @@ def _forecast_failed(cfg, now):
         return
     try:
         service.call(  # noqa: F821
-            "homeassistant", "update_entity", entity_id=FORECAST_ENTITY)
+            "homeassistant", "update_entity", entity_id=cfg.forecast_entity)
         _refresh_calls.append(now)
     except Exception as exc:
         log.warning(f"battery_planner: forecast refresh failed: {exc!r}")  # noqa: F821
@@ -474,7 +472,7 @@ def _solar(cfg, local, span_start, span_end, payload, markers):
     if payload:
         built = series.solar_series(payload, cfg, span_start, span_end)
         if built and not built[0].is_zero_fallback:
-            _store("solar", path, built, cfg, local, FORECAST_ENTITY,
+            _store("solar", path, built, cfg, local, cfg.forecast_entity,
                    {"forecast_signature": sig})
             return built, False
     if usable is not None:                   # refresh impossible: use, mark age
@@ -533,8 +531,8 @@ def _grid_state(cfg, local):
     if not cfg.capacity_enabled:
         return None
     offtake = _sensor_kw(cfg.offtake_sensor)
-    reported = _sensor_kw(QUARTER_AVG_ENTITY)
-    peak = _sensor_kw(MONTH_PEAK_ENTITY)
+    reported = _sensor_kw(cfg.quarter_hour_average_sensor)
+    peak = _sensor_kw(cfg.month_peak_sensor)
     if offtake is None or reported is None or peak is None:
         return None
     start = capacity.window_start_of(local)
@@ -572,7 +570,7 @@ def _cycle(now):
     _recover(local)
 
     markers = []
-    payload = _read_forecast()
+    payload = _read_forecast(cfg)
     if payload is None:
         _forecast_failed(cfg, now)
     else:

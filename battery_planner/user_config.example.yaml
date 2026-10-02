@@ -8,6 +8,18 @@ prices:
   injection_multiplier: 0.94
   injection_offset: -0.011      # negative: injection price goes negative while
                                 # the market price is still positive
+  entity: sensor.entso_prices_average_electricity_price
+                                # The HA entity that carries the price list in an
+                                # attribute. Find yours in Developer Tools ->
+                                # States: filter "entso" and open the one whose
+                                # attributes include a list of {time, price}.
+                                # CONFIRMED on a live entsoe custom integration
+                                # install (entries look like {'time':
+                                # '2026-10-02 00:00:00+02:00', 'price': 0.19622},
+                                # 15-minute steps, EUR/kWh). The sibling
+                                # sensor.entso_prices_current_electricity_market_price
+                                # did NOT carry the list there.
+  attribute: prices             # the attribute holding that list
 
 battery:
   capacity_kwh: CHANGE_ME       # REQUIRED - no sensible default (number, kWh)
@@ -23,6 +35,13 @@ solar:
   kwp: 8.1                      # 20 panels x 405 Wp
   declination: 50               # degrees from horizontal
   azimuth: -10                  # 10 degrees east of south
+  forecast_entity: sensor.forecast_solar_estimate
+                                # The REST sensor from configuration.yaml that
+                                # carries the per-period forecast. UNCONFIRMED
+                                # on the live install: check Developer Tools ->
+                                # States and set the real name here.
+  forecast_attribute: watt_hours_period
+                                # attribute holding {timestamp: Wh} per period
 
 # Belgian capaciteitstarief, billed on grid offtake only.
 capacity_tariff:
@@ -42,6 +61,15 @@ capacity_tariff:
   offtake_sensor: sensor.slimmelezer_power_consumed
                                 # the meter's NETTED three-phase total; never
                                 # sum the per-phase sensors
+  quarter_hour_average_sensor: sensor.slimmelezer_huidig_kwartiervermogen
+                                # the meter's 1-0:1.4.0 quarter-hour average
+  month_peak_sensor: sensor.slimmelezer_maandpiek
+                                # the meter's 1-0:1.6.0 month peak
+                                # NOTE: the peak guard's trigger on
+                                # sensor.slimmelezer_power_consumed is fixed in
+                                # pyscript/peak_guard.py. If you rename the
+                                # offtake sensor the guard still READS the new
+                                # name, but only on its 30 s tick.
 
 # Expected household consumption per block, averaged from recent history.
 usage:
