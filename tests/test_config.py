@@ -301,3 +301,69 @@ def test_entity_fields_not_in_fingerprint():
     for path, attr in ENTITY_KEYS:
         value = "x_y1" if attr.endswith("attribute") else "sensor.other_one"
         assert from_dict(base(**{path: value})).fingerprint() == ref, path
+
+
+# ---- history section ---------------------------------------------------------
+
+def hist(**sections):
+    raw = base()
+    raw["history"] = sections
+    return raw
+
+
+def test_history_defaults(site_config):
+    c = site_config
+    assert c.history_enabled is True
+    assert c.history_import_sensors == (
+        "sensor.slimmelezer_energy_consumed_tariff_1",
+        "sensor.slimmelezer_energy_consumed_tariff_2")
+    assert c.history_export_sensors == (
+        "sensor.slimmelezer_energy_produced_tariff_1",
+        "sensor.slimmelezer_energy_produced_tariff_2")
+    for q in ("solar", "battery_charge", "battery_discharge", "load"):
+        assert c.history_sensors()[q] == ()
+
+
+def test_history_sensors_parse_to_tuples_and_empty_list_disables_default():
+    c = from_dict(hist(enabled=False, sensors={
+        "solar": ["sensor.pv_a", "sensor.pv_b"], "import": [], "load": None}))
+    assert c.history_enabled is False
+    assert c.history_solar_sensors == ("sensor.pv_a", "sensor.pv_b")
+    assert c.history_import_sensors == ()
+    assert c.history_export_sensors[0].endswith("produced_tariff_1")
+    assert c.history_load_sensors == ()
+
+
+@pytest.mark.parametrize("sensors, needle", [
+    ({"solar": "sensor.pv"}, "history.sensors.solar"),         # not a list
+    ({"solar": ["pv"]}, "history.sensors.solar"),              # no domain
+    ({"solar": ["Sensor.PV"]}, "history.sensors.solar"),
+    ({"solar": [5]}, "history.sensors.solar"),
+    ({"solar": ["sensor.a", "sensor.a"]}, "twice"),
+    ({"sollar": ["sensor.a"]}, "unknown quantity"),
+    ("sensor.a", "must be a mapping"),
+])
+def test_history_sensor_validation(sensors, needle):
+    with pytest.raises(ConfigError) as e:
+        from_dict(hist(sensors=sensors))
+    assert needle in str(e.value)
+
+
+@pytest.mark.parametrize("value", ["yes", 1, "false"])
+def test_history_enabled_must_be_bool(value):
+    with pytest.raises(ConfigError) as e:
+        from_dict(hist(enabled=value))
+    assert "history.enabled" in str(e.value)
+
+
+def test_history_section_must_be_a_mapping():
+    raw = base()
+    raw["history"] = ["x"]
+    with pytest.raises(ConfigError):
+        from_dict(raw)
+
+
+def test_history_not_in_fingerprint():
+    ref = from_dict(base()).fingerprint()
+    assert from_dict(hist(enabled=False, sensors={
+        "solar": ["sensor.pv"]})).fingerprint() == ref

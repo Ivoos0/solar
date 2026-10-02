@@ -110,6 +110,28 @@ usage:
                                 #   weeks ago; missing weeks just drop out)
                                 # none: plain mean, every day counts equally
 
+# Energy history: the planner records its own 15-minute energy history.
+# Counters must be CUMULATIVE energy in kWh (Wh and MWh are converted).
+# Several counters per quantity are summed (tariff 1 + tariff 2). Every list
+# is optional; an empty list means "not available" and that quantity is
+# recorded as null. See the README, section "Energy history".
+history:
+  enabled: true
+  sensors:
+    import:                     # energy taken from the grid
+      - sensor.slimmelezer_energy_consumed_tariff_1
+      - sensor.slimmelezer_energy_consumed_tariff_2
+    export:                     # energy injected into the grid
+      - sensor.slimmelezer_energy_produced_tariff_1
+      - sensor.slimmelezer_energy_produced_tariff_2
+    solar: []                   # PV production counter(s), e.g. from the inverter
+    battery_charge: []          # energy into the battery
+    battery_discharge: []       # energy out of the battery
+    load: []                    # household consumption counter, if you have one
+                                # Usage history (and so grid charging) unlocks
+                                # with `load`, or with solar + battery_charge +
+                                # battery_discharge all configured.
+
 timing:
   block_minutes: 15
   evaluation_interval_minutes: 5
@@ -145,6 +167,7 @@ Checked at load. A failure is a **startup error, not a degraded cycle** — bad 
 | `notify_service` matches `[a-z0-9_]+` | It is the service name under the `notify` domain; a dotted, spaced or upper-case value can never resolve. It does not join the cache fingerprint |
 | `inverter.type` matches `[a-z0-9_]+`; missing, null or `none` become `logging` | It names the driver file `inverter_<type>.py`, so path separators, dots, spaces and upper case can never select a file outside the modules directory. It does not join the cache fingerprint. Whether the driver file exists is checked at run time, not here: a missing driver falls back to log-only behaviour with an error and a degraded marker (see `inverter-boundary.md`) |
 | `max_charge_kw > 0`, `max_discharge_kw > 0` | Zero would make the trajectory meaningless |
+| `history.enabled` is a boolean; each `history.sensors.<quantity>` is a list of entity ids (`domain.object_id`) without duplicates; only the quantities `import`, `export`, `solar`, `battery_charge`, `battery_discharge`, `load` are accepted | A typo must not silently disable a counter. The `history` section does not join the cache fingerprint (it names where data is read from) |
 
 ## Cache invalidation
 

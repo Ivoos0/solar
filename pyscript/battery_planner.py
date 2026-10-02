@@ -16,17 +16,17 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
   pyscript runs them in its own AST interpreter, which lacks generator
   expressions, @property, native callbacks to pyscript functions (key=fn) and
   validating __post_init__. The pure core (config, prices, series, battery,
-  trajectory, capacity, rules, decision, cache) uses all of these, so it must
+  trajectory, capacity, rules, decision, cache, history) uses all of these, so it must
   run as ordinary CPython. _load_core (a @pyscript_executor helper, so the
   import stays off the event loop) loads each file with importlib under the
   private name battery_planner_core_<name>; no sys.path entry is added, so
   nothing can shadow or be shadowed by another `config`/`cache`/`series`/
-  `decision`. The nine core modules are ALSO registered under their bare names
+  `decision`. The ten core modules are ALSO registered under their bare names
   in sys.modules for the process lifetime, because core functions import
   siblings at call time (decision.build does `import capacity`) and the core
-  directory is not on sys.path in HA. Trade-off: those nine bare names now
+  directory is not on sys.path in HA. Trade-off: those ten bare names now
   resolve to the core for every other importer in the HA process. Only these
-  nine are aliased (never `inverter`); a failed load undoes its aliases.
+  ten are aliased (never `inverter`); a failed load undoes its aliases.
   The adapter binds the results as its globals in _ensure_core(). `inverter`
   stays a normal pyscript import (it uses `log` and @pyscript_executor).
   CAVEAT: natively loaded modules are NOT hot-reloaded. A change to any core
@@ -64,6 +64,16 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
   midnight + SERIES_SPAN_HOURS) so a cached usage profile stays dense to any
   price horizon. The trajectory is never cached. A zero-solar fallback or an
   empty-history usage profile is never written to the cache.
+* Energy history (pyscript/modules/history.py): each cycle, on the first cycle at
+  or after a block boundary, the configured cumulative kWh counters are read
+  and the FINISHED block's record is appended to
+  <config>/battery_planner/history/blocks-YYYY-MM-DD.jsonl (local date of
+  block_start); the snapshot is also kept in last_snapshot.json so a restart
+  does not lose the block in progress. Timing imprecision: the snapshot is read
+  up to one evaluation interval after the boundary, so a block's energy covers
+  [read_prev, read_this), not exactly the block; both read times are recorded.
+  The recorder is wrapped: a failure is logged (rate-limited) and never touches
+  the decision. Files are never deleted by the planner.
 * Usage history: read_usage_history() is the single seam; see its docstring.
   Coverage (distinct local days present vs the window) is reported as
   usage_samples=N; per-slot sample_days is not the coverage signal.
@@ -85,17 +95,18 @@ from zoneinfo import ZoneInfo
 import inverter          # the only core file pyscript interprets
 
 # Pure core, bound natively by _ensure_core() (see docstring).
-battery = cache = capacity = config = decision = None
+battery = cache = capacity = config = decision = history = None
 prices = rules = series = trajectory = None
 
 # ---- locations (tests redirect these) --------------------------------------
 CONFIG_PATH = "/config/battery_planner/user_config.yaml"
 CACHE_DIR = "/config/battery_planner/cache/"
 DECISIONS_LOG_DIR = inverter.DEFAULT_LOG_DIR
+HISTORY_DIR = "/config/battery_planner/history/"
 CORE_DIR = "/config/pyscript/modules"
 # Dependency order (rules needs capacity). inverter is NOT in this list.
 CORE_MODULES = ("config", "prices", "series", "battery", "trajectory",
-                "capacity", "rules", "decision", "cache")
+                "capacity", "rules", "decision", "cache", "history")
 
 # ---- Home Assistant entities -----------------------------------------------
 # The price, forecast and SlimmeLezer entity ids and attribute names come from
@@ -116,6 +127,7 @@ MAX_FETCHES_PER_HOUR = 12             # NFR-002, shared with the hourly poll
 FORECAST_FAILURES_BEFORE_RETRY = 2
 SLOW_CYCLE_MS = 5000                  # NFR-001
 MAX_MODE_SAMPLES = 400
+HISTORY_WARN_MINUTES = 60             # per warning kind, energy history
 
 # ---- module state -----------------------------------------------------------
 _core_ready = False
@@ -128,6 +140,9 @@ _halt_state = None
 _forecast_failures = 0
 _refresh_calls = []
 _mode_samples = []
+_hist_last = None                     # history.Snapshot at the last boundary
+_hist_loaded = False                  # last_snapshot.json read once per process
+_hist_warned = {}                     # warning kind -> last time logged
 
 
 def _now():
@@ -175,7 +190,7 @@ def _load_core(core_dir, names):
 
 def _ensure_core():
     """Bind the natively loaded core modules as this file's globals (once)."""
-    global _core_ready, battery, cache, capacity, config, decision
+    global _core_ready, battery, cache, capacity, config, decision, history
     global prices, rules, series, trajectory
     if _core_ready:
         return
@@ -183,6 +198,7 @@ def _ensure_core():
     battery, cache, capacity = mods["battery"], mods["cache"], mods["capacity"]
     config, decision, prices = mods["config"], mods["decision"], mods["prices"]
     rules, series, trajectory = mods["rules"], mods["series"], mods["trajectory"]
+    history = mods["history"]
     _core_ready = True
 
 
@@ -249,6 +265,36 @@ def _append_line(path, line):
         os.fsync(handle.fileno())
 
 
+@pyscript_executor  # noqa: F821
+def _append_text(path, text):
+    """Append `text` to a file in ONE write, flushed and fsynced. Error or None."""
+    import os
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception as exc:
+        return repr(exc)
+    return None
+
+
+@pyscript_executor  # noqa: F821
+def _read_texts(paths):
+    """{"texts": {path: text}, "errors": [...]}; a missing file is not an error."""
+    texts, errors = {}, []
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                texts[path] = handle.read()
+        except FileNotFoundError:
+            continue
+        except Exception as exc:
+            errors.append("%s: %r" % (path, exc))
+    return {"texts": texts, "errors": errors}
+
+
 def _log_line(line, when):
     """Append `line` to the decision log file of the local day of `when`."""
     try:
@@ -289,6 +335,27 @@ def _sensor_kw(entity):
         return None
     unit = _state_attr(entity, "unit_of_measurement")
     return number / 1000.0 if unit == "W" else number
+
+
+def _counter_kwh(entity):
+    """Cumulative energy counter as kWh (Wh and MWh converted); None if unreadable."""
+    value = _state_value(entity)
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or abs(number) == float("inf"):
+        return None
+    unit = _state_attr(entity, "unit_of_measurement")
+    if unit is None or unit == "kWh":
+        return number
+    if unit == "Wh":
+        return number / 1000.0
+    if unit == "MWh":
+        return number * 1000.0
+    return None
 
 
 # ---- config ------------------------------------------------------------------
@@ -481,18 +548,116 @@ def _solar(cfg, local, span_start, span_end, payload, markers):
     return series.zero_solar_series(cfg, span_start, span_end), True
 
 
+def _hist_warn(kind, message, now):
+    """log.warning at most once per HISTORY_WARN_MINUTES per kind."""
+    last = _hist_warned.get(kind)
+    if last is not None and (now - last).total_seconds() < HISTORY_WARN_MINUTES * 60:
+        return
+    _hist_warned[kind] = now
+    log.warning("battery_planner: energy history: " + message)  # noqa: F821
+
+
+def _history_block_context(cfg, boundary, price_map, solar, zero_fallback):
+    """(forecast kWh, consumption price, injection price) of the block STARTING
+    at `boundary`; each None when unknown (zero-solar fallback is not a forecast)."""
+    forecast, consumption, injection = None, None, None
+    if solar and not zero_fallback:
+        for slot in solar:
+            if slot.block_start == boundary and not slot.is_zero_fallback:
+                forecast = slot.expected_kwh
+    if price_map:
+        width = timedelta(minutes=cfg.block_minutes)
+        for point in price_map.values():
+            if point.block_start <= boundary < point.block_start + width:
+                consumption = point.consumption_price
+                injection = point.injection_price
+    return forecast, consumption, injection
+
+
+def _record_history_inner(cfg, now, price_map, solar, zero_fallback, soc):
+    global _hist_last, _hist_loaded
+    if not cfg.history_enabled:
+        return
+    sensors = cfg.history_sensors()
+    if not any(sensors.values()):
+        return
+    if not _hist_loaded:
+        _hist_loaded = True
+        _hist_last = history.snapshot_from_dict(
+            _read_json(HISTORY_DIR + "last_snapshot.json"))
+    boundary = history.block_floor(now, cfg.block_minutes)
+    if _hist_last is not None and boundary <= _hist_last.boundary:
+        return
+    readings = {}
+    for quantity in sensors:
+        readings[quantity] = [_counter_kwh(e) for e in sensors[quantity]]
+    forecast, consumption, injection = _history_block_context(
+        cfg, boundary, price_map, solar, zero_fallback)
+    snap = history.make_snapshot(boundary, now, readings, forecast,
+                                 consumption, injection, soc)
+    records = history.records_between(
+        _hist_last, snap, cfg.block_minutes, ZoneInfo(cfg.timezone))
+    by_date = {}
+    for rec in records:
+        by_date.setdefault(rec["local_date"], []).append(history.to_line(rec))
+    for day in sorted(by_date):
+        err = _append_text(HISTORY_DIR + "blocks-%s.jsonl" % day,
+                           "\n".join(by_date[day]) + "\n")
+        if err:                      # keep the old snapshot: retried next cycle
+            _hist_warn("write", "cannot append %s records: %s" % (day, err), now)
+            return
+    _hist_last = snap
+    err = _write_json_atomic(HISTORY_DIR + "last_snapshot.json",
+                             history.snapshot_to_dict(snap))
+    if err:
+        _hist_warn("snapshot", "cannot save last_snapshot.json: %s" % err, now)
+    if snap.failed:
+        _hist_warn("sensors", "counters unreadable for %s; those values are "
+                   "recorded as null" % ", ".join(snap.failed), now)
+
+
+def _record_history(cfg, now, price_map=None, solar=None, zero_fallback=False,
+                    soc=None):
+    """Energy recorder entry point. NEVER raises, never affects a decision."""
+    try:
+        _record_history_inner(cfg, now, price_map, solar, zero_fallback, soc)
+    except Exception as exc:
+        try:
+            _hist_warn("exception", "recorder failed: %r" % (exc,), now)
+        except Exception:
+            pass
+
+
 def read_usage_history(cfg, local):
     """Per-INTERVAL household kWh as [(aware datetime, kwh)], oldest first.
 
-    NOT IMPLEMENTED: returns [] so the caller records usage_history_unavailable.
-    No household-consumption entity is confirmed on this install, and HA's
-    recorder statistics are hourly cumulative sums whose access from pyscript
-    (recorder.get_statistics response or a websocket call) is unverified.
-    Replace ONLY this function once the entity and route are confirmed; the
-    rest of the adapter needs nothing else. Must return interval energy, not
-    meter totals, covering cfg.usage_history_weeks weeks.
+    Read from the planner's own daily history files (blocks-YYYY-MM-DD.jsonl)
+    covering cfg.usage_history_weeks weeks. Only blocks whose load_kwh is known
+    are returned, so with no `load` counter and no complete solar + battery
+    counter set configured this is [] (and V4 keeps grid charging off). Missing
+    files are normal; unreadable files and corrupt lines are skipped, counted
+    and warned about (rate-limited). Interval energy, never meter totals.
     """
-    return []
+    tz = ZoneInfo(cfg.timezone)
+    window = timedelta(weeks=cfg.usage_history_weeks)
+    day = (local - window).astimezone(tz).date()
+    last = local.astimezone(tz).date()
+    paths = []
+    while day <= last:
+        paths.append(HISTORY_DIR + "blocks-%s.jsonl" % day.isoformat())
+        day = day + timedelta(days=1)
+    found = _read_texts(paths)
+    records, bad = [], 0
+    for path in paths:
+        text = found["texts"].get(path)
+        if text is not None:
+            recs, n = history.parse_lines(text)
+            records.extend(recs)
+            bad += n
+    if bad or found["errors"]:
+        _hist_warn("read", "skipped %d corrupt line(s), %d unreadable file(s)"
+                   % (bad, len(found["errors"])), local)
+    return history.usage_series(records, since=local - window)
 
 
 def _usage(cfg, local, span_start, span_end, markers):
@@ -509,12 +674,13 @@ def _usage(cfg, local, span_start, span_end, markers):
     if usable is not None and verdict == "fresh":
         markers.append(cache.age_marker(cached, local))     # SC-014
         return usable, days
-    history = read_usage_history(cfg, local)
-    if history:
+    samples = read_usage_history(cfg, local)
+    if samples:
         tz = ZoneInfo(cfg.timezone)
-        days = len({ts.astimezone(tz).date() for ts, _ in history})
-        built = series.usage_profile(history, cfg, span_start, span_end)
-        _store("usage", path, built, cfg, local, "recorder", {"history_days": days})
+        days = len({ts.astimezone(tz).date() for ts, _ in samples})
+        built = series.usage_profile(samples, cfg, span_start, span_end)
+        _store("usage", path, built, cfg, local, "energy_history",
+               {"history_days": days})
         return built, days
     markers.append("usage_history_unavailable")
     if usable is not None:                   # refresh impossible: use, mark age
@@ -566,6 +732,7 @@ def _cycle(now):
     price_map, cause = _read_prices(cfg, local)
     if cause is not None:
         _halt(cfg, local, cause)
+        _record_history(cfg, now)        # counters keep counting during a halt
         return
     _recover(local)
 
@@ -621,6 +788,8 @@ def _cycle(now):
         log.error("battery_planner: decision could not be recorded")  # noqa: F821
     if took > SLOW_CYCLE_MS:
         log.warning(f"battery_planner: slow cycle {took}ms")  # noqa: F821
+    _record_history(cfg, now, price_map, solar, zero_fallback,
+                    None if charge_is_stub else charge)
 
 
 def _due(now):
