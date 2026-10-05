@@ -20,6 +20,7 @@ _MAP = [
     ("battery", "max_charge_kw", "max_charge_kw"),
     ("battery", "max_discharge_kw", "max_discharge_kw"),
     ("battery", "round_trip_efficiency", "round_trip_efficiency"),
+    ("battery", "soc_sensor", "soc_sensor"),
     ("solar", "forecast_entity", "forecast_entity"),
     ("solar", "forecast_attribute", "forecast_attribute"),
     ("solar", "calibration_default", "solar_calibration_default"),
@@ -78,8 +79,13 @@ _NON_NUMERIC = (
     "price_attribute", "forecast_entity", "forecast_attribute",
     "quarter_hour_average_sensor", "month_peak_sensor", "history_enabled",
     "peak_alert_enabled", "peak_warning_enabled", "report_enabled",
-    "sensors_enabled", "inverter_dry_run",
+    "sensors_enabled", "inverter_dry_run", "soc_sensor",
 ) + _HISTORY_SENSOR_ATTRS
+
+# Optional entity-name fields: None = not configured, else domain.object_id.
+_OPTIONAL_ENTITY_FIELDS = (
+    ("soc_sensor", "battery.soc_sensor"),
+)
 
 # Entity-name fields (checked as domain.object_id) and attribute-name fields
 # (checked as non-empty strings), with the config key shown in errors.
@@ -147,6 +153,10 @@ class SiteConfig:
     # True: a plan-style driver's service calls are logged, not executed.
     # Not in fingerprint(): it changes what is done, not what a block means.
     inverter_dry_run: bool = False
+    # Optional sensor holding the real battery charge (percent, 0..100). None:
+    # the charge is the inverter driver's value (a placeholder while the
+    # driver is "logging"). Not in fingerprint(): it names where data is read.
+    soc_sensor: object = None
     # Home Assistant entities. Deliberately NOT in fingerprint(): they name
     # where data is read from, not what a block means.
     price_entity: str = "sensor.entso_prices_average_electricity_price"
@@ -235,6 +245,12 @@ def _errors(cfg):
         v = getattr(cfg, attr)
         if not isinstance(v, str) or not re.fullmatch(
                 r"[a-z0-9_]+\.[a-z0-9_]+", v):
+            bad(label, v, "must be an entity id like domain.object_id: "
+                "lowercase letters, digits, underscore, exactly one dot")
+    for attr, label in _OPTIONAL_ENTITY_FIELDS:
+        v = getattr(cfg, attr)
+        if v is not None and (not isinstance(v, str) or not re.fullmatch(
+                r"[a-z0-9_]+\.[a-z0-9_]+", v)):
             bad(label, v, "must be an entity id like domain.object_id: "
                 "lowercase letters, digits, underscore, exactly one dot")
     for attr, label in _ATTRIBUTE_FIELDS:

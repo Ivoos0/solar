@@ -9,7 +9,7 @@ text editor. Files older than `retention.keep_days` (default 90) are deleted by
 the daily cleanup at 03:30 local time.
 
 The decision is written by the inverter boundary before any driver is called
-(see [inverter-boundary.md](inverter-boundary.md)). The labels `V1` to `V6` and
+(see [inverter-boundary.md](inverter-boundary.md)). The labels `V1` to `V7` and
 `S0` to `S6` are explained in the README under
 [Labels in the decision log](../README.md#labels-in-the-decision-log). There is
 no `S2`: storing surplus solar is the inverter's own default, so no rule is
@@ -93,6 +93,7 @@ always also shows the selector that finally fired.
 | V4 | grid charging, export | There is no usable usage history |
 | V5 | discharge | The battery is empty (0 % charge) |
 | V6 | grid charging, export | There is no solar forecast (`solar_zero_fallback`, no usable cache) |
+| V7 | grid charging, export | No battery reading: `battery.soc_sensor` is set but unreadable (`soc_unavailable`). V1 and V5 need the reading and are skipped, so the peak guard may still shave; V7 forbids neither discharge nor peak shaving |
 
 V4 fires on every cycle until the energy history holds a known household load
 (see the README section "Energy history"), so it appears bare on most records
@@ -106,7 +107,8 @@ only V5 can stop a peak shave, shown as `V5(suppressed S0 discharge)`.
 
 | Marker | Meaning |
 |---|---|
-| `soc_stubbed` | The battery charge is the 50 % placeholder of the `logging` driver |
+| `soc_stubbed` | The battery charge is the 50 % placeholder of the `logging` driver. Absent when `battery.soc_sensor` supplies the charge |
+| `soc_unavailable` | `battery.soc_sensor` is set but cannot be read (unknown, unavailable, not a number or outside 0 to 100). The charge is not guessed: V7 holds grid charging and export. Replaces `soc_stubbed` on that record |
 | `solar_zero_fallback` | The forecast was unavailable and no usable cached copy exists, so solar was treated as zero. V6 then holds grid charging and export |
 | `cache_age_solar=3h12m`, `cache_age_usage=...` | A cached series was used, with its age |
 | `forecast_age=1h20m` | The forecast was used, but its sensor last refreshed 75 minutes or more ago. A stamp older than `timing.solar_cache_stale_minutes` counts as a failed forecast instead |

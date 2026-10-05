@@ -123,7 +123,10 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   when relevant, avg_mode_assumed / meter_restored. The detected average mode
   and its confidence are stated in why.
 * Vetoes: only vetoes that forbid "discharge" BLOCK a shave, i.e. V5 (battery
-  empty: charge 0 %). The reserve (V1) forbids EXPORT only, so the guard shaves
+  empty: charge 0 %). V5 needs a reading: with battery.soc_sensor configured
+  but unreadable (degraded=soc_unavailable) it is not evaluated and the guard
+  still shaves; V7 (no battery reading) fires but forbids only grid charging
+  and export, so it blocks nothing here. The reserve (V1) forbids EXPORT only, so the guard shaves
   below the reserve; the planner cannot know the inverter's own minimum charge,
   which the inverter / driver enforces itself. V3
   (budget <= 0) will normally be fired in a peak but forbids only grid
@@ -432,6 +435,24 @@ def _read_sensor(entity):
     return value * factor, stamp, None
 
 
+def _read_soc(entity):
+    """Battery charge in percent from a sensor; None when unreadable
+    (unknown/unavailable, not a number, or outside 0..100)."""
+    try:
+        raw = state.get(entity)  # noqa: F821
+    except Exception:
+        return None
+    if raw is None or str(raw).strip().lower() in _BAD:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not 0 <= value <= 100:                # also False for NaN
+        return None
+    return value
+
+
 def _notify(cfg, title, message):
     """Send one e-mail through the configured notify service (the same call
     shape as battery_planner._notify; a pyscript script cannot import it and
@@ -620,6 +641,8 @@ def _make_record(now, cfg, grid, batt, verdict, took_ms, action, power_kw,
                  vetoes, reasoning):
     """Full DecisionRecord for a guard decision (see docstring for renderings)."""
     degraded = decision.degraded_markers(batt)
+    if _flags["inverter_marker"] == "soc_unavailable":
+        degraded = [m for m in degraded if m != "soc_stubbed"]
     if _flags["inverter_marker"]:
         degraded.append(_flags["inverter_marker"])
     if verdict.confidence == "assumed":
@@ -793,12 +816,22 @@ def _evaluate(trigger_type, started):
         offtake_text = "offtake %.2f kW" % grid.offtake_kw
     shave = capacity.shave_kw(grid, cfg)
 
-    charge, charge_is_stub, charge_marker = inverter.read_charge(
-        cfg.inverter_type, CORE_DIR)
+    soc_known = True
+    if cfg.soc_sensor is None:
+        charge, charge_is_stub, charge_marker = inverter.read_charge(
+            cfg.inverter_type, CORE_DIR)
+        batt = battery.from_percent(charge, cfg, is_stubbed=charge_is_stub)
+    else:                                    # real reading: never the stub
+        charge = _read_soc(cfg.soc_sensor)
+        soc_known = charge is not None
+        charge_is_stub = not soc_known
+        charge_marker = None if soc_known else "soc_unavailable"
+        batt = (battery.from_percent(charge, cfg, is_stubbed=False)
+                if soc_known else battery.unknown(cfg))
     _flags["inverter_marker"] = charge_marker
-    batt = battery.from_percent(charge, cfg, is_stubbed=charge_is_stub)
     forbidden, fired = rules.establish_vetoes(
-        batt, None, cfg, grid, usage_history_available=True)   # never grid-charges: V4 is moot
+        batt, None, cfg, grid, usage_history_available=True,   # never grid-charges: V4 is moot
+        soc_known=soc_known)
     blocking = "+".join([v for v in fired
                          if rules.FORBID_DISCHARGE in rules.VETO_FORBIDS[v]])
     took_ms = (_monotonic() - started) * 1000.0

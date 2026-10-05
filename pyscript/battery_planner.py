@@ -5,7 +5,7 @@ Cycle, fired every minute and gated on
 config.evaluation_interval_minutes so that value is really configurable:
 
   config -> prices (missing/stale: HALT) -> forecast (missing: zero solar +
-  bounded retry) -> solar/usage series (cache) -> charge (stub) -> battery ->
+  bounded retry) -> solar/usage series (cache) -> charge (sensor or stub) -> battery ->
   trajectory -> grid state -> rules.decide -> decision.build -> inverter.apply
 
 Documented readings and guesses (this file cannot be run outside Home Assistant)
@@ -393,6 +393,23 @@ def _sensor_kw(entity):
         return None
     unit = _state_attr(entity, "unit_of_measurement")
     return number / 1000.0 if unit == "W" else number
+
+
+def _read_soc(entity):
+    """Battery charge in percent from a sensor; None when unreadable.
+
+    Unreadable: unknown/unavailable, not a number, or outside 0..100.
+    """
+    value = _state_value(entity)
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not 0 <= number <= 100:               # also False for NaN
+        return None
+    return number
 
 
 def _counter_kwh(entity):
@@ -1194,11 +1211,22 @@ def _cycle(now):
     window_days = cfg.usage_history_weeks * 7
     coverage = history_days if history_days < window_days else None
 
-    charge, charge_is_stub, charge_marker = inverter.read_charge(
-        cfg.inverter_type, CORE_DIR)
-    if charge_marker:
-        markers.append(charge_marker)
-    bat = battery.from_percent(charge, cfg, is_stubbed=charge_is_stub)
+    soc_known = True
+    if cfg.soc_sensor is None:
+        charge, charge_is_stub, charge_marker = inverter.read_charge(
+            cfg.inverter_type, CORE_DIR)
+        if charge_marker:
+            markers.append(charge_marker)
+        bat = battery.from_percent(charge, cfg, is_stubbed=charge_is_stub)
+    else:                                    # real reading: never the stub
+        charge = _read_soc(cfg.soc_sensor)
+        if charge is None:
+            soc_known, charge_is_stub = False, True
+            markers.append("soc_unavailable")
+            bat = battery.unknown(cfg)
+        else:
+            charge_is_stub = False
+            bat = battery.from_percent(charge, cfg, is_stubbed=False)
     block_start = local.replace(
         minute=(local.minute // cfg.block_minutes) * cfg.block_minutes,
         second=0, microsecond=0)
@@ -1207,7 +1235,8 @@ def _cycle(now):
     grid = _grid_state(cfg, local)
     d = rules.decide(traj, price_map, bat, grid, cfg, local,
                      usage_history_available=history_days > 0,
-                     forecast_available=not zero_fallback)
+                     forecast_available=not zero_fallback,
+                     soc_known=soc_known)
 
     if d.action == "charge":
         if _guard_is_shaving(cfg, local):
@@ -1224,6 +1253,8 @@ def _cycle(now):
     degraded = decision.degraded_markers(
         bat, solar_zero_fallback=zero_fallback, cache_markers=markers,
         usage_samples=coverage)
+    if not soc_known:                        # soc_unavailable says it already
+        degraded = [m for m in degraded if m != "soc_stubbed"]
     took = int((_now() - started).total_seconds() * 1000)
     record = decision.build(d, traj, bat, price_now, degraded, now=local,
                             duration_ms=took, grid_state=grid, config=cfg)

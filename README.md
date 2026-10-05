@@ -19,7 +19,12 @@ Source: <https://github.com/Ivoos0/solar>
   after `inverter.resend_minutes`, default 15), not on every five-minute cycle. `idle` is sent once
   after a forced mode and not repeated while idle lasts. The log line is still written every cycle.
 - With the `logging` driver the battery charge is a fixed 50 %. Every record carries
-  `degraded=soc_stubbed`. A driver that reads the real charge removes the marker.
+  `degraded=soc_stubbed`. A driver that reads the real charge removes the marker. The charge is real
+  as soon as you set `battery.soc_sensor` to a sensor that holds it in percent (for example the AlphaESS
+  sensor in [AlphaESS inverter, read-only](#alphaess-inverter-read-only-home-assistant-modbus)):
+  the planner and the peak guard then read that sensor and nothing is stubbed. If the sensor cannot
+  be read, the planner does not guess: it holds (no charging from the grid, no exporting) and marks
+  the record `soc_unavailable`. Peak shaving still works.
 - Household usage history comes from energy counters you configure (see [Energy history](#energy-history)).
   Until a `load` counter (or `solar` plus both battery counters) is configured, records carry
   `usage_history_unavailable` and the planner holds: it does nothing price-driven (no charging from
@@ -171,6 +176,7 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `prices.attribute` | `prices` | attribute name | Attribute of that sensor holding the `{time, price}` list |
 | `battery.capacity_kwh` | **required** | kWh | Battery size the planner uses |
 | `battery.reserve_percent` | `10.0` | % | Charge level the planner will not export to the grid below. It is a limit on exporting, not a target: the planner never buys power to keep the battery up to it, and peak shaving may use charge below it. The inverter's own minimum charge still applies |
+| `battery.soc_sensor` | none | entity id | Sensor with the battery charge in percent (0 to 100). When set, the planner and the peak guard read the charge from it instead of the driver's placeholder. `unavailable`, `unknown`, a non-number or a value outside 0 to 100 counts as unreadable: the planner holds and marks `soc_unavailable` |
 | `battery.max_charge_kw` | `5.0` | kW | Highest charge power the planner proposes |
 | `battery.max_discharge_kw` | `5.0` | kW | Power used when exporting |
 | `battery.round_trip_efficiency` | `0.90` | 0 to 1 | Share of stored energy you get back. A later price only counts at this fraction |
@@ -286,7 +292,8 @@ Markers you can expect in `degraded=` on a fresh install:
 
 | Marker | Meaning |
 |---|---|
-| `soc_stubbed` | The battery charge is the 50 % placeholder. Normal until a driver reads the real charge |
+| `soc_stubbed` | The battery charge is the 50 % placeholder. Normal until a driver or `battery.soc_sensor` supplies the real charge |
+| `soc_unavailable` | `battery.soc_sensor` is set but cannot be read. The planner holds: no charging from the grid and no exporting until the sensor is back. Peak shaving is not affected |
 | `usage_history_unavailable` | No household usage history yet. Normal until a load source is configured; the planner only peak-shaves and otherwise idles meanwhile |
 | `usage_samples=N` | The usage profile rests on fewer than `usage.history_weeks` x 7 days of history (N days). Disappears as history builds up |
 | `cache_age_solar=...`, `cache_age_usage=...` | A cached series was used, with its age |
@@ -344,6 +351,7 @@ Vetoes:
 | V4 | grid charging, export | There is no usable usage history. Peak shaving (S0) is not affected |
 | V5 | discharge | The battery is empty (0 % charge). The planner cannot know your inverter's own minimum charge, so this is the only lower limit it applies to peak shaving |
 | V6 | grid charging, export | There is no solar forecast: it is missing or too old and there is no usable cached copy (`degraded=solar_zero_fallback`). Peak shaving (S0) is not affected. A stale but usable cached forecast does not trigger it |
+| V7 | grid charging, export | `battery.soc_sensor` is set but unreadable (`degraded=soc_unavailable`): there is no battery reading, so nothing is bought or exported. Peak shaving (S0) is not affected. V1 and V5 need a reading and are not checked meanwhile, so the peak guard may still shave |
 
 Selectors, in the order they are tried:
 

@@ -35,3 +35,13 @@ def from_percent(charge_percent, config, is_stubbed=True):
         headroom_kwh=capacity - stored,
         is_stubbed=is_stubbed,
     )
+
+
+def unknown(config):
+    """Placeholder BatteryState for an unreadable charge sensor.
+
+    NOT the 50 % stub: the charge is set to the reserve floor (nothing usable,
+    nothing to export) and flagged is_stubbed so no figure from it is
+    published or recorded. rules.decide(soc_known=False) holds on top of it.
+    """
+    return from_percent(config.reserve_percent, config, is_stubbed=True)
