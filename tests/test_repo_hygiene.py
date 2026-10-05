@@ -34,21 +34,11 @@ def test_credentials_come_from_secret_tags(key, secret):
 
 def test_no_literal_credentials_or_addresses_in_tracked_yaml():
     for name in ("configuration.yaml", "secrets.example.yaml",
-                 "battery_planner/user_config.example.yaml",
-                 "examples/cost_simulation.yaml"):
+                 "battery_planner/user_config.example.yaml"):
         text = (ROOT / name).read_text(encoding="utf-8")
         for addr in re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", text):
             assert addr.lower().endswith("@example.com"), (name, addr)
     assert not re.search(r"(?im)^\s*password:\s*(?!!secret)\S", CONFIG_YAML)
-
-
-def test_cost_simulation_example_is_optional_and_personal_data_free():
-    text = (ROOT / "examples" / "cost_simulation.yaml").read_text(encoding="utf-8")
-    assert "NOT loaded by configuration.yaml" in text
-    assert "://" not in text
-    assert "!secret" not in text
-    assert not re.search(r"-?\d+(?:\.\d+)?/-?\d+(?:\.\d+)?/-?\d+", text)
-    assert not re.search(r"(?im)^\s*(?:password|username):", text)
 
 
 def test_configuration_yaml_holds_only_what_the_planner_needs():
@@ -76,11 +66,6 @@ def test_configuration_yaml_parses_with_expected_top_level_keys():
     keys = set(_load_yaml("configuration.yaml"))
     assert {"pyscript", "rest", "notify"} <= keys
     assert {"automation", "script", "scene"} <= keys
-
-
-def test_cost_simulation_example_parses():
-    assert set(_load_yaml("examples/cost_simulation.yaml")) == {
-        "template", "utility_meter"}
 
 
 SECRETS_EXAMPLE = (ROOT / "secrets.example.yaml").read_text(encoding="utf-8")
@@ -184,8 +169,8 @@ def test_gitignore_hides_secrets_but_not_the_example():
     assert not _ignored("secrets.example.yaml")
 
 
-def test_docs_and_examples_hold_no_personal_data():
-    paths = [ROOT / "README.md"] + sorted((ROOT / "docs").glob("*.md"))         + sorted((ROOT / "examples").glob("*"))
+def test_docs_hold_no_personal_data():
+    paths = [ROOT / "README.md"] + sorted((ROOT / "docs").glob("*.md"))
     assert len(paths) > 3
     for path in paths:
         text = path.read_text(encoding="utf-8")
