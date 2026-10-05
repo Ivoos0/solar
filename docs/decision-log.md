@@ -9,7 +9,7 @@ text editor. Files older than `retention.keep_days` (default 90) are deleted by
 the daily cleanup at 03:30 local time.
 
 The decision is written by the inverter boundary before any driver is called
-(see [inverter-boundary.md](inverter-boundary.md)). The labels `V1` to `V5` and
+(see [inverter-boundary.md](inverter-boundary.md)). The labels `V1` to `V6` and
 `S0` to `S6` are explained in the README under
 [Labels in the decision log](../README.md#labels-in-the-decision-log). There is
 no `S2`: storing surplus solar is the inverter's own default, so no rule is
@@ -92,6 +92,7 @@ always also shows the selector that finally fired.
 | V3 | grid charging | No capacity budget is left in this quarter-hour |
 | V4 | grid charging, export | There is no usable usage history |
 | V5 | discharge | The battery is empty (0 % charge) |
+| V6 | grid charging, export | There is no solar forecast (`solar_zero_fallback`, no usable cache) |
 
 V4 fires on every cycle until the energy history holds a known household load
 (see the README section "Energy history"), so it appears bare on most records
@@ -106,7 +107,7 @@ only V5 can stop a peak shave, shown as `V5(suppressed S0 discharge)`.
 | Marker | Meaning |
 |---|---|
 | `soc_stubbed` | The battery charge is the 50 % placeholder of the `logging` driver |
-| `solar_zero_fallback` | The forecast was unavailable, so solar was treated as zero |
+| `solar_zero_fallback` | The forecast was unavailable and no usable cached copy exists, so solar was treated as zero. V6 then holds grid charging and export |
 | `cache_age_solar=3h12m`, `cache_age_usage=...` | A cached series was used, with its age |
 | `forecast_age=1h20m` | The forecast was used, but its sensor last refreshed 75 minutes or more ago. A stamp older than `timing.solar_cache_stale_minutes` counts as a failed forecast instead |
 | `usage_samples=N` | The usage profile rests on N days of history, fewer than `usage.history_weeks` x 7 |

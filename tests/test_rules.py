@@ -85,7 +85,7 @@ def price(i, cons, inj):
 
 def go(cfg, plist, now_i=0, pct=50.0, g=CALM, sat=None, breach=None,
        spill=0.0, leftover=0.0, solar=None, usage=None, shortfall=None,
-       hide=(), history=True):
+       hide=(), history=True, forecast=True):
     # history: True/False -> usage_history_available; None -> omit the kwarg
     """Build trajectory + price_map by hand and decide.
 
@@ -109,6 +109,8 @@ def go(cfg, plist, now_i=0, pct=50.0, g=CALM, sat=None, breach=None,
     pmap = {T0 + i * STEP: price(i, *p) for i, p in enumerate(plist)
             if p is not None}
     kw = {} if history is None else {"usage_history_available": history}
+    if forecast is not True:
+        kw["forecast_available"] = forecast
     return _rules.decide(traj, pmap, battery.from_percent(pct, cfg), g, cfg,
                          T0 + now_i * STEP + timedelta(minutes=1), **kw)
 
@@ -1035,3 +1037,75 @@ def test_s4_every_candidate_must_beat_the_import_price(site_config):
     d = go(site_config, plist, now_i=1, pct=30.0, breach=3,
            shortfall={3: 2.5})
     assert d.selector == "S6"
+
+
+# ---- V6 no solar forecast ---------------------------------------------------------
+
+V6_FORBIDS = {"grid_charge", "export"}
+
+
+def test_v6_quiet_by_default_and_when_the_forecast_is_available(site_config):
+    forbidden, fired = establish_vetoes(
+        battery.from_percent(50, site_config), price(0, 0.2, 0.05),
+        site_config)
+    assert "V6" not in fired
+    forbidden, fired = establish_vetoes(
+        battery.from_percent(50, site_config), price(0, 0.2, 0.05),
+        site_config, forecast_available=True)
+    assert fired == [] and forbidden == frozenset()
+
+
+def test_v6_fires_without_a_forecast_and_forbids_grid_charge_and_export(
+        site_config):
+    forbidden, fired = establish_vetoes(
+        battery.from_percent(50, site_config), price(0, 0.2, 0.05),
+        site_config, forecast_available=False)
+    assert fired == ["V6"] and forbidden == V6_FORBIDS
+    assert "discharge" not in forbidden           # peak shaving must still act
+
+
+def test_v6_review_scenario_s4_does_not_over_buy_on_a_zero_forecast(
+        site_config):
+    # 03:00-style case: battery 30 %, the forecast is lost so the projection
+    # shows a breach. With a forecast S4 charges; without one it holds.
+    kw = dict(pct=30.0, breach=4, shortfall=S4_SHORT)
+    assert go(site_config, S4_PRICES, now_i=1, **kw).selector == "S4"
+    d = go(site_config, S4_PRICES, now_i=1, forecast=False, **kw)
+    assert (d.selector, d.action, d.target_power_kw) == ("S6", "idle", 0.0)
+    assert d.vetoes_fired == ["V6"]
+    assert d.suppressed == [("S4", "charge", "V6")]
+    assert d.reasoning.startswith("hold: no solar forecast")
+
+
+def test_v6_blocks_negative_price_grid_charge(site_config):
+    d = go(site_config, [NEG] * 3, forecast=False)
+    assert d.suppressed == [("S1", "charge", "V6"), ("S5", "charge", "V6")]
+    assert (d.selector, d.action) == ("S6", "idle")
+
+
+def test_v6_blocks_export(site_config):
+    plist = [(0.20, 0.30), (0.20, 0.10), (0.20, 0.10)]
+    d = go(site_config, plist, spill=1.0, sat=2, forecast=False)
+    assert (d.selector, d.action) == ("S6", "idle")
+    assert d.suppressed == [("S3", "export", "V6")]
+
+
+def test_v6_does_not_stop_peak_shaving(site_config):
+    d = go(site_config, [FLAT] * 3, g=SHAVE, forecast=False)
+    assert (d.selector, d.action) == ("S0", "discharge")
+    assert d.vetoes_fired == ["V3", "V6"]
+
+
+def test_v6_and_v4_together_name_both(site_config):
+    d = go(site_config, [NEG] * 3, history=False, forecast=False)
+    assert d.vetoes_fired == ["V4", "V6"]
+    assert d.suppressed == [("S1", "charge", "V4+V6"),
+                            ("S5", "charge", "V4+V6")]
+    assert "no solar forecast" in d.reasoning
+
+
+def test_v6_joins_the_block_list_in_the_record_text(site_config):
+    import decision
+    d = go(site_config, [NEG] * 3, forecast=False)
+    assert decision.render_vetoes(d) == [
+        "V6(suppressed S1 charge)", "V6(suppressed S5 charge)"]

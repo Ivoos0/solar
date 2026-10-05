@@ -5,7 +5,7 @@ No I/O, no clock (``now`` is a parameter), no third-party / HA imports.
 Entry point
 -----------
     decide(trajectory, price_map, battery_state, grid_state, config, now,
-           usage_history_available=False) -> Decision
+           usage_history_available=False, forecast_available=True) -> Decision
 
   trajectory     trajectory.Trajectory from trajectory.project()
   price_map      {block_start: prices.PricePoint}; keys may be aware or
@@ -24,6 +24,14 @@ Entry point
                  (the adapter sets it from sample coverage). The default is the
                  SAFE value False: no history -> V4 holds every price-driven
                  selector (S1-S5); only peak shaving (S0) still acts.
+  forecast_available
+                 False only when the solar series is the zero-solar fallback
+                 (the forecast is missing or stale and no usable cache exists;
+                 the adapter marks it solar_zero_fallback). Then V6 forbids
+                 grid charging and export: the projection is a guess, and a
+                 cost-bearing action must not rest on a guess. A stale but
+                 usable cached series does NOT set it False. Default True
+                 (other callers, the peak guard).
 
 Decision fields: action (charge|discharge|export|idle), target_power_kw,
 selector ("S0", "S1", "S3".."S6"), reasoning, vetoes_fired (["V1", ...]),
@@ -60,6 +68,8 @@ grid).
   V4  no usable usage history            -> {"grid_charge", "export"}
   V5  battery empty (charge_percent <= 0
       or stored_kwh <= 0)                -> {"discharge"} only
+  V6  no solar forecast (zero-solar
+      fallback)                          -> {"grid_charge", "export"}
 RESERVE SEMANTICS: reserve_percent limits what the battery may EXPORT to the
 grid; it is a floor for exporting, not a target to hold. The planner never buys
 power to keep the battery up to the reserve (when the battery reaches it the
@@ -77,6 +87,12 @@ planner holds". V4 does NOT forbid "discharge": the only discharge proposal is
 S0 peak shaving, which does not depend on usage history (it reads the live grid
 state) and protects the capacity tariff, so it still acts (only V5, an empty
 battery, can stop it). V4 fires whether or not capacity logic is active.
+V6 ("no forecast"): with no forecast the trajectory assumes zero solar, so it
+projects a battery that drains and a reserve breach that may never come (S4 would
+over-buy from the grid), and it can never show a spill (S3). Being very
+conservative, the planner then takes no cost-bearing action: grid charging and
+export are forbidden. Peak shaving (S0) does not depend on the forecast and
+still acts. Surplus solar needs no rule (the default behaviour stores it).
 V3 and the grid-charge cap use the budget against stay_under_percent of the
 ceiling (capacity.charging_ceiling_kw), e.g. 80 % of 2.5 kW = 2.0 kW; S0 and
 the reported ceiling still use the real ceiling.
@@ -133,6 +149,7 @@ VETO_FORBIDS = {
     "V3": frozenset({FORBID_GRID_CHARGE}),
     "V4": frozenset({FORBID_GRID_CHARGE, FORBID_EXPORT}),
     "V5": frozenset({FORBID_DISCHARGE}),
+    "V6": frozenset({FORBID_GRID_CHARGE, FORBID_EXPORT}),
 }
 
 
@@ -184,12 +201,13 @@ def _capacity_active(grid_state, config):
 
 
 def establish_vetoes(battery_state, current_price, config, grid_state=None,
-                     usage_history_available=False):
+                     usage_history_available=False, forecast_available=True):
     """Return (forbidden action classes, [fired veto ids]). Data only.
 
     usage_history_available defaults to the SAFE False (V4 fires).
     V1 (at or below the reserve) forbids only export; V5 (battery empty)
-    forbids only discharge.
+    forbids only discharge. forecast_available defaults to True (V6 quiet);
+    False means the solar series is the zero-solar fallback and V6 fires.
 
     current_price is the PricePoint of the current block or None (no V2 then).
     Never chooses, logs or short-circuits.
@@ -206,6 +224,8 @@ def establish_vetoes(battery_state, current_price, config, grid_state=None,
         fired.append("V4")
     if battery_state.charge_percent <= 0 or battery_state.stored_kwh <= 0:
         fired.append("V5")
+    if not forecast_available:
+        fired.append("V6")
     forbidden = frozenset()
     for v in fired:
         forbidden = forbidden | VETO_FORBIDS[v]
@@ -465,8 +485,14 @@ def _s6_reasoning(ctx, fired, suppressed):
     if suppressed:
         facts.append("suppressed: " + ", ".join(
             "%s %s blocked by %s" % s for s in suppressed))
+    if "V6" in fired:
+        facts.append("no solar forecast: nothing is bought or exported on a "
+                     "guess")
     if "V4" in fired:
         return ("hold: no usage history: planner holds (only peak shaving "
+                "acts) - " + "; ".join(facts))
+    if "V6" in fired:
+        return ("hold: no solar forecast: planner holds (only peak shaving "
                 "acts) - " + "; ".join(facts))
     return ("hold: nothing applies, the inverter keeps its default behaviour - "
             + "; ".join(facts))
@@ -480,12 +506,13 @@ _SELECTORS = (("S0", _s0), ("S1", _s1), ("S3", _s3), ("S4", _s4),
 
 
 def decide(trajectory, price_map, battery_state, grid_state, config, now,
-           usage_history_available=False):
+           usage_history_available=False, forecast_available=True):
     """Establish vetoes, then try S0..S6 in order; see module docstring."""
     ctx = _build_ctx(trajectory, price_map, battery_state, grid_state,
                      config, now)
     forbidden, fired = establish_vetoes(battery_state, ctx.price_now, config,
-                                        grid_state, usage_history_available)
+                                        grid_state, usage_history_available,
+                                        forecast_available)
     suppressed = []
     for name, selector in _SELECTORS:
         proposal = selector(ctx)

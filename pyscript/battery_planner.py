@@ -1205,7 +1205,8 @@ def _cycle(now):
                               start_time=block_start)
     grid = _grid_state(cfg, local)
     d = rules.decide(traj, price_map, bat, grid, cfg, local,
-                     usage_history_available=history_days > 0)
+                     usage_history_available=history_days > 0,
+                     forecast_available=not zero_fallback)
 
     if d.action == "charge":
         if _guard_is_shaving(cfg, local):

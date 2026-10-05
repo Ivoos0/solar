@@ -292,7 +292,7 @@ Markers you can expect in `degraded=` on a fresh install:
 | `forecast_age=...` | The forecast was used, but the sensor last refreshed 75 minutes or more ago (a normal hourly refresh keeps it under that) |
 | `solar_ratio=0.83` | The forecast for the current or next block was multiplied by this ratio, measured from your own history (see [Solar calibration](#solar-calibration)). Absent when the ratio is 1.00 |
 | `solar_ratio_configured=0.80` | The same, but the ratio is `solar.calibration_default` because there is not enough measured history yet. Absent when it is 1.00 |
-| `solar_zero_fallback` | The forecast was unavailable (or older than `timing.solar_cache_stale_minutes`), so solar was treated as zero. The planner retries and does not halt |
+| `solar_zero_fallback` | The forecast was unavailable (or older than `timing.solar_cache_stale_minutes`) and no usable cached copy exists, so solar was treated as zero. The planner holds (no grid charging, no export) until a forecast is back, retries, and does not halt |
 | `grid_sensors_unavailable` | Capacity logic is on but the grid sensors are unreadable. Grid charging is suppressed |
 | `inverter_driver_unavailable`, `inverter_read_failed` | The configured driver is missing or its charge reading failed |
 
@@ -306,7 +306,7 @@ materially, is blocked or stops, not once per 30-second tick.
 | No records at all | pyscript not loaded, or the `pyscript:` block is missing | Add the block from `configuration.yaml`, restart Home Assistant |
 | `ImportError` in the HA log | `allow_all_imports: true` is missing | Add it to the `pyscript:` block |
 | HA log warns about blocking I/O | A file operation ran on the event loop | It must use `@pyscript_executor` |
-| Forecast always zero | The REST sensor is failing | Check `forecast_solar_url` and the forecast.solar free-tier rate limit |
+| Forecast always zero, records show `solar_zero_fallback` and the planner idles with "hold: no solar forecast" | The REST sensor is failing | Check `forecast_solar_url` and the forecast.solar free-tier rate limit. The planner does not buy or export power until a forecast is back |
 | `forecast_age=...` on records, or a HA log warning "forecast sensor ... has not refreshed for ..." | The forecast sensor is not refreshing hourly. Past `timing.solar_cache_stale_minutes` the planner ignores its data and uses the cached series, or zero solar | Check the sensor's last updated time in Developer Tools -> States, the forecast.solar rate limit, and that `scan_interval` in `configuration.yaml` is still 3600 |
 | Constant HALT with "attribute prices missing or empty on ..." | `prices.entity` or `prices.attribute` does not match your install | Open the entity in Developer Tools -> States and copy the sensor and attribute name into `user_config.yaml` |
 | `peak_guard: ... not refreshed since window ...` | The quarter-hour average sensor has not published since this window began | At INFO level with a low value this is normal for a quiet house. At WARNING level with a high average and an old timestamp, the meter or its link is stuck and the guard is doing nothing |
@@ -342,6 +342,7 @@ Vetoes:
 | V3 | grid charging | No capacity budget is left in this quarter-hour |
 | V4 | grid charging, export | There is no usable usage history. Peak shaving (S0) is not affected |
 | V5 | discharge | The battery is empty (0 % charge). The planner cannot know your inverter's own minimum charge, so this is the only lower limit it applies to peak shaving |
+| V6 | grid charging, export | There is no solar forecast: it is missing or too old and there is no usable cached copy (`degraded=solar_zero_fallback`). Peak shaving (S0) is not affected. A stale but usable cached forecast does not trigger it |
 
 Selectors, in the order they are tried:
 
@@ -375,7 +376,10 @@ cause. Check the price entity and attribute (see [Configure](#configure)). If th
 itself is down, wait for it; the planner resumes by itself.
 
 Forecast outage: solar counts as zero, the record is marked `solar_zero_fallback`, and the planner
-retries. It does not halt.
+retries. It does not halt. With no forecast the planner is deliberately cautious: it does not buy
+power from the grid and does not export, because a plan built on zero solar is a guess. It idles
+("hold: no solar forecast") and only peak protection still acts. A forecast that is merely old but
+still cached is used as before (`cache_age_solar=...`) and does not hold the planner.
 
 ### Peak guard
 

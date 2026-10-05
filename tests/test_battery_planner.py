@@ -1642,3 +1642,57 @@ def test_forced_charge_then_idle_cycles_send_idle_exactly_once(
     sent = sys.modules["inverter_driver_idlerel"].SENT
     assert sent == [("charge", 2.0), ("idle", 0.0)]
     assert len(env.decisions()) == 9                      # every cycle logged
+
+
+# ---- V6: no forecast means no cost-bearing action ----------------------------------
+
+def _with_history_and_cheap_power(env, monkeypatch):
+    monkeypatch.setattr(env.mod, "read_usage_history",
+                        lambda cfg, local: _history(3))
+    _negative_prices(env)                  # S1 would grid-charge
+
+
+def test_forecast_available_flag_follows_the_zero_fallback(env, monkeypatch):
+    seen = []
+    real = env.mod.rules.decide
+
+    def spy(*a, **kw):
+        seen.append(kw.get("forecast_available"))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(env.mod.rules, "decide", spy)
+    env.run(T0)
+    env.state.set(FORECAST_ENTITY, "unavailable", {},
+                  last_reported=T0 - timedelta(hours=5))
+    (env.cache_dir / "solar.json").unlink()            # no usable cache either
+    env.run(T0 + STEP)
+    assert seen == [True, False]
+
+
+def test_lost_forecast_with_no_cache_holds_and_shows_v6(env, monkeypatch):
+    _with_history_and_cheap_power(env, monkeypatch)
+    env.state.set(FORECAST_ENTITY, "unavailable", {})
+    env.run(T0)
+    keys = fields_of(env.decisions()[0])
+    assert "solar_zero_fallback" in keys["degraded"]
+    assert keys["action"] == "idle" and keys["selector"] == "S6"
+    assert "V6(suppressed S1 charge)" in keys["vetoes"]
+    assert "no solar forecast" in keys["why"]
+
+
+def test_a_forecast_still_lets_the_same_prices_charge(env, monkeypatch):
+    _with_history_and_cheap_power(env, monkeypatch)
+    env.run(T0)
+    keys = fields_of(env.decisions()[0])
+    assert keys["action"] == "charge" and "V6" not in keys["vetoes"]
+
+
+def test_stale_but_usable_cached_series_does_not_trigger_v6(env, monkeypatch):
+    _with_history_and_cheap_power(env, monkeypatch)
+    env.run(T0)                                        # builds the cache
+    env.state.set(FORECAST_ENTITY, "unavailable", {})
+    env.run(T0 + STEP)
+    keys = fields_of(env.decisions()[1])
+    assert any(m.startswith("cache_age_solar") for m in keys["degraded"].split(","))
+    assert "solar_zero_fallback" not in keys["degraded"]
+    assert "V6" not in keys["vetoes"] and keys["action"] == "charge"
