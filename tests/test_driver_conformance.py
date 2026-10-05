@@ -171,6 +171,19 @@ def test_soc_flag_not_a_bool_fails(tmp_path):
     assert "SOC_IS_STUB is 'no'; it must be a bool" in msg
 
 
+def test_hold_minutes_absent_none_or_positive_passes(tmp_path):
+    for line in ("COMMAND_HOLD_MINUTES = None", "COMMAND_HOLD_MINUTES = 10",
+                 "COMMAND_HOLD_MINUTES = 2.5"):
+        dc.check_driver(write_driver(tmp_path, GOOD + line + "\n"))
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "'10'", "True", "[10]",
+                                 "float('nan')", "float('inf')"])
+def test_hold_minutes_not_a_positive_number_fails(tmp_path, bad):
+    msg = failure(write_driver(tmp_path, GOOD + "COMMAND_HOLD_MINUTES = %s\n" % bad))
+    assert "COMMAND_HOLD_MINUTES is" in msg and "positive number" in msg
+
+
 def test_network_at_import_fails(tmp_path):
     src = "import socket\nsocket.create_connection(('192.0.2.1', 502))\n" + GOOD
     msg = failure(write_driver(tmp_path, src))

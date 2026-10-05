@@ -31,8 +31,10 @@ def apply(action, target_power_kw, record, log_path=None,
 
     The driver's send() is called only when the command (action, power
     rounded to 0.01 kW) differs from the last command SENT, or the last send
-    is resend_minutes old (0 = every call). state_dir (default
-    <log_dir>/state) holds last_command.json.
+    is old enough to need a refresh: 0.8 x the driver's COMMAND_HOLD_MINUTES
+    when it declares one, else resend_minutes (0 = every call). An idle
+    command is sent once (rule 11). state_dir (default <log_dir>/state) holds
+    last_command.json.
 
     Returns True when the decision line was durably recorded, False on any
     refusal or logging failure. Never raises. Driver outcomes never change it.
@@ -62,6 +64,7 @@ and `last_command.json`.
 
 ```python
 SOC_IS_STUB = False                      # optional, default False
+COMMAND_HOLD_MINUTES = None              # optional: positive number of minutes
 
 def send(action, target_power_kw): ...   # True = accepted; False or raise = failed
 def read_charge_percent(): ...           # number, 0..100
@@ -119,9 +122,8 @@ cannot verify this without hardware; you must.
 10. **Command de-duplication.** The decision line is written on every call. The
     driver's `send()` is called only when (a) no command is on record, (b) the
     command differs from the recorded one in `action` or in `target_power_kw`
-    rounded to 0.01 kW, or (c) the recorded send is `resend_minutes` old or older
-    (`inverter.resend_minutes`, integer 0 or more, default 15; `0` = every call;
-    a record dated in the future also sends). The record is
+    rounded to 0.01 kW, or (c) the recorded send is old enough to need a refresh
+    (see rule 12; a record dated in the future also sends). The record is
     `<state_dir>/last_command.json`:
     `{"action": ..., "power_kw": ..., "sent_at": <UTC ISO 8601>}`, written
     atomically and read on every call, so it survives a restart and is shared by
@@ -140,12 +142,26 @@ cannot verify this without hardware; you must.
     therefore sends at most one `idle` after a forced action. `resend_minutes: 0`
     still means every call, `idle` included. A failed `idle` send is not
     recorded, so the next call sends it again.
+12. **When an unchanged command is sent again.** A driver may declare
+    `COMMAND_HOLD_MINUTES`: a positive number, the time after which the
+    inverter drops a forced command that was not refreshed. Absent or `None`
+    means unknown. An unchanged non-`idle` command is then sent again once its
+    recorded send is 0.8 x that old (hold 10 minutes: at 8 minutes, not before),
+    and `inverter.resend_minutes` is not used for that driver. A driver that
+    declares nothing falls back to `inverter.resend_minutes` (integer 0 or more,
+    default 15; `0` = every call). A value that is not a positive number (a
+    string, a bool, zero, negative, NaN, infinity) is ignored with one warning
+    in the Home Assistant log and the fallback applies. A recorded send older
+    than the window is expired: after a restart, a stale `last_command.json`
+    never blocks a send. The attribute is read from the loaded driver the way
+    `SOC_IS_STUB` is.
 
 ## Settings
 
 `inverter.type` (default `logging`; missing, null or `none` mean `logging`;
 otherwise lowercase letters, digits and underscore) and `inverter.resend_minutes`
-(see the README settings table).
+(the fallback resend time for drivers that declare no `COMMAND_HOLD_MINUTES`; see
+the README settings table).
 
 A non-`logging` driver sends real commands and is your responsibility. The
 README checklist covers what the peak guard already handles (it adds the

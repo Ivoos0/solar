@@ -31,7 +31,8 @@ ALLOWED_CALL_NAMES = {"open", "abs", "_append_line", "isinstance", "callable",
                       "_driver", "_transmit", "run", "fn", "log_path_for",
                       "_read_state", "_write_state", "_remove_state",
                       "_state_file", "_utc", "_last_command", "_should_send",
-                      "_remember_sent", "_forget_sent", "round"}
+                      "_remember_sent", "_forget_sent", "round",
+                      "_hold_minutes"}
 ALLOWED_CALL_ATTRS = {"write", "flush", "fileno", "fsync", "makedirs",
                       "dirname", "format_record", "warning", "error", "get",
                       "isfile", "join", "fullmatch", "spec_from_file_location",
@@ -354,6 +355,7 @@ def test_public_surface_is_exactly_three_functions_plus_constants(inverter):
     assert funcs == {"apply", "read_charge", "log_path_for"}
     assert public == {"os", "decision", "datetime", "apply", "read_charge",
                       "DEFAULT_RESEND_MINUTES", "LAST_COMMAND_FILE",
+                      "HOLD_ATTRIBUTE", "RESEND_FRACTION", "HOLD_LIMIT_MINUTES",
                       "POWER_DECIMALS",
                       "DEFAULT_LOG_DIR", "DEFAULT_DRIVER_DIR", "log_path_for",
                       "STUBBED_CHARGE_PERCENT", "POWER_TOLERANCE_KW",
@@ -824,13 +826,12 @@ def test_state_survives_a_restart(inverter, drivers, tmp_path):
     fresh = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fresh)
     fresh.DEFAULT_DRIVER_DIR = inverter.DEFAULT_DRIVER_DIR
+    fresh._drivers = inverter._drivers               # one driver, to count sends
     assert fresh._last_sent == {}
     _send(fresh, tmp_path, 5)
     assert len(_sent()) == 1                         # not re-sent
-    before = _sent()
     _send(fresh, tmp_path, 16)                       # window elapsed: re-sent
-    assert _sent() is not before                     # (by the freshly loaded driver)
-    assert _sent() == [("export", 2.5)]
+    assert _sent() == [("export", 2.5), ("export", 2.5)]
 
 
 def test_planner_and_guard_share_the_state(inverter, drivers, tmp_path):
@@ -852,6 +853,7 @@ def test_state_is_shared_between_module_instances(inverter, drivers, tmp_path):
     other = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(other)
     other.DEFAULT_DRIVER_DIR = inverter.DEFAULT_DRIVER_DIR
+    other._drivers = inverter._drivers               # one driver, to count sends
     _send(inverter, tmp_path, 0)
     _send(other, tmp_path, 1)
     assert len(_sent()) == 1
@@ -976,6 +978,7 @@ def _restarted(inverter):
     fresh = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fresh)
     fresh.DEFAULT_DRIVER_DIR = inverter.DEFAULT_DRIVER_DIR
+    fresh._drivers = inverter._drivers               # one driver, to count sends
     assert fresh._last_sent == {}
     return fresh
 
@@ -1027,8 +1030,7 @@ def test_forced_record_survives_a_restart_and_idle_then_releases_it(
     fresh = _restarted(inverter)
     _idle(fresh, tmp_path, 5)
     _idle(fresh, tmp_path, 10)
-    # the restarted module loads its own copy of the driver: only idle, once
-    assert _sent() == [("idle", 0.0)]
+    assert _sent() == [("charge", 2.0), ("idle", 0.0)]
 
 
 def test_first_idle_after_a_restart_without_a_state_file_is_sent_once(
@@ -1074,3 +1076,147 @@ def test_non_idle_commands_still_resend_after_the_window(
     _send(inverter, tmp_path, 0, action="charge", power=2.0)
     _send(inverter, tmp_path, 15, action="charge", power=2.0)
     assert len(_sent()) == 2
+
+
+# ---- COMMAND_HOLD_MINUTES: refresh a forced command before the inverter drops it --
+
+def _hold_driver(drivers, name, declaration):
+    """A recording driver that declares (or not) COMMAND_HOLD_MINUTES."""
+    src = _DRIVERS["toggle"]
+    if declaration is not None:
+        src += "COMMAND_HOLD_MINUTES = %s\n" % declaration
+    (drivers / ("inverter_%s.py" % name)).write_text(src, encoding="utf-8")
+    return name
+
+
+def _sent_by(name):
+    return _driver_module(name).SENT
+
+
+def test_hold_10_minutes_resends_at_eight_minutes_and_not_before(
+        inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "hold10", "10")
+    _send(inverter, tmp_path, 0, kind=kind)
+    _send(inverter, tmp_path, 7, seconds=59, kind=kind)
+    assert len(_sent_by(kind)) == 1
+    _send(inverter, tmp_path, 8, kind=kind)          # exactly 0.8 x 10
+    assert len(_sent_by(kind)) == 2
+    _send(inverter, tmp_path, 15, kind=kind)         # new window began at 8
+    assert len(_sent_by(kind)) == 2
+    _send(inverter, tmp_path, 16, kind=kind)
+    assert len(_sent_by(kind)) == 3
+
+
+def test_declared_hold_overrides_resend_minutes(inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "hold10", "10")
+    for resend in (60, 15, 0):                        # 0 would mean every call
+        tag = tmp_path / ("s%d" % resend)
+        _send(inverter, tmp_path, 0, kind=kind, resend=resend, state=tag)
+        _send(inverter, tmp_path, 4, kind=kind, resend=resend, state=tag)
+        _send(inverter, tmp_path, 8, kind=kind, resend=resend, state=tag)
+    # per state dir: sent at 0, not at 4, again at 8 = 2 sends; three dirs
+    assert len(_sent_by(kind)) == 6
+
+
+def test_hold_may_be_fractional_and_changes_the_window(
+        inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "hold25", "2.5")     # window 2 minutes
+    _send(inverter, tmp_path, 0, kind=kind)
+    _send(inverter, tmp_path, 1, kind=kind)
+    assert len(_sent_by(kind)) == 1
+    _send(inverter, tmp_path, 2, kind=kind)
+    assert len(_sent_by(kind)) == 2
+
+
+@pytest.mark.parametrize("declaration", [None, "None"])
+def test_no_declaration_falls_back_to_resend_minutes(
+        inverter, drivers, tmp_path, declaration):
+    kind = _hold_driver(drivers, "nohold", declaration)
+    _send(inverter, tmp_path, 0, kind=kind, resend=5)
+    _send(inverter, tmp_path, 4, kind=kind, resend=5)
+    assert len(_sent_by(kind)) == 1
+    _send(inverter, tmp_path, 5, kind=kind, resend=5)
+    assert len(_sent_by(kind)) == 2
+    assert builtins.log.messages == []                # unknown is not an error
+
+
+def test_fallback_zero_still_sends_every_call(inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "nohold", None)
+    for i in range(3):
+        _send(inverter, tmp_path, i, kind=kind, resend=0)
+    assert len(_sent_by(kind)) == 3
+
+
+@pytest.mark.parametrize("declaration", [
+    "0", "-5", "'10'", "True", "float('nan')", "float('inf')", "[10]", "1e12",
+])
+def test_invalid_hold_is_ignored_with_one_warning(
+        inverter, drivers, tmp_path, declaration):
+    kind = _hold_driver(drivers, "badhold", declaration)
+    for i in range(0, 16):
+        _send(inverter, tmp_path, i, kind=kind, resend=15)
+    # fell back to resend_minutes = 15: sent at 0 and again at 15
+    assert len(_sent_by(kind)) == 2
+    warned = [m for m in builtins.log.messages if "COMMAND_HOLD_MINUTES" in m]
+    assert len(warned) == 1 and "badhold" in warned[0]
+
+
+def _plant_record(tmp_path, minutes_before, action="export", power=2.5):
+    state = tmp_path / "state"
+    state.mkdir(exist_ok=True)
+    when = (T_BASE - timedelta(minutes=minutes_before)).astimezone(
+        ZoneInfo("UTC"))
+    (state / "last_command.json").write_text(json.dumps({
+        "action": action, "power_kw": power, "sent_at": when.isoformat()}),
+        encoding="utf-8")
+
+
+def test_expired_record_after_a_restart_does_not_block_the_send(
+        inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "hold10", "10")
+    _plant_record(tmp_path, minutes_before=180)       # left by an old run
+    fresh = _restarted(inverter)
+    _send(fresh, tmp_path, 0, kind=kind)
+    assert len(_sent_by(kind)) == 1
+
+
+def test_expired_record_after_a_restart_with_fallback_window(
+        inverter, drivers, tmp_path):
+    _plant_record(tmp_path, minutes_before=30)
+    fresh = _restarted(inverter)
+    _send(fresh, tmp_path, 0, resend=15)              # toggle declares nothing
+    assert len(_sent()) == 1
+
+
+def test_fresh_record_after_a_restart_still_blocks_a_duplicate(
+        inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "hold10", "10")
+    _plant_record(tmp_path, minutes_before=3)         # younger than 8 minutes
+    fresh = _restarted(inverter)
+    _send(fresh, tmp_path, 0, kind=kind)
+    assert _sent_by(kind) == []
+    _send(fresh, tmp_path, 5, kind=kind)              # now 8 minutes old
+    assert len(_sent_by(kind)) == 1
+
+
+def test_identical_commands_inside_the_hold_window_are_not_resent(
+        inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "hold10", "10")
+    for i in range(8):                                # one a minute, 0..7
+        _send(inverter, tmp_path, i, kind=kind)
+    assert len(_sent_by(kind)) == 1
+
+
+def test_hold_does_not_make_idle_repeat(inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "hold10", "10")
+    for i in range(0, 60, 5):
+        _idle(inverter, tmp_path, i, kind=kind)
+    assert _sent_by(kind) == [("idle", 0.0)]
+
+
+def test_a_changed_command_is_sent_at_once_whatever_the_hold(
+        inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "hold10", "10")
+    _send(inverter, tmp_path, 0, kind=kind, power=2.0)
+    _send(inverter, tmp_path, 1, kind=kind, power=3.0)
+    assert _sent_by(kind) == [("export", 2.0), ("export", 3.0)]

@@ -31,6 +31,9 @@ What is checked:
     and gives the same answer when repeated
   * read_charge_percent() returns a real number 0..100 (not a bool, not NaN)
   * SOC_IS_STUB, when present, is a bool
+  * COMMAND_HOLD_MINUTES, when present, is None (unknown) or a positive number
+    (not a bool): how long the inverter keeps a forced command without a
+    refresh. The planner re-sends an unchanged command at 0.8 x that.
 
 Third-party imports (for example pymodbus) are allowed: drivers are loaded as
 ordinary CPython. They only have to be installed where the check runs.
@@ -240,6 +243,14 @@ def find_problems(driver, timeout=DEFAULT_TIMEOUT_SECONDS,
             module.SOC_IS_STUB, bool):
         problems.append("SOC_IS_STUB is %r; it must be a bool (or be left out)"
                         % (module.SOC_IS_STUB,))
+    if hasattr(module, "COMMAND_HOLD_MINUTES"):
+        hold = module.COMMAND_HOLD_MINUTES
+        if hold is not None and (
+                isinstance(hold, bool) or not isinstance(hold, (int, float))
+                or not 0 < hold < 1.0e9):
+            problems.append(
+                "COMMAND_HOLD_MINUTES is %r; it must be a positive number of "
+                "minutes, or None / left out when unknown" % (hold,))
     problems += _send_problems(module, timeout, max_power_kw)
     problems += _read_problems(module, timeout)
     return problems

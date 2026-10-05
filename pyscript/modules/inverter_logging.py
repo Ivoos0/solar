@@ -21,6 +21,15 @@ set (forced grid charge, forced export, forced discharge) and return the
 inverter to its own default behaviour. It is sent once after a forced mode, not
 repeatedly, so it has to be a real release, not a "do nothing for now".
     def read_charge_percent(): ...          # battery charge, 0..100 (float)
+    COMMAND_HOLD_MINUTES = 10               # optional: the inverter drops a
+                                            # forced command after about this
+                                            # many minutes without a refresh.
+                                            # The planner then re-sends an
+                                            # unchanged command at 0.8 x this.
+                                            # Leave it out (or None) when
+                                            # unknown: the config
+                                            # inverter.resend_minutes applies.
+                                            # This driver declares nothing.
 
 Copy this file to inverter_<name>.py and set `inverter.type: <name>`.
 Drivers run as ordinary CPython in an executor thread (blocking I/O is fine,

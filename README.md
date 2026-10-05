@@ -15,7 +15,8 @@ Source: <https://github.com/Ivoos0/solar>
 - It does not control your inverter. The default driver, `logging`, sends nothing. To act on the
   decisions you add a driver for your inverter (see [Adding an inverter driver](#adding-an-inverter-driver)).
   None is shipped. When one is enabled, the driver is sent a command only when it changes, and again
-  after `inverter.resend_minutes` (default 15), not on every five-minute cycle. `idle` is sent once
+  after about 80 % of the time the driver says the inverter keeps a command (or, when it does not say,
+  after `inverter.resend_minutes`, default 15), not on every five-minute cycle. `idle` is sent once
   after a forced mode and not repeated while idle lasts. The log line is still written every cycle.
 - With the `logging` driver the battery charge is a fixed 50 %. Every record carries
   `degraded=soc_stubbed`. A driver that reads the real charge removes the marker.
@@ -207,7 +208,7 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `alerts.peak_warning_min_interval_minutes` | `60` | minutes (whole number, 1 or more) | Minimum gap between peak warnings |
 | `alerts.peak_warning_ticks` | `2` | evaluations (whole number, 1 or more) | Consecutive guard evaluations above the ceiling before a warning. Fewer is earlier and noisier |
 | `inverter.type` | `logging` | driver name | Selects `pyscript/modules/inverter_<type>.py`. `none` means `logging` |
-| `inverter.resend_minutes` | `15` | minutes (whole number, 0 or more) | The driver gets an unchanged command again only after this long. A changed command (other action, or power differing by 0.01 kW or more) goes out at once. `0` sends on every call. The decision log line is written every cycle either way |
+| `inverter.resend_minutes` | `15` | minutes (whole number, 0 or more) | Fallback for drivers that do not declare how long the inverter keeps a command (`COMMAND_HOLD_MINUTES`, see [Adding an inverter driver](#adding-an-inverter-driver)): the driver gets an unchanged command again only after this long. A changed command (other action, or power differing by 0.01 kW or more) goes out at once. `0` sends on every call. A driver that declares a hold is re-sent at 80 % of it and this setting is not used. The decision log line is written every cycle either way |
 | `timezone` | `Europe/Brussels` | time zone name | Local day for log files, history and monthly peak e-mails |
 
 ### Rounding: which way to err
@@ -439,7 +440,7 @@ something that was just done:
 
 | File | Keeps | Effect after a restart |
 |---|---|---|
-| `last_command.json` | The last command the driver accepted (action, power, time) | The driver is not sent the same command again until `inverter.resend_minutes` have passed |
+| `last_command.json` | The last command the driver accepted (action, power, time) | The driver is not sent the same command again until its resend time has passed (a record older than that is treated as expired, so an old file never blocks a command) |
 | `halt.json` | A price outage in progress: cause, when it started, when the last e-mail went out | No early second e-mail, the same outage keeps its start time, and `RECOVERED` reports its full length |
 | `average_mode_planner.json`, `average_mode_guard.json` | The quarter-hour average readings used to detect the meter's behaviour | A detected mode stays detected instead of falling back to "assumed" |
 | `peak_warning.json` | When the last peak warning was sent | No second warning for the same quarter-hour, and the minimum interval still applies |
@@ -678,6 +679,8 @@ for a hypothetical `alphaess`:
 ```python
 # pyscript/modules/inverter_alphaess.py
 SOC_IS_STUB = False            # optional, default False. True = the charge is a placeholder
+COMMAND_HOLD_MINUTES = None    # optional. Minutes the inverter keeps a forced command without a
+                               # refresh, as a positive number. None or left out = unknown
 
 
 def send(action, target_power_kw):
@@ -719,8 +722,8 @@ What the framework does for you:
 - It runs your code in an executor thread, so blocking network calls are fine.
 - It gives each call 10 seconds, then treats it as failed and logs it.
 - It marks decisions `soc_stubbed` while `SOC_IS_STUB` is true.
-- It calls `send` only when the command changed or `inverter.resend_minutes` have passed since the
-  last accepted send (remembered in `state/last_command.json`, also across restarts and shared by
+- It calls `send` only when the command changed or the resend time has passed since the
+  last accepted send (80 % of your `COMMAND_HOLD_MINUTES`, else `inverter.resend_minutes`) (remembered in `state/last_command.json`, also across restarts and shared by
   the planner and the guard). A failed send is not remembered. `idle` is the exception: it is sent
   once when the last command was not `idle` (or none is on record) and is not repeated while idle
   lasts. The `logging` driver is not affected.
@@ -739,9 +742,12 @@ Before you enable a real driver:
       same time from different threads.
 - [ ] Set your own network timeouts. After 10 seconds the call is abandoned, but its thread keeps
       running until it returns.
-- [ ] Make commands idempotent. `send("discharge", 2.5)` may arrive again unchanged, after
-      `inverter.resend_minutes` (default 15). If your inverter needs a faster refresh to hold its
-      mode, lower that setting; `0` sends on every planner cycle and every guard call.
+- [ ] Make commands idempotent. `send("discharge", 2.5)` may arrive again unchanged. If your
+      inverter drops a forced command after some time without a refresh, declare that time in the
+      driver (`COMMAND_HOLD_MINUTES = 10`, a positive number of minutes) and the command is sent
+      again at 80 % of it. If you do not know it, leave the line out: the setting
+      `inverter.resend_minutes` (default 15) applies instead; lower it if the inverter needs a
+      faster refresh, `0` sends on every planner cycle and every guard call.
 - [ ] Make `send("idle", 0)` a real release: it must cancel every forced mode the planner or the
       guard set (forced grid charge, forced export, forced discharge) and put the inverter back on
       its default behaviour. The planner sends it once when it stops a forced mode, and not again
@@ -752,7 +758,8 @@ Before you enable a real driver:
       net grid offtake, which its own discharge lowers, so it adds the power it is commanding back
       before projecting (see [Peak guard](#peak-guard)); the command therefore stays steady instead
       of switching on and off every 30 seconds. Still yours: the guard sends a command only when it
-      changes (the framework repeats it after `inverter.resend_minutes`, but only when the planner
+      changes (the framework repeats it at 80 % of your `COMMAND_HOLD_MINUTES`, else after
+      `inverter.resend_minutes`, but only when the planner
       or the guard calls `send` again), so make sure the inverter holds a discharge command for as
       long as it takes to hear again, and that `send("idle", 0)` really releases it. The add-back
       assumes the commanded power is what the inverter delivers; a driver that clips it (for example

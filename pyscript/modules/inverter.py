@@ -21,8 +21,14 @@ is cancelled or the inverter drops it.
 
 Command de-duplication: the decision log line is written on every call, but the
 driver's send() is called only when the command (action, power rounded to
-0.01 kW) differs from the last command SENT, or when that send is
-resend_minutes old (0 = send on every call). An idle command is the exception:
+0.01 kW) differs from the last command SENT, or when that send is old enough to
+need a refresh. A driver may declare COMMAND_HOLD_MINUTES (a positive number:
+the inverter drops a forced command after about this long without a refresh;
+absent or None = unknown): an unchanged command is then re-sent once its age is
+0.8 x that. Without the declaration resend_minutes applies (0 = send on every
+call). A record older than the window counts as expired, so a stale
+last_command.json after a restart never blocks a send. An idle command is the
+exception:
 it is sent when the last command on record was not idle, or when no command is
 on record (the first call after an install or restart), and then not again
 while idle persists. The last sent command is kept in
@@ -64,6 +70,14 @@ DEFAULT_RESEND_MINUTES = 15
 LAST_COMMAND_FILE = "last_command.json"
 # Rounding of the commanded power when comparing commands (kW).
 POWER_DECIMALS = 2
+# A driver may declare COMMAND_HOLD_MINUTES: the inverter drops a forced command
+# after about this long without a refresh. An unchanged command is then sent
+# again once its age reaches this share of the hold (the margin covers a late
+# cycle). Without the declaration the config resend_minutes applies instead.
+HOLD_ATTRIBUTE = "COMMAND_HOLD_MINUTES"
+RESEND_FRACTION = 0.8
+# Largest hold that is believable (minutes); also rejects infinity and NaN.
+HOLD_LIMIT_MINUTES = 1.0e9
 
 
 def log_path_for(day, log_dir=DEFAULT_LOG_DIR):
@@ -95,6 +109,10 @@ MARKER_READ_FAILED = "inverter_read_failed"
 
 # {driver_dir + "/" + type: loaded driver module}. Successes only.
 _drivers = {}
+
+# {driver key: True} for drivers whose COMMAND_HOLD_MINUTES was already
+# reported as invalid, so the warning is logged once, not on every call.
+_hold_warned = {}
 
 # {state file path: (action, power_kw, sent_at)}. Fallback for when the state
 # file cannot be written: without it an unwritable state dir would send every
@@ -308,14 +326,56 @@ def _last_command(path):
     return found
 
 
-def _should_send(action, target_power_kw, record, resend_minutes, path):
+def _hold_minutes(inverter_type, driver_dir):
+    """The driver's COMMAND_HOLD_MINUTES as a float, or None when unknown.
+
+    Unknown = the driver is not loaded, declares nothing, or declares None. A
+    declaration that is not a positive finite number is ignored with one
+    warning. Never raises.
+    """
+    try:
+        driver, problem = _driver(inverter_type, driver_dir)
+        if driver is None:
+            return None
+        value = getattr(driver, HOLD_ATTRIBUTE, None)
+        if value is None:
+            return None
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not (0 < value < HOLD_LIMIT_MINUTES)):
+            key = "%s/%s" % (driver_dir, inverter_type)
+            if not _hold_warned.get(key):
+                _hold_warned[key] = True
+                log.warning(  # noqa: F821
+                    "inverter: driver %r declares %s = %r, expected a "
+                    "positive number of minutes; ignored, resend_minutes "
+                    "applies" % (inverter_type, HOLD_ATTRIBUTE, value))
+            return None
+        return float(value)
+    except Exception as exc:
+        log.warning(  # noqa: F821
+            "inverter: cannot read %s from driver %r: %r"
+            % (HOLD_ATTRIBUTE, inverter_type, exc))
+        return None
+
+
+def _should_send(action, target_power_kw, record, resend_minutes, path,
+                 hold_minutes=None):
     """True when the driver must be called: new command or the resend is due.
+
+    An unchanged command is due again when its age reaches the resend window:
+    RESEND_FRACTION of the driver's declared hold (hold_minutes), else
+    resend_minutes (0 = every call). A record older than that is expired, so a
+    stale file left by a restart never blocks a needed send.
 
     Any trouble while deciding means send: a repeated command is harmless, a
     withheld one is not.
     """
     try:
-        if resend_minutes <= 0:
+        if hold_minutes is not None:
+            window = RESEND_FRACTION * hold_minutes
+        else:
+            window = resend_minutes
+        if window <= 0:
             return True
         last = _last_command(path)
         if last is None:
@@ -331,7 +391,7 @@ def _should_send(action, target_power_kw, record, resend_minutes, path):
         if not same:
             return True
         age = (record.timestamp - last[2]).total_seconds()
-        return age < 0 or age >= resend_minutes * 60
+        return age < 0 or age >= window * 60
     except Exception as exc:
         log.warning(  # noqa: F821
             "inverter: cannot check the last sent command (%r); sending" % (exc,))
@@ -384,10 +444,12 @@ def apply(action, target_power_kw, record, log_path=None,
                         means log_path_for(record.timestamp, log_dir), the
                         record's own local day
     inverter_type    -- selects driver file inverter_<type>.py in driver_dir
-    resend_minutes   -- the driver gets an unchanged command again only after
+    resend_minutes   -- fallback for drivers that declare no COMMAND_HOLD_MINUTES:
+                        the driver gets an unchanged command again only after
                         this many minutes; 0 = every call (config key
                         inverter.resend_minutes). Idle is never re-sent while
-                        it persists (unless this is 0)
+                        it persists (unless this is 0). A driver that declares
+                        COMMAND_HOLD_MINUTES is re-sent at 0.8 x that instead
     state_dir        -- where last_command.json lives; None = <log_dir>/state
 
     Returns True when the intent was durably recorded, False on any failure
@@ -425,7 +487,9 @@ def apply(action, target_power_kw, record, log_path=None,
         _transmit(action, target_power_kw, inverter_type, driver_dir)
         return True
     path = _state_file(state_dir, log_dir)
-    if _should_send(action, target_power_kw, record, resend_minutes, path):
+    hold = _hold_minutes(inverter_type, driver_dir)
+    if _should_send(action, target_power_kw, record, resend_minutes, path,
+                    hold):
         if _transmit(action, target_power_kw, inverter_type, driver_dir):
             _remember_sent(action, target_power_kw, record, path)
         else:
