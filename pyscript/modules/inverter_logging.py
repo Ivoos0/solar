@@ -13,6 +13,13 @@ THE DRIVER INTERFACE (everything a new inverter has to provide):
                                             # "export" | "idle"; power >= 0 kW,
                                             # 0.0 when idle. Return True on
                                             # success; False or raise = failed.
+                                            # "charge" is a forced charge from
+                                            # the grid.
+
+WHAT "idle" MEANS: send("idle", 0.0) must cancel every forced mode this project
+set (forced grid charge, forced export, forced discharge) and return the
+inverter to its own default behaviour. It is sent once after a forced mode, not
+repeatedly, so it has to be a real release, not a "do nothing for now".
     def read_charge_percent(): ...          # battery charge, 0..100 (float)
 
 Copy this file to inverter_<name>.py and set `inverter.type: <name>`.

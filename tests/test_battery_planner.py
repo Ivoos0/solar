@@ -1614,3 +1614,31 @@ def test_unavailable_sensor_path_unchanged_with_old_stamp(env):
     env.run(T0)
     assert "solar_zero_fallback" in _degraded(env)
     assert _age_warnings(env) == []              # plain failure, no age log
+
+
+# ---- idle releases a forced mode once ---------------------------------------------
+
+def test_forced_charge_then_idle_cycles_send_idle_exactly_once(
+        env, tmp_path, monkeypatch, _clean_drivers):
+    _use_driver(env, tmp_path, "idlerel")
+    mod = env.mod
+    real = mod.rules.decide
+    forced = {"on": True}
+
+    def decide(traj, price_map, bat, grid, cfg, now, **kw):
+        d = real(traj, price_map, bat, grid, cfg, now, **kw)
+        if forced["on"]:
+            return mod.rules.Decision(
+                "charge", 2.0, "S1", "forced", [], [], d.block_start)
+        return mod.rules.Decision(
+            "idle", 0.0, "S6", "hold", [], [], d.block_start)
+
+    monkeypatch.setattr(mod.rules, "decide", decide)
+    env.run(T0)
+    env.run(T0 + STEP)
+    forced["on"] = False
+    for i in range(2, 9):
+        env.run(T0 + i * STEP)
+    sent = sys.modules["inverter_driver_idlerel"].SENT
+    assert sent == [("charge", 2.0), ("idle", 0.0)]
+    assert len(env.decisions()) == 9                      # every cycle logged

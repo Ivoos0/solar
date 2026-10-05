@@ -68,8 +68,17 @@ def read_charge_percent(): ...           # number, 0..100
 ```
 
 `action` is `charge`, `discharge`, `export` or `idle`; power is 0 or more kW and
-0.0 when idle. `inverter_logging.py` is the reference implementation and the
-file to copy.
+0.0 when idle. `charge` is a forced charge from the grid. `inverter_logging.py`
+is the reference implementation and the file to copy.
+
+**`idle` means: cancel every forced mode this project set (forced grid charge,
+forced export, forced discharge) and return the inverter to its default
+behaviour.** That default is what the inverter does when it is sent nothing:
+charge from solar surplus until full, then export; drain to serve the house
+until empty, then use grid power. A driver must therefore make `send("idle",
+0.0)` a real release. It is not "do nothing", because a forced mode stays in
+force until it is cancelled or the inverter drops it. The conformance check
+cannot verify this without hardware; you must.
 
 ## Rules
 
@@ -124,6 +133,13 @@ file to copy.
     unknown and the next call must send. A missing, empty, corrupt or incomplete
     file means "no command on record", never an error. The `logging` driver
     transmits nothing and keeps no record.
+11. **`idle` is sent once.** An `idle` command is sent when the recorded command
+    was not `idle` (a forced mode is in force and must be cancelled), or when no
+    command is on record (the first call after an install or restart). It is
+    not re-sent while idle persists, however old the record is. The planner
+    therefore sends at most one `idle` after a forced action. `resend_minutes: 0`
+    still means every call, `idle` included. A failed `idle` send is not
+    recorded, so the next call sends it again.
 
 ## Settings
 
@@ -138,7 +154,7 @@ on and off; it refreshes a `last_beat` attribute on
 `pyscript.peak_guard_shaving` that the planner requires to be at most 3 guard
 intervals old) and what the driver author must still check (the guard sends a
 command only on change, so the inverter must hold a discharge command until the
-next one and honour `idle`; the add-back assumes the commanded power is
+next one and honour `idle` as defined above; the add-back assumes the commanded power is
 delivered).
 
 ## Adding an inverter

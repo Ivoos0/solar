@@ -963,3 +963,114 @@ def test_apply_signature_is_backwards_compatible(inverter, drivers, tmp_path):
     assert inverter.apply("export", 2.5, record, str(tmp_path / "d.log"),
                           "logging", None, str(tmp_path)) is True
     assert inverter.DEFAULT_RESEND_MINUTES == 15
+
+
+# ---- idle: clear every command we sent, sent once ---------------------------------
+
+def _idle(inverter, tmp_path, minutes, **kw):
+    return _send(inverter, tmp_path, minutes, action="idle", power=0.0, **kw)
+
+
+def _restarted(inverter):
+    spec = importlib.util.spec_from_file_location("inverter_restarted", SRC)
+    fresh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh)
+    fresh.DEFAULT_DRIVER_DIR = inverter.DEFAULT_DRIVER_DIR
+    assert fresh._last_sent == {}
+    return fresh
+
+
+def test_repeated_idle_cycles_send_idle_once(inverter, drivers, tmp_path):
+    for i in range(0, 120, 5):                       # far beyond resend_minutes
+        _idle(inverter, tmp_path, i)
+    assert _sent() == [("idle", 0.0)]
+
+
+def test_forced_to_idle_sends_idle_immediately_then_never_again(
+        inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0, action="charge", power=2.0)
+    _send(inverter, tmp_path, 1, action="charge", power=2.0)
+    _idle(inverter, tmp_path, 2)                     # one minute later
+    assert _sent() == [("charge", 2.0), ("idle", 0.0)]
+    for i in range(3, 60):
+        _idle(inverter, tmp_path, i)
+    assert _sent() == [("charge", 2.0), ("idle", 0.0)]
+
+
+def test_each_forced_mode_is_released_by_one_idle(inverter, drivers, tmp_path):
+    for n, action in enumerate(("charge", "export", "discharge")):
+        _send(inverter, tmp_path, 4 * n, action=action, power=1.5)
+        _idle(inverter, tmp_path, 4 * n + 1)
+        _idle(inverter, tmp_path, 4 * n + 2)
+    assert [a for a, _ in _sent()] == [
+        "charge", "idle", "export", "idle", "discharge", "idle"]
+
+
+def test_first_idle_with_no_command_on_record_is_sent_once(
+        inverter, drivers, tmp_path):
+    _idle(inverter, tmp_path, 0)
+    _idle(inverter, tmp_path, 5)
+    assert _sent() == [("idle", 0.0)]
+
+
+def test_idle_record_survives_a_restart_and_is_not_resent(
+        inverter, drivers, tmp_path):
+    _idle(inverter, tmp_path, 0)
+    fresh = _restarted(inverter)
+    _idle(fresh, tmp_path, 60)                       # hours later, same file
+    assert _sent() == [("idle", 0.0)]
+
+
+def test_forced_record_survives_a_restart_and_idle_then_releases_it(
+        inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0, action="charge", power=2.0)
+    fresh = _restarted(inverter)
+    _idle(fresh, tmp_path, 5)
+    _idle(fresh, tmp_path, 10)
+    # the restarted module loads its own copy of the driver: only idle, once
+    assert _sent() == [("idle", 0.0)]
+
+
+def test_first_idle_after_a_restart_without_a_state_file_is_sent_once(
+        inverter, drivers, tmp_path):
+    fresh = _restarted(inverter)
+    _idle(fresh, tmp_path, 0)
+    _idle(fresh, tmp_path, 5)
+    assert _sent() == [("idle", 0.0)]
+
+
+@pytest.mark.parametrize("mode", ["false", "raise", "slow"])
+def test_failed_idle_send_is_not_recorded_and_is_retried(
+        inverter, drivers, tmp_path, monkeypatch, mode):
+    monkeypatch.setattr(inverter, "DRIVER_TIMEOUT_SECONDS", 0.2)
+    _send(inverter, tmp_path, 0, action="charge", power=2.0)
+    _driver_module("toggle").MODE[0] = mode
+    _idle(inverter, tmp_path, 1)                     # fails
+    assert not (tmp_path / "state" / "last_command.json").exists()
+    _idle(inverter, tmp_path, 2)                     # tried again, fails again
+    _driver_module("toggle").MODE[0] = "ok"
+    _idle(inverter, tmp_path, 3)                     # accepted
+    assert _state_json(tmp_path)["action"] == "idle"
+    _idle(inverter, tmp_path, 4)                     # now de-duplicated
+    assert [a for a, _ in _sent()] == ["charge", "idle", "idle", "idle"]
+
+
+def test_idle_after_idle_is_sent_every_call_when_resend_minutes_is_zero(
+        inverter, drivers, tmp_path):
+    for i in range(3):
+        _idle(inverter, tmp_path, i, resend=0)
+    assert len(_sent()) == 3
+
+
+def test_idle_log_line_is_still_written_every_call(inverter, drivers, tmp_path):
+    for i in range(4):
+        log = _idle(inverter, tmp_path, i)
+    assert len(log.read_text().splitlines()) == 4
+    assert len(_sent()) == 1
+
+
+def test_non_idle_commands_still_resend_after_the_window(
+        inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0, action="charge", power=2.0)
+    _send(inverter, tmp_path, 15, action="charge", power=2.0)
+    assert len(_sent()) == 2

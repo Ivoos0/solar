@@ -12,10 +12,20 @@ Public surface (documented in docs/inverter-boundary.md):
 driver_dir=None means DEFAULT_DRIVER_DIR. state_dir=None means
 <log_dir>/state.
 
+What "idle" means: send("idle", 0.0) cancels every forced mode this project
+set (forced grid charge, forced export, forced discharge) and returns the
+inverter to its own default behaviour (charge from solar surplus until full,
+then export; drain to serve the house until empty, then use grid power).
+Sending nothing is not the same as idle: a forced mode stays in force until it
+is cancelled or the inverter drops it.
+
 Command de-duplication: the decision log line is written on every call, but the
 driver's send() is called only when the command (action, power rounded to
 0.01 kW) differs from the last command SENT, or when that send is
-resend_minutes old (0 = send on every call). The last sent command is kept in
+resend_minutes old (0 = send on every call). An idle command is the exception:
+it is sent when the last command on record was not idle, or when no command is
+on record (the first call after an install or restart), and then not again
+while idle persists. The last sent command is kept in
 <state_dir>/last_command.json, so it survives a restart and is shared by the
 planner and the peak guard (both call apply). A send that failed (exception,
 timeout, False, driver missing) is never recorded and clears the record, so the
@@ -310,6 +320,11 @@ def _should_send(action, target_power_kw, record, resend_minutes, path):
         last = _last_command(path)
         if last is None:
             return True
+        if action == "idle":
+            # idle = clear every command we sent and go back to the inverter's
+            # default. Once is enough: it is sent after a forced command (or
+            # with nothing on record) and never repeated while idle persists.
+            return last[0] != "idle"
         same = (last[0] == action
                 and round(last[1], POWER_DECIMALS)
                 == round(target_power_kw, POWER_DECIMALS))
@@ -371,7 +386,8 @@ def apply(action, target_power_kw, record, log_path=None,
     inverter_type    -- selects driver file inverter_<type>.py in driver_dir
     resend_minutes   -- the driver gets an unchanged command again only after
                         this many minutes; 0 = every call (config key
-                        inverter.resend_minutes)
+                        inverter.resend_minutes). Idle is never re-sent while
+                        it persists (unless this is 0)
     state_dir        -- where last_command.json lives; None = <log_dir>/state
 
     Returns True when the intent was durably recorded, False on any failure

@@ -16,7 +16,11 @@ send those commands. Run it with the inverter disconnected, in a simulator, or
 with your transport mocked.
 
 The interface is documented in pyscript/modules/inverter_logging.py and in the
-README, "Adding an inverter driver". What is checked:
+README, "Adding an inverter driver". What is NOT checked, because it cannot be
+verified without hardware: that send("idle", 0.0) really cancels every forced
+mode this project set (forced grid charge, forced export, forced discharge)
+and returns the inverter to its own default behaviour. Check that yourself.
+What is checked:
 
   * file name inverter_<slug>.py, slug of lowercase letters, digits, underscore
   * importing the file does no network access (checked in a subprocess with

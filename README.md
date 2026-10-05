@@ -15,8 +15,8 @@ Source: <https://github.com/Ivoos0/solar>
 - It does not control your inverter. The default driver, `logging`, sends nothing. To act on the
   decisions you add a driver for your inverter (see [Adding an inverter driver](#adding-an-inverter-driver)).
   None is shipped. When one is enabled, the driver is sent a command only when it changes, and again
-  after `inverter.resend_minutes` (default 15), not on every five-minute cycle. The log line is still
-  written every cycle.
+  after `inverter.resend_minutes` (default 15), not on every five-minute cycle. `idle` is sent once
+  after a forced mode and not repeated while idle lasts. The log line is still written every cycle.
 - With the `logging` driver the battery charge is a fixed 50 %. Every record carries
   `degraded=soc_stubbed`. A driver that reads the real charge removes the marker.
 - Household usage history comes from energy counters you configure (see [Energy history](#energy-history)).
@@ -351,12 +351,16 @@ Selectors, in the order they are tried:
 | S3 | Export when the battery would otherwise overflow and now is the best injection price in the window |
 | S4 | Charge from the grid in the cheapest blocks when that is cheaper than importing later, ahead of the battery reaching the reserve. The comparison is the price now divided by `battery.round_trip_efficiency` against the average buying price (weighted by energy) of the blocks where the house would otherwise import. It needs usage history, like the other price-driven choices |
 | S5 | Charge from the grid when a later injection price, after round-trip losses, beats the price now |
-| S6 | Idle: nothing applies, so the planner sends nothing and the inverter does what it does by default (see below) |
+| S6 | Idle: nothing applies, so the planner cancels any forced mode and the inverter does what it does by default (see below) |
 
 There is no S2. Storing surplus solar needs no rule: the inverter's own default does it. By default
 the inverter charges the battery from solar surplus until it is full and then exports, and drains it to
 serve the house until it is empty and then uses grid power. The planner only steps in when it wants
 something different (peak shaving, charging from the grid, exporting); the rest of the time it idles.
+
+Idle is a command, not silence: it cancels every forced mode the planner or the guard set (forced
+grid charge, forced export, forced discharge) and returns the inverter to that default. It is sent
+once after a forced mode, and not repeated while the planner keeps idling.
 
 In this README, "charge" always means charge from the grid.
 
@@ -677,8 +681,12 @@ SOC_IS_STUB = False            # optional, default False. True = the charge is a
 
 
 def send(action, target_power_kw):
-    """action: "charge" | "discharge" | "export" | "idle". Power in kW, >= 0, 0.0 when idle.
-    Return True when the inverter accepted it. Return False or raise when it did not."""
+    """action: "charge" (forced charge from the grid) | "discharge" | "export" | "idle".
+    Power in kW, >= 0, 0.0 when idle. Return True when the inverter accepted it. Return False or
+    raise when it did not.
+
+    "idle" means: cancel every forced mode this project set (forced grid charge, forced export,
+    forced discharge) and return the inverter to its default behaviour. It is not "do nothing"."""
     ...  # talk to your inverter here
 
 
@@ -713,7 +721,9 @@ What the framework does for you:
 - It marks decisions `soc_stubbed` while `SOC_IS_STUB` is true.
 - It calls `send` only when the command changed or `inverter.resend_minutes` have passed since the
   last accepted send (remembered in `state/last_command.json`, also across restarts and shared by
-  the planner and the guard). A failed send is not remembered. The `logging` driver is not affected.
+  the planner and the guard). A failed send is not remembered. `idle` is the exception: it is sent
+  once when the last command was not `idle` (or none is on record) and is not repeated while idle
+  lasts. The `logging` driver is not affected.
 - If the driver file is missing, the HA log shows an error every cycle, nothing is sent and decisions
   carry `degraded=inverter_driver_unavailable`. Adding the file needs no restart. After editing an
   existing driver, restart Home Assistant.
@@ -732,6 +742,10 @@ Before you enable a real driver:
 - [ ] Make commands idempotent. `send("discharge", 2.5)` may arrive again unchanged, after
       `inverter.resend_minutes` (default 15). If your inverter needs a faster refresh to hold its
       mode, lower that setting; `0` sends on every planner cycle and every guard call.
+- [ ] Make `send("idle", 0)` a real release: it must cancel every forced mode the planner or the
+      guard set (forced grid charge, forced export, forced discharge) and put the inverter back on
+      its default behaviour. The planner sends it once when it stops a forced mode, and not again
+      while it stays idle. The conformance check cannot test this without your hardware.
 - [ ] Decide what the inverter does when commands stop. A failed `send` is logged and is not counted
       as sent, so the next decision tries it again.
 - [ ] Know what the peak guard already handles, and what is left to you. Handled: the guard reads
