@@ -234,7 +234,7 @@ instead of `send`. If `plan` exists it is used and `send` is ignored. Existing
 otherwise lowercase letters, digits and underscore), `inverter.dry_run`
 (default `false`; see above) and `inverter.resend_minutes`
 (the fallback resend time for drivers that declare no `COMMAND_HOLD_MINUTES`; see
-the README settings table).
+the [settings reference](configuration.md#settings-reference)).
 
 A non-`logging` driver sends real commands and is your responsibility. The
 [driver checklist](inverter-drivers.md#adding-an-inverter-driver) covers what the peak guard already handles (it adds the

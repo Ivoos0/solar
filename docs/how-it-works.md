@@ -38,7 +38,7 @@ next decision. The peak guard and the peak warning are not affected; they re-che
 Price outage: if prices are missing, unparseable or already elapsed, no decisions are made. A `HALT`
 line is logged each cycle, one e-mail is sent on entry and then at most one per
 `alerts.realert_minutes`, and a `RECOVERED` line is logged when prices return. The e-mail names the
-cause. Check the price entity and attribute (see [Configure](../README.md#configure)). If the ENTSO-e integration
+cause. Check the price entity and attribute (see [Configure](configuration.md#configure)). If the ENTSO-e integration
 itself is down, wait for it; the planner resumes by itself.
 
 Forecast outage: solar counts as zero, the record is marked `solar_zero_fallback`, and the planner
