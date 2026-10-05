@@ -22,7 +22,7 @@ Source: <https://github.com/Ivoos0/solar>
 - Household usage history comes from energy counters you configure (see [Energy history](#energy-history)).
   Until a `load` counter (or `solar` plus both battery counters) is configured, records carry
   `usage_history_unavailable` and the planner holds: it does nothing price-driven (no charging from
-  the grid or from surplus solar, no exporting) and logs idle with the reason "no usage history:
+  the grid, no exporting) and logs idle with the reason "no usage history:
   planner holds". Only peak protection still acts, because it reads the live grid reading and does
   not need history. While the planner holds, the inverter's own behaviour applies.
 
@@ -339,7 +339,7 @@ Vetoes:
 | V1 | export | Charge is at or below `battery.reserve_percent`. Only exporting to the grid is forbidden; peak shaving may still use charge below it |
 | V2 | export | The injection price is negative |
 | V3 | grid charging | No capacity budget is left in this quarter-hour |
-| V4 | grid charging, solar charging, export | There is no usable usage history. Peak shaving (S0) is not affected |
+| V4 | grid charging, export | There is no usable usage history. Peak shaving (S0) is not affected |
 | V5 | discharge | The battery is empty (0 % charge). The planner cannot know your inverter's own minimum charge, so this is the only lower limit it applies to peak shaving |
 
 Selectors, in the order they are tried:
@@ -348,11 +348,17 @@ Selectors, in the order they are tried:
 |---|---|
 | S0 | Peak shave: discharge to the house when the quarter-hour is heading above the ceiling. Mostly relevant when the planner is holding energy back (see [Peak guard](#peak-guard)) |
 | S1 | Charge from the grid while the consumption price is negative |
-| S2 | Charge from surplus solar when storing it beats exporting now |
 | S3 | Export when the battery would otherwise overflow and now is the best injection price in the window |
 | S4 | Charge from the grid in the cheapest blocks when that is cheaper than importing later, ahead of the battery reaching the reserve. The comparison is the price now divided by `battery.round_trip_efficiency` against the average buying price (weighted by energy) of the blocks where the house would otherwise import. It needs usage history, like the other price-driven choices |
 | S5 | Charge from the grid when a later injection price, after round-trip losses, beats the price now |
-| S6 | Idle |
+| S6 | Idle: nothing applies, so the planner sends nothing and the inverter does what it does by default (see below) |
+
+There is no S2. Storing surplus solar needs no rule: the inverter's own default does it. By default
+the inverter charges the battery from solar surplus until it is full and then exports, and drains it to
+serve the house until it is empty and then uses grid power. The planner only steps in when it wants
+something different (peak shaving, charging from the grid, exporting); the rest of the time it idles.
+
+In this README, "charge" always means charge from the grid.
 
 Grid charging never exceeds the budget: the charging level (`stay_under_percent` of the ceiling) minus
 what the house is drawing. In the last minute of a quarter-hour the budget is 0.
@@ -385,7 +391,7 @@ power counts only while the guard keeps confirming the shave (within two guard i
 with the `logging` driver, which commands nothing.
 
 Shaving matters mainly when the planner itself is holding energy back from the house. The planner
-does that when it charges the battery from the grid or stores surplus solar. The grid then supplies
+does that when it charges the battery from the grid. The grid then supplies
 the household plus the charge, and a sudden load can push the quarter-hour over the ceiling. The
 guard then discharges to cut the grid draw, and the planner stops grid-charging while it shaves. If
 your inverter already runs the house from the battery whenever it has charge, the grid draw is low

@@ -270,7 +270,7 @@ def test_s0_vetoed_by_v1_and_v3_leaves_idle(site_config):
 
 def test_s1_fires_at_minus_one_milli_not_at_zero(site_config):
     d = go(site_config, [(-0.001, 0.02), FLAT], g=CALM)
-    assert (d.selector, d.action, d.charge_source) == ("S1", "charge", "grid")
+    assert (d.selector, d.action) == ("S1", "charge")
     assert d.target_power_kw == 5.0
     assert "-0.0010" in d.reasoning
     d0 = go(site_config, [(0.0, 0.02), FLAT], g=CALM)
@@ -294,152 +294,81 @@ def test_s1_uncapped_when_no_grid_state(site_config):
     assert d.target_power_kw == 5.0
 
 
-# ---- V3 vs solar ---------------------------------------------------------
+# ---- V3 and the inverter's default behaviour ----------------------------
 
-def test_v3_blocks_grid_charge_but_not_solar_charge(site_config):
+def test_v3_blocks_grid_charge_and_leaves_solar_to_the_default(site_config):
     # Budget exhausted. Grid charge (S1, cons -0.05) is suppressed by V3 ...
     d = go(site_config, [(-0.05, 0.02)] * 2, g=EXHAUSTED)
     assert d.vetoes_fired == ["V3"]
     # S5 also proposes a grid charge (later 0.02*0.9 = 0.018 > -0.05): vetoed.
     assert d.suppressed == [("S1", "charge", "V3"), ("S5", "charge", "V3")]
     assert d.selector == "S6" and d.action == "idle"
-    # ... but solar charging is untouched: surplus 1.0-0.4 = 0.6 kWh -> 2.4 kW.
+    # ... and surplus solar asks for nothing: the inverter stores it by default.
     d2 = go(site_config, [(0.20, 0.02), (0.20, 0.10)], g=EXHAUSTED,
             solar={0: 1.0}, usage={0: 0.4})
     assert d2.vetoes_fired == ["V3"]
-    assert (d2.selector, d2.action, d2.charge_source) == (
-        "S2", "charge", "solar")
-    assert d2.target_power_kw == pytest.approx(2.4)
+    assert (d2.selector, d2.action, d2.target_power_kw) == ("S6", "idle", 0.0)
 
 
-# ---- S2 -------------------------------------------------------------------
+# ---- surplus solar is the inverter's default, not a rule ------------------
 
-def test_s2_fires_and_quotes_numbers(site_config):
-    # surplus 1.0-0.4 = 0.6 kWh = 2.4 kW; later 0.20*0.9 = 0.18 > now 0.05.
+def test_sunny_with_room_and_positive_price_is_idle_not_a_forced_charge(
+        site_config):
+    # Surplus 1.0 - 0.4 = 0.6 kWh, battery 50 % (headroom), positive prices,
+    # a better injection price later: the old S2 forced a charge here. The
+    # inverter charges from surplus on its own, so the planner sends idle.
     d = go(site_config, [(0.20, 0.05), (0.20, 0.20)],
            solar={0: 1.0}, usage={0: 0.4})
-    assert (d.selector, d.action) == ("S2", "charge")
-    assert d.target_power_kw == pytest.approx(2.4)
-    assert "0.1800" in d.reasoning and "0.0500" in d.reasoning
+    assert (d.selector, d.action, d.target_power_kw) == ("S6", "idle", 0.0)
+    assert d.vetoes_fired == [] and d.suppressed == []
+    assert "S2" not in d.reasoning
+    assert "default behaviour" in d.reasoning
 
 
-def test_s2_power_limited_by_inverter(site_config):
-    # surplus 2.0 kWh = 8 kW -> min(8, 5) = 5
-    d = go(site_config, [(0.20, 0.05), (0.20, 0.20)],
-           solar={0: 2.0}, usage={0: 0.0})
-    assert d.selector == "S2" and d.target_power_kw == 5.0
+def test_no_selector_is_named_s2(site_config):
+    assert not hasattr(_rules, "_s2")
+    assert "S2" not in [n for n, _ in _rules._SELECTORS]
+    assert not hasattr(_rules, "FORBID_SOLAR_CHARGE")
+    assert not hasattr(_rules.Proposal("idle", 0.0, "r"), "charge_source")
 
 
-def test_s2_not_when_battery_full(site_config):
-    d = go(site_config, [(0.20, 0.05), (0.20, 0.20)], pct=100.0,
-           solar={0: 1.0}, usage={0: 0.4})
-    assert d.selector != "S2"
-
-
-def test_s2_not_without_solar_surplus(site_config):
-    d = go(site_config, [(0.20, 0.05), (0.20, 0.20)],
-           solar={0: 0.3}, usage={0: 0.4})
-    assert d.selector != "S2"
-
-
-@pytest.mark.parametrize("later,fires", [
-    (0.12, True),     # 0.12*0.9 = 0.108 > 0.10
-    (0.111, False),   # 0.111*0.9 = 0.0999 < 0.10
-    (0.11, False),    # 0.099 < 0.10
+@pytest.mark.parametrize("plist", [
+    [(0.15, -0.02), (0.15, -0.02)],      # flat negative
+    [(0.15, -0.02), (0.15, -0.019)],     # later slightly better
+    [(0.15, -0.02), (0.15, -0.03)],      # later worse
+    [(0.15, -0.02)],                     # last horizon block
 ])
-def test_s2_efficiency_threshold(site_config, later, fires):
-    d = go(site_config, [(0.20, 0.10), (0.20, later)],
-           solar={0: 1.0}, usage={0: 0.4})
-    assert (d.selector == "S2") is fires
-
-
-def test_s2_stands_aside_when_now_is_best_price_and_s3_takes_it(site_config):
-    # Same solar surplus, but injection now 0.20 is the best (later 0.10*0.9
-    # = 0.09 < 0.20) -> S2 stands aside; spill ahead -> S3 exports at 5 kW.
-    d = go(site_config, [(0.30, 0.20), (0.30, 0.10)],
-           solar={0: 1.0}, usage={0: 0.4}, spill=1.0)
-    assert (d.selector, d.action) == ("S3", "export")
-    assert d.target_power_kw == 5.0
-
-
-# ---- S2 with negative injection ---------------------------
-# Common numbers: default site, 50 % = 5.0 kWh (headroom 5.0); block 0 solar
-# 1.0, usage 0.4 -> surplus 0.6 kWh = 2.4 kW (<= 5 kW inverter); spill 2.0.
-
-def _neg_inj(site_config, plist, **kw):
-    return go(site_config, plist, solar={0: 1.0}, usage={0: 0.4}, spill=2.0,
-              **kw)
-
-
-def test_flat_negative_injection_horizon_s2_charges_not_idle(site_config):
-    # -0.02 now and later. Later after losses: -0.02 * 0.9 = -0.018 > -0.02
-    # (plain multiplication; dividing gave -0.0222 and idled). Also (c)'s
-    # first clause: now < 0. S2 outranks S3, so the vetoed S3 export is never
-    # reached (nothing suppressed); V2 fired and would have blocked it.
-    d = _neg_inj(site_config, [(0.15, -0.02), (0.15, -0.02)])
+def test_negative_injection_neither_exports_nor_forces_a_charge(
+        site_config, plist):
+    # Block 0 solar 1.0, usage 0.4, spill ahead 2.0: V2 forbids export, and
+    # storing the surplus is the inverter's own default -> idle.
+    d = go(site_config, plist, solar={0: 1.0}, usage={0: 0.4}, spill=2.0)
     assert d.vetoes_fired == ["V2"]
-    assert d.suppressed == []
-    assert (d.selector, d.action, d.charge_source) == ("S2", "charge", "solar")
-    assert d.target_power_kw == pytest.approx(2.4)
+    assert (d.selector, d.action) == ("S6", "idle")
 
 
-def test_later_slightly_better_negative_s2_charges(site_config):
-    # now -0.02, later -0.019: -0.019 * 0.9 = -0.0171 > -0.02 -> S2.
-    d = _neg_inj(site_config, [(0.15, -0.02), (0.15, -0.019)])
-    assert (d.selector, d.action, d.charge_source) == ("S2", "charge", "solar")
-    assert d.target_power_kw == pytest.approx(2.4)
-
-
-def test_later_more_negative_still_s2(site_config):
-    # now -0.02, later -0.03: -0.03 * 0.9 = -0.027 < -0.02 so the comparison
-    # fails, but injection now < 0 fires S2 regardless.
-    d = _neg_inj(site_config, [(0.15, -0.02), (0.15, -0.03)])
-    assert (d.selector, d.action, d.charge_source) == ("S2", "charge", "solar")
-    assert d.target_power_kw == pytest.approx(2.4)
-
-
-def test_last_horizon_block_negative_injection_s2(site_config):
-    # Only one block: no later price at all; -0.02 < 0 -> S2 at 2.4 kW.
-    d = _neg_inj(site_config, [(0.15, -0.02)])
-    assert (d.selector, d.action, d.charge_source) == ("S2", "charge", "solar")
-    assert d.target_power_kw == pytest.approx(2.4)
-
-
-def test_negative_injection_without_headroom_no_s2(site_config):
-    d = _neg_inj(site_config, [(0.15, -0.02), (0.15, -0.019)], pct=100.0)
-    assert d.selector != "S2"
-
-
-def test_nonnegative_injection_keeps_old_comparison(site_config):
-    # injection now 0.0 (not < 0), no later block: (c) false, S2 aside.
-    d = go(site_config, [(0.15, 0.0)], solar={0: 1.0}, usage={0: 0.4},
-           spill=2.0)
-    assert d.selector != "S2"
-    # now 0.0, later 0.0: 0.0 * 0.9 = 0.0 is not > 0.0 -> no S2 either.
+def test_nonnegative_injection_surplus_is_also_idle(site_config):
     d = go(site_config, [(0.15, 0.0), (0.15, 0.0)], solar={0: 1.0},
-           usage={0: 0.4}, spill=2.0)
-    assert d.selector != "S2"
+           usage={0: 0.4})
+    assert (d.selector, d.action) == ("S6", "idle")
 
 
 # ---- REGRESSION scenarios -------------------------------------------------
 
-def test_regression_negative_injection_does_not_stop_solar_absorption(
-        site_config):
-    """Original chain ended at the export veto and idled while solar went to
-    the grid. V2 must forbid export, evaluation CONTINUES, S2 charges.
+def test_regression_negative_injection_does_not_end_the_chain(site_config):
+    """V2 forbids export and evaluation CONTINUES (it does not end the chain).
 
-    Hand numbers: battery 50 % = 5.0 kWh (headroom 5.0). Block 0: solar 1.0,
-    usage 0.4 -> surplus 0.6 kWh = 2.4 kW. Injection now -0.02 (V2 fires);
-    best later injection 0.10 * 0.90 = 0.09 > -0.02 -> S2 fires: charge 2.4 kW
-    from solar. Spill ahead (2.0) means S3 WOULD have exported had V2 not
-    been in force, so the veto is genuinely exercised.
+    Hand numbers: battery 50 % (headroom 5.0). Block 0: solar 1.0, usage 0.4.
+    Injection now -0.02 (V2 fires); later 0.10. S3 sees a later block with a
+    better price and stands aside; S5 needs 0.10 * 0.90 = 0.09 > consumption
+    0.15, which fails. Nothing applies: idle, and the inverter's default
+    stores the solar surplus. Nothing is exported at the negative price.
     """
     d = go(site_config, [(0.15, -0.02), (0.15, 0.05), (0.15, 0.10)],
            solar={0: 1.0}, usage={0: 0.4}, spill=2.0)
     assert d.vetoes_fired == ["V2"]
-    assert (d.selector, d.action, d.charge_source) == ("S2", "charge", "solar")
-    assert d.target_power_kw == pytest.approx(2.4)
-    assert d.action != "idle" and d.action != "export"
+    assert (d.selector, d.action) == ("S6", "idle")
+    assert d.action != "export"
 
 
 def test_regression_reserve_floor_does_not_stop_negative_price_charging(
@@ -452,7 +381,7 @@ def test_regression_reserve_floor_does_not_stop_negative_price_charging(
     """
     d = go(site_config, [(-0.05, 0.05), FLAT], pct=10.0, g=CALM)
     assert d.vetoes_fired == ["V1"]
-    assert (d.selector, d.action, d.charge_source) == ("S1", "charge", "grid")
+    assert (d.selector, d.action) == ("S1", "charge")
     assert d.target_power_kw == 5.0
 
 
@@ -558,7 +487,7 @@ def test_s4_cheapest_n_before_breach(site_config, now_i, fires, frag):
            shortfall=S4_SHORT)
     assert (d.selector == "S4") is fires
     if fires:
-        assert d.action == "charge" and d.charge_source == "grid"
+        assert d.action == "charge"
         assert d.target_power_kw == 5.0
         assert "cheapest " + frag[0] in d.reasoning
         assert "cutoff " + frag[1] in d.reasoning
@@ -627,7 +556,7 @@ def test_s5_efficiency_threshold(site_config, later, fires):
     d = go(site_config, [(0.20, 0.02), (0.30, later)])
     assert (d.selector == "S5") is fires
     if fires:
-        assert d.action == "charge" and d.charge_source == "grid"
+        assert d.action == "charge"
         assert d.target_power_kw == 5.0
         assert "10:15" in d.reasoning        # names the target block
 
@@ -787,8 +716,9 @@ def test_regression_with_real_projection():
     solar [1.5, 2.5, 2.5, 0.5], usage 0.5 each. b0 surplus 1.0 (headroom 2.0)
     -> absorbed, charge 3.0; b1 surplus 2.0, headroom 1.0 -> absorb 1.0,
     spill 1.0, FULL (saturation block 1). Injection: b0 -0.02, then 0.10.
-    V2 fires; S2: 0.10*0.90 = 0.09 > -0.02 -> charge from solar at
-    surplus 1.0 kWh / 0.25 h = 4 kW (< 8 kW inverter).
+    V2 fires; S3 (spill ahead, now the best injection in its window) wants to
+    export at the negative price and is suppressed by V2; nothing else
+    applies, so the planner sends idle and the inverter's default stores it.
     """
     cfg = fx.site(4.0, 8.0, 4.0)
     st = battery.from_percent(50.0, cfg)
@@ -800,8 +730,8 @@ def test_regression_with_real_projection():
     assert traj.total_spill_kwh > 0 and traj.saturation_block is not None
     d = decide(traj, pmap, st, None, cfg, fx.START + timedelta(minutes=2))
     assert d.vetoes_fired == ["V2"]
-    assert (d.selector, d.action, d.charge_source) == ("S2", "charge", "solar")
-    assert d.target_power_kw == pytest.approx(4.0)
+    assert (d.selector, d.action) == ("S6", "idle")
+    assert d.suppressed == [("S3", "export", "V2")]
 
 
 # ---- V4 no usage profile ----------------------------------------------------
@@ -811,7 +741,7 @@ ARB = [(0.10, 0.02), (0.10, 0.50), (0.10, 0.50)]
 # ARB: 0.50 * 0.9 = 0.45 > 0.10 -> S5 arbitrage grid charge when history is ok.
 
 
-V4_FORBIDS = {"grid_charge", "export", "solar_charge"}
+V4_FORBIDS = {"grid_charge", "export"}
 
 
 def test_v4_default_is_the_safe_value_and_holds_price_selectors(site_config):
@@ -863,26 +793,23 @@ def test_v4_blocks_s5_arbitrage_grid_charge(site_config):
 
 def test_history_present_lets_s1_and_s5_grid_charge(site_config):
     d = go(site_config, [NEG] * 3, history=True)
-    assert (d.selector, d.action, d.charge_source) == ("S1", "charge", "grid")
+    assert (d.selector, d.action) == ("S1", "charge")
     assert d.vetoes_fired == [] and d.suppressed == []
     d = go(site_config, ARB, history=True)
-    assert (d.selector, d.action, d.charge_source) == ("S5", "charge", "grid")
+    assert (d.selector, d.action) == ("S5", "charge")
     assert d.vetoes_fired == []
 
 
-def test_v4_holds_solar_absorption(site_config):
-    # solar 1.0 kWh vs usage 0 (meaningless without history), injection
-    # negative -> S2 would store it; V4 forbids solar_charge.
+def test_v4_surplus_solar_is_idle_with_or_without_history(site_config):
+    # Surplus solar asks for nothing (the inverter stores it by default), so
+    # history makes no difference; V4 only reports itself.
     d = go(site_config, [(0.20, -0.05)] * 3, solar={0: 1.0}, history=False)
     assert (d.selector, d.action, d.target_power_kw) == ("S6", "idle", 0.0)
     assert d.vetoes_fired == ["V2", "V4"]
-    assert d.suppressed == [("S2", "charge", "V4")]
+    assert d.suppressed == []
     assert "no usage history: planner holds" in d.reasoning
-
-
-def test_history_present_lets_s2_store_solar(site_config):
     d = go(site_config, [(0.20, -0.05)] * 3, solar={0: 1.0}, history=True)
-    assert (d.selector, d.action, d.charge_source) == ("S2", "charge", "solar")
+    assert (d.selector, d.action) == ("S6", "idle")
     assert d.vetoes_fired == ["V2"] and d.suppressed == []
 
 

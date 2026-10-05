@@ -11,7 +11,9 @@ the daily cleanup at 03:30 local time.
 The decision is written by the inverter boundary before any driver is called
 (see [inverter-boundary.md](inverter-boundary.md)). The labels `V1` to `V5` and
 `S0` to `S6` are explained in the README under
-[Labels in the decision log](../README.md#labels-in-the-decision-log).
+[Labels in the decision log](../README.md#labels-in-the-decision-log). There is
+no `S2`: storing surplus solar is the inverter's own default, so no rule is
+needed, and the other labels keep their numbers.
 
 ## Format
 
@@ -74,13 +76,13 @@ vetoes=V2(suppressed S3 export) | selector=S6 |
 # several vetoes block the same proposal: joined with +
 vetoes=V1+V2(suppressed S3 export) | selector=S6 | ...
 
-# a veto fired but blocked nothing (S2 won first): written bare
-vetoes=V2 | selector=S2 |
-  why="injection -0.0043; surplus 2.4kW, headroom 3.2kWh, charging from solar"
+# a veto fired but blocked nothing: written bare
+vetoes=V2 | selector=S6 |
+  why="hold: nothing applies, the inverter keeps its default behaviour - ..."
 ```
 
 Several suppressed proposals are separate entries, for example
-`V4(suppressed S1 charge),V4(suppressed S2 charge)`. A record that shows a veto
+`V4(suppressed S1 charge),V4(suppressed S5 charge)`. A record that shows a veto
 always also shows the selector that finally fired.
 
 | Label | Forbids | Fires when |
@@ -88,7 +90,7 @@ always also shows the selector that finally fired.
 | V1 | export | Charge is at or below `battery.reserve_percent` |
 | V2 | export | The injection price is negative |
 | V3 | grid charging | No capacity budget is left in this quarter-hour |
-| V4 | grid charging, solar charging, export | There is no usable usage history |
+| V4 | grid charging, export | There is no usable usage history |
 | V5 | discharge | The battery is empty (0 % charge) |
 
 V4 fires on every cycle until the energy history holds a known household load

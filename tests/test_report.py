@@ -79,7 +79,7 @@ def test_parses_real_lines_and_counts_by_hand():
         line(local(8), "charge", "S1", power=2.0, avg=1.0, ceiling=2.5,
              budget=1.5, degraded=["soc_stubbed", "usage_samples=3"]),
         line(local(9), "idle", "S6", vetoes=["V4(suppressed S1 charge)",
-                                             "V4(suppressed S2 charge)"],
+                                             "V4(suppressed S5 charge)"],
              avg=2.2, ceiling=2.5, budget=-0.4,
              degraded=["soc_stubbed"]),
         line(local(10), "export", "S3", vetoes=["V1+V2(suppressed S3 export)"],

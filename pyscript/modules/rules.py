@@ -26,9 +26,21 @@ Entry point
                  selector (S1-S5); only peak shaving (S0) still acts.
 
 Decision fields: action (charge|discharge|export|idle), target_power_kw,
-selector ("S0".."S6"), reasoning, vetoes_fired (["V1", ...]), suppressed
-([(selector, action, blocking_veto)]), charge_source ("grid"|"solar"|None,
-only for charge), block_start (current block).
+selector ("S0", "S1", "S3".."S6"), reasoning, vetoes_fired (["V1", ...]),
+suppressed ([(selector, action, blocking_veto)]), block_start (current block).
+There is no S2: storing surplus solar is what the inverter does by default
+(see "The inverter's default behaviour"), so no rule is needed. The numbering
+is kept so labels in old logs keep their meaning. ``charge`` always means
+charge from the grid.
+
+The inverter's default behaviour
+--------------------------------
+When the planner sends nothing the inverter charges from solar surplus until
+full and then exports, and drains to serve the house until empty and then uses
+grid power. Sending ``idle`` returns it to that default. The rules therefore
+only ever ASK for something that differs from the default: peak shaving,
+grid charging, forced export. S6 (idle) means "leave the inverter to its
+default", not "do nothing".
 
 Structure (the point of this module)
 ------------------------------------
@@ -40,13 +52,12 @@ whose condition simply does not hold is NOT recorded. S6 (idle) is never
 forbidden, so the loop always terminates.
 
 Action classes a veto can forbid: "discharge" (serve the house from the
-battery), "export" (discharge to the grid), "grid_charge", "solar_charge"
-(store surplus solar: a charge proposal with charge_source "solar").
+battery), "export" (discharge to the grid), "grid_charge" (charge from the
+grid).
   V1  charge_percent <= reserve_percent  -> {"export"} only
   V2  injection_price < 0 (0.0 does not) -> {"export"} only
   V3  capacity budget_kw <= 0            -> {"grid_charge"} only
-  V4  no usable usage history            -> {"grid_charge", "export",
-                                             "solar_charge"}
+  V4  no usable usage history            -> {"grid_charge", "export"}
   V5  battery empty (charge_percent <= 0
       or stored_kwh <= 0)                -> {"discharge"} only
 RESERVE SEMANTICS: reserve_percent limits what the battery may EXPORT to the
@@ -59,8 +70,8 @@ the battery is truly empty. V5 is a separate veto (not buried in S0) so an empty
 battery shows up in the record's vetoes field as V5(suppressed S0 discharge).
 V4 ("no usage profile"): without history the trajectory cannot know the
 household load. A grid charge could land on top of an unseen peak, and the
-"solar > usage now" test of S2 and the spill/saturation maths of S3 are
-meaningless at zero usage. So every price-driven selector (S1-S5) is held and
+spill/saturation maths of S3 are meaningless at zero usage. So every
+price-driven selector (S1, S3-S5) is held and
 the planner falls through to idle (S6), whose reasoning says "no usage history:
 planner holds". V4 does NOT forbid "discharge": the only discharge proposal is
 S0 peak shaving, which does not depend on usage history (it reads the live grid
@@ -69,7 +80,6 @@ battery, can stop it). V4 fires whether or not capacity logic is active.
 V3 and the grid-charge cap use the budget against stay_under_percent of the
 ceiling (capacity.charging_ceiling_kw), e.g. 80 % of 2.5 kW = 2.0 kW; S0 and
 the reported ceiling still use the real ceiling.
-Solar charging is forbidden only by V4.
 
 Resolved ambiguities / documented readings
 ------------------------------------------
@@ -77,19 +87,13 @@ Resolved ambiguities / documented readings
   ALWAYS price * efficiency, for every sign of price. Storing 1 kWh returns
   only eff kWh later, so exporting later at a negative price costs LESS than
   now (-0.02 * 0.9 = -0.018 > -0.02); dividing would invert that.
-* S2 condition (c) is EITHER injection_price_now < 0 (storing beats paying to
-  export, whatever later prices are, including the last horizon block) OR the
-  best later injection price after losses beats the price now.
-* "Best remaining" injection price (S2, S5) = priced blocks strictly AFTER the
+* "Best remaining" injection price (S5) = priced blocks strictly AFTER the
   current block, to the horizon end. S3 compares against the window
   [current block, saturation_block) which includes now.
 * S3/S4 window is [current, boundary): boundary = saturation_block (S3) /
   reserve_breach_block (S4), or the horizon end when that is None. If the
   boundary is at or before the current block the window is just the current
   block (saturation/breach is imminent, so acting now is the only option).
-* S2 "solar > usage now" uses the current block's solar_kwh vs usage_kwh; the
-  charge power is min(surplus kW, max_charge_kw). It charges from solar so V3 does not
-  apply; only V4 (no usage history, where "solar > usage" means nothing) holds it.
 * S4 shortfall = sum of grid_shortfall_kwh over the trajectory (load the grid
   must serve because the battery sits at the floor); N = max(1, ceil(shortfall
   / (max_charge_kw * block_hours))), capped at the window size. "Among the
@@ -122,14 +126,12 @@ import capacity
 FORBID_DISCHARGE = "discharge"
 FORBID_EXPORT = "export"
 FORBID_GRID_CHARGE = "grid_charge"
-FORBID_SOLAR_CHARGE = "solar_charge"
 
 VETO_FORBIDS = {
     "V1": frozenset({FORBID_EXPORT}),
     "V2": frozenset({FORBID_EXPORT}),
     "V3": frozenset({FORBID_GRID_CHARGE}),
-    "V4": frozenset({FORBID_GRID_CHARGE, FORBID_EXPORT,
-                    FORBID_SOLAR_CHARGE}),
+    "V4": frozenset({FORBID_GRID_CHARGE, FORBID_EXPORT}),
     "V5": frozenset({FORBID_DISCHARGE}),
 }
 
@@ -140,10 +142,9 @@ class NoCurrentBlockError(Exception):
 
 @dataclass(frozen=True)
 class Proposal:
-    action: str            # charge | discharge | export | idle
+    action: str            # charge (from the grid) | discharge | export | idle
     target_power_kw: float
     reasoning: str
-    charge_source: object = None   # "grid" | "solar" | None
 
     @property
     def action_class(self):
@@ -152,10 +153,8 @@ class Proposal:
             return FORBID_EXPORT
         if self.action == "discharge":
             return FORBID_DISCHARGE
-        if self.action == "charge" and self.charge_source == "grid":
+        if self.action == "charge":
             return FORBID_GRID_CHARGE
-        if self.action == "charge" and self.charge_source == "solar":
-            return FORBID_SOLAR_CHARGE
         return None
 
 
@@ -167,7 +166,6 @@ class Decision:
     reasoning: str
     vetoes_fired: list = field(default_factory=list)
     suppressed: list = field(default_factory=list)  # (selector, action, veto)
-    charge_source: object = None
     block_start: object = None
 
 
@@ -331,44 +329,7 @@ def _s1(ctx):
     return Proposal(
         "charge", kw,
         "consumption price %.4f EUR/kWh is negative (paid to consume): "
-        "charge from grid at %.2f kW%s" % (p.consumption_price, kw, note),
-        "grid")
-
-
-def _s2(ctx):
-    p, b = ctx.price_now, ctx.block
-    if p is None or ctx.battery.headroom_kwh <= 0:
-        return None
-    surplus = b.solar_kwh - b.usage_kwh
-    if surplus <= 0:
-        return None
-    best = _later_best_injection(ctx)
-    eff = ctx.config.round_trip_efficiency
-    kw = min(surplus / ctx.hours, ctx.config.max_charge_kw)
-    if p.injection_price < 0:
-        return Proposal(
-            "charge", kw,
-            "solar surplus %.2f kWh this block (solar %.2f, usage %.2f), "
-            "headroom %.2f kWh; injection now %.4f EUR/kWh is negative "
-            "(exporting would cost money): store it, charge %.2f kW"
-            % (surplus, b.solar_kwh, b.usage_kwh, ctx.battery.headroom_kwh,
-               p.injection_price, kw),
-            "solar")
-    if best is None:
-        return None
-    value = _after_losses(best[1].injection_price, eff)
-    if not value > p.injection_price:
-        return None
-    return Proposal(
-        "charge", kw,
-        "solar surplus %.2f kWh this block (solar %.2f, usage %.2f), "
-        "headroom %.2f kWh; best later injection %.4f at %s after "
-        "efficiency %.2f = %.4f beats injection now %.4f: store it, "
-        "charge %.2f kW"
-        % (surplus, b.solar_kwh, b.usage_kwh, ctx.battery.headroom_kwh,
-           best[1].injection_price, _hhmm(ctx.traj.blocks[best[0]].block_start),
-           eff, value, p.injection_price, kw),
-        "solar")
+        "charge from grid at %.2f kW%s" % (p.consumption_price, kw, note))
 
 
 def _s3(ctx):
@@ -449,8 +410,7 @@ def _s4(ctx):
         "%.4f): charge from grid at %.2f kW%s"
         % (_hhmm(t.reserve_breach_block), shortfall, n, cfg.max_charge_kw,
            p.consumption_price / eff, import_price, p.consumption_price, n,
-           len(cands), threshold, kw, note),
-        "grid")
+           len(cands), threshold, kw, note))
 
 
 def _s5(ctx):
@@ -472,8 +432,7 @@ def _s5(ctx):
         % (best[1].injection_price,
            _hhmm(ctx.traj.blocks[best[0]].block_start),
            cfg.round_trip_efficiency, value, p.consumption_price,
-           value - p.consumption_price, kw, note),
-        "grid")
+           value - p.consumption_price, kw, note))
 
 
 def _s6_reasoning(ctx, fired, suppressed):
@@ -509,14 +468,15 @@ def _s6_reasoning(ctx, fired, suppressed):
     if "V4" in fired:
         return ("hold: no usage history: planner holds (only peak shaving "
                 "acts) - " + "; ".join(facts))
-    return "hold: nothing applies - " + "; ".join(facts)
+    return ("hold: nothing applies, the inverter keeps its default behaviour - "
+            + "; ".join(facts))
 
 
 # S0 leads: a capacity peak is billed across the next twelve months while a
 # price opportunity pays once. Even a very good arbitrage hour is worth cents
 # where a peak increase is worth tens of euros. Do not "optimise" this order.
-_SELECTORS = (("S0", _s0), ("S1", _s1), ("S2", _s2), ("S3", _s3),
-              ("S4", _s4), ("S5", _s5))
+_SELECTORS = (("S0", _s0), ("S1", _s1), ("S3", _s3), ("S4", _s4),
+              ("S5", _s5))
 
 
 def decide(trajectory, price_map, battery_state, grid_state, config, now,
@@ -538,7 +498,7 @@ def decide(trajectory, price_map, battery_state, grid_state, config, now,
             continue                      # vetoed: try the NEXT selector
         return Decision(proposal.action, proposal.target_power_kw, name,
                         proposal.reasoning, list(fired), suppressed,
-                        proposal.charge_source, ctx.block.block_start)
+                        ctx.block.block_start)
     return Decision("idle", 0.0, "S6",
                     _s6_reasoning(ctx, fired, suppressed), list(fired),
-                    suppressed, None, ctx.block.block_start)
+                    suppressed, ctx.block.block_start)

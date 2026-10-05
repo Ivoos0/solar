@@ -28,6 +28,7 @@ from datetime import date, datetime, timedelta, timezone
 import history
 
 ACTIONS = ("charge", "discharge", "export", "idle")
+# S2 no longer exists, but older logs still carry it and must still parse.
 SELECTORS = ("S0", "S1", "S2", "S3", "S4", "S5", "S6")
 SPECIAL_KINDS = ("HALT", "RECOVERED", "SKIP")
 GUARD_GAP_SECONDS = 120          # a longer pause between guard lines ends an episode

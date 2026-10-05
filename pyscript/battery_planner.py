@@ -98,7 +98,7 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
   usage_samples=N; per-slot sample_days is not the coverage signal.
 * Peak guard coordination: if pyscript.peak_guard_shaving is "on" with a fresh
   last_beat attribute (at most 3 x guard_interval_seconds old; a stuck flag of
-  a stopped guard is ignored) and the decision would charge from the grid (charge_source == "grid"), the decision
+  a stopped guard is ignored) and the decision would charge from the grid, the decision
   is replaced by an idle S6 Decision whose reasoning says so, and the veto
   field records GUARD(suppressed <selector> charge). The same downgrade is
   applied (marker NOGRID) when capacity is enabled but the grid sensors are
@@ -1049,7 +1049,7 @@ def _guard_is_shaving(cfg, local):
 def _remember_grid_charge(d, local):
     """Note a recorded decision's grid-charge power for the next cycle."""
     global _last_grid_charge
-    if d.action == "charge" and d.charge_source == "grid":
+    if d.action == "charge":
         _last_grid_charge = (local, d.target_power_kw)
     else:
         _last_grid_charge = None
@@ -1062,7 +1062,7 @@ def _suppress_grid_charge(d, veto, why):
         "%s; grid charge suppressed (was %s: %s)" % (why, d.selector, d.reasoning),
         list(d.vetoes_fired),
         list(d.suppressed) + [(d.selector, "charge", veto)],
-        None, d.block_start)
+        d.block_start)
 
 
 # ---- Home Assistant sensors ----------------------------------------------------
@@ -1207,7 +1207,7 @@ def _cycle(now):
     d = rules.decide(traj, price_map, bat, grid, cfg, local,
                      usage_history_available=history_days > 0)
 
-    if d.action == "charge" and d.charge_source == "grid":
+    if d.action == "charge":
         if _guard_is_shaving(cfg, local):
             d = _suppress_grid_charge(d, "GUARD", "peak guard is shaving")
         elif cfg.capacity_enabled and grid is None:

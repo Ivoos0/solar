@@ -556,7 +556,7 @@ def _force_grid_charge(env, monkeypatch):
     def decide(traj, price_map, bat, grid, cfg, now, **kw):
         d = real(traj, price_map, bat, grid, cfg, now, **kw)
         return mod.rules.Decision(
-            "charge", 3.0, "S1", "cheapest block", [], [], "grid",
+            "charge", 3.0, "S1", "cheapest block", [], [],
             d.block_start)
 
     monkeypatch.setattr(mod.rules, "decide", decide)
@@ -578,19 +578,6 @@ def test_grid_charge_downgraded_while_guard_shaving(env, monkeypatch):
     assert keys["selector"] == "S6"
     assert "GUARD(suppressed S1 charge)" in keys["vetoes"]
     assert "peak guard is shaving" in keys["why"]
-
-
-def test_solar_charge_is_not_downgraded_by_guard(env, monkeypatch):
-    mod = env.mod
-    real = mod.rules.decide
-    monkeypatch.setattr(
-        mod.rules, "decide",
-        lambda *a, **kw: mod.rules.Decision(
-            "charge", 2.0, "S2", "solar surplus", [], [], "solar",
-            real(*a, **kw).block_start))
-    _flag(env, 10)
-    env.run()
-    assert fields_of(env.decisions()[0])["action"] == "charge"
 
 
 def test_grid_charge_downgraded_when_grid_sensors_unreadable(env, monkeypatch):
@@ -1063,8 +1050,8 @@ def test_empty_history_vetoes_grid_charge_in_the_record(env):
     _negative_prices(env)
     env.run()
     keys = fields_of(env.decisions()[0])
-    # Without usage history the planner holds: S1 is vetoed, S2 (solar
-    # storage) too, and the record is an idle one that says why.
+    # Without usage history the planner holds: S1 is vetoed and the
+    # record is an idle one that says why.
     assert keys["selector"] == "S6" and keys["action"] == "idle"
     assert "V4(suppressed S1 charge)" in keys["vetoes"]
     assert "no usage history: planner holds" in keys["why"]
@@ -1395,7 +1382,7 @@ def _charge_at_budget(env):
             return d
         from dataclasses import replace
         return replace(d, action="charge", target_power_kw=kwh,
-                       selector="S1", charge_source="grid", reasoning="forced")
+                       selector="S1", reasoning="forced")
     rules.decide = fake
     return seen
 
@@ -1441,8 +1428,7 @@ def test_non_grid_decision_clears_own_grid_charge(env):
     env.mod.rules.decide = env.mod.rules.decide.__closure__[0].cell_contents \
         if False else env.mod.rules.decide
     env.mod._remember_grid_charge(
-        type("D", (), {"action": "idle", "charge_source": None,
-                       "target_power_kw": 0.0})(), T0)
+        type("D", (), {"action": "idle", "target_power_kw": 0.0})(), T0)
     assert env.mod._last_grid_charge is None
 
 
