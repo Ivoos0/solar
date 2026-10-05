@@ -1343,3 +1343,174 @@ def test_never_stale_logs_nothing_about_refresh(make_guard):
         g.st.reported[AVG] = _stamp(12, m)
         g.tick(offtake="0.3", avg="0.0", peak="4.0")
     assert not [m for m in g.log.messages if "refreshed" in m]
+
+
+# ---- add-back of the commanded discharge, and the heartbeat -----------------
+#
+# Scenario (ceiling 2.5 kW = billing floor, window 12:00-12:15): the household
+# draws 5.0 kW unshaved. At 12:05 the window energy is 0.100 kWh (1.2 kW
+# average) and 10 minutes remain, so the allowed rate is
+# (2.5 * 0.25 - 0.100) * 6 = 3.15 kW and the shave is 5.0 - 3.15 = 1.85 kW.
+# Once the battery shaves, the METER shows 3.15 kW.
+
+REAL = "inverter:\n  type: fake\n"
+UNSHAVED_KW = 5.0
+ALLOWED_KW = 3.15
+
+
+def _shave_tick(g, minute, second, shaving, advance=30.0):
+    """One guard tick at 12:<minute>:<second>. Window energy follows the
+    scenario: 0.100 kWh at 12:05:00, then the meter rate (the allowed rate
+    while the battery shaves, the unshaved load otherwise)."""
+    elapsed_h = (minute * 60 + second) / 3600.0
+    started = elapsed_h <= 5 / 60.0
+    rate = ALLOWED_KW if (shaving and not started) else UNSHAVED_KW
+    energy = 0.1 if started else 0.1 + rate * (elapsed_h - 5 / 60.0)
+    g.at(12, minute, second)
+    g.tick(offtake=str(rate), avg=str(energy / elapsed_h), peak="2.5",
+           advance=advance)
+
+
+def _quiet_tick(g, offtake, minute=5, second=30, advance=30.0):
+    """A tick whose meter reading is below the allowed rate (no peak in sight
+    unless something is added back); avg is the matching 12:05:30 value."""
+    g.at(12, minute, second)
+    energy = 0.1 + float(offtake) * (30 / 3600.0)
+    g.tick(offtake=offtake, avg=str(energy / (5.5 / 60.0)), peak="2.5",
+           advance=advance)
+
+
+def test_real_driver_keeps_one_stable_shave_across_ticks(make_guard):
+    g = make_guard(extra=REAL)
+    _shave_tick(g, 5, 0, shaving=False)
+    assert len(g.discharges) == 1
+    first = g.discharges[0][1]
+    assert first == pytest.approx(1.85)
+    for second in (30, 60, 90, 120, 150):
+        _shave_tick(g, 5 + second // 60, second % 60, shaving=True)
+        assert g.st.values[SHAVING] == "on"
+    # no stop, no restart, no second command: the add-back holds it at 1.85
+    assert [c[0] for c in g.inv.calls] == ["discharge"]
+    assert g.mod._flags["shave_kw"] == pytest.approx(first)
+
+
+def test_logging_driver_projects_from_the_metered_offtake(make_guard):
+    # nothing is commanded, so the meter keeps showing the unshaved load and
+    # the shave is unchanged; add-back is 0
+    g = make_guard()
+    _shave_tick(g, 5, 0, shaving=False)
+    for second in (30, 60):
+        _shave_tick(g, 5 + second // 60, second % 60, shaving=False)
+    assert [c[0] for c in g.inv.calls] == ["discharge"]
+    assert g.mod._commanded_discharge_kw(g.mod._get_config(),
+                                         g.mod._monotonic()) == 0.0
+    # a net reading that already dropped has nothing added back: it stops
+    # (the unchanged behaviour with this driver)
+    _quiet_tick(g, "3.0", 6, 30)
+    assert g.inv.calls[-1][0] == "idle"
+    assert g.st.values[SHAVING] == "off"
+
+
+def test_without_addback_a_real_driver_would_flip(make_guard, monkeypatch):
+    # the flip the add-back prevents: with the commanded power ignored the
+    # second tick (meter below the allowed rate) sees no peak and stops
+    g = make_guard(extra=REAL)
+    monkeypatch.setattr(g.mod, "_commanded_discharge_kw", lambda cfg, at: 0.0)
+    _shave_tick(g, 5, 0, shaving=False)
+    _quiet_tick(g, "3.0")
+    assert [c[0] for c in g.inv.calls] == ["discharge", "idle"]
+
+
+def test_addback_keeps_the_shave_when_the_meter_dropped(make_guard):
+    g = make_guard(extra=REAL)
+    _shave_tick(g, 5, 0, shaving=False)
+    _quiet_tick(g, "3.0")
+    assert [c[0] for c in g.inv.calls] == ["discharge"]
+    assert g.st.values[SHAVING] == "on"
+
+
+def test_addback_expires_when_the_shave_is_not_reaffirmed(make_guard):
+    g = make_guard(extra=REAL)
+    _shave_tick(g, 5, 0, shaving=False)
+    cfg = g.mod._get_config()
+    at = g.mod._monotonic()
+    assert g.mod._commanded_discharge_kw(cfg, at + 60) == pytest.approx(1.85)
+    assert g.mod._commanded_discharge_kw(cfg, at + 60.5) == 0.0
+    assert g.mod._commanded_discharge_kw(cfg, at - 1) == 0.0     # clock odd
+    # a tick that arrives after the expiry projects from the meter alone
+    _quiet_tick(g, "3.0", advance=70.0)
+    assert g.inv.calls[-1][0] == "idle"
+
+
+def test_addback_is_clamped_and_needs_a_shave(make_guard):
+    g = make_guard(extra=REAL)
+    cfg = g.mod._get_config()
+    flags = g.mod._flags
+    at = g.mod._monotonic()
+    assert g.mod._commanded_discharge_kw(cfg, at) == 0.0         # not shaving
+    flags.update(shaving=True, command_at=at, shave_kw=99.0)
+    assert g.mod._commanded_discharge_kw(cfg, at) == cfg.max_discharge_kw
+    flags["shave_kw"] = -3.0
+    assert g.mod._commanded_discharge_kw(cfg, at) == 0.0
+    flags.update(shave_kw=1.0, shaving=None)
+    assert g.mod._commanded_discharge_kw(cfg, at) == 0.0         # unknown
+    flags.update(shaving=True, command_at=None)
+    assert g.mod._commanded_discharge_kw(cfg, at) == 0.0
+
+
+def test_shave_stops_when_the_unshaved_load_goes_away(make_guard):
+    g = make_guard(extra=REAL)
+    _shave_tick(g, 5, 0, shaving=False)
+    # the load drops to 2.0 kW unshaved: the meter then shows 2.0 - 1.85 =
+    # 0.15 kW and the add-back gives back 2.0 kW, under the 2.5 kW floor
+    _quiet_tick(g, "0.15")
+    assert g.inv.calls[-1][0] == "idle"
+    assert g.st.values[SHAVING] == "off"
+    assert g.mod._flags["command_at"] is None
+    assert "shaving stopped" in g.inv.calls[-1][2].reasoning
+
+
+def test_shave_follows_a_changing_unshaved_load(make_guard):
+    g = make_guard(extra=REAL)
+    _shave_tick(g, 5, 0, shaving=False)              # 1.85 kW commanded
+    # the load grows to 6.0 kW unshaved: the meter shows 6.0 - 1.85 = 4.15 kW
+    g.at(12, 5, 30)
+    g.tick(offtake="4.15", avg="1.3", peak="2.5", advance=30.0)
+    last = g.discharges[-1]
+    assert len(g.discharges) == 2 and last[1] > 1.85 + 0.25
+    assert "offtake 6.00 kW (metered 4.15 kW + 1.85 kW commanded discharge)" \
+        in last[2].reasoning
+
+
+def test_heartbeat_is_written_with_the_flag_and_refreshed(make_guard):
+    g = make_guard(extra=REAL)
+    _shave_tick(g, 5, 0, shaving=False)
+    assert g.st.attrs[SHAVING]["last_beat"] == g.now.isoformat()
+    sets = len(g.st.sets)
+    g.at(12, 5, 2)
+    g.tick(offtake="3.15", avg="1.3", peak="2.5", advance=2.0,
+           trigger_type="state")                     # too soon: no rewrite
+    assert len(g.st.sets) == sets
+    _shave_tick(g, 5, 30, shaving=True)              # one interval later
+    assert len(g.st.sets) == sets + 1
+    assert g.st.attrs[SHAVING]["last_beat"] == g.now.isoformat()
+    assert g.st.values[SHAVING] == "on"
+
+
+def test_heartbeat_is_refreshed_with_the_logging_driver_too(make_guard):
+    g = make_guard()
+    _shave_tick(g, 5, 0, shaving=False)
+    first = g.st.attrs[SHAVING]["last_beat"]
+    _shave_tick(g, 5, 30, shaving=False)
+    assert g.st.attrs[SHAVING]["last_beat"] == g.now.isoformat() != first
+
+
+def test_beat_is_cleared_when_the_flag_goes_off(make_guard):
+    g = make_guard(extra=REAL)
+    _shave_tick(g, 5, 0, shaving=False)
+    _quiet_tick(g, "0.15")
+    assert g.st.values[SHAVING] == "off"
+    assert g.st.attrs[SHAVING]["last_beat"] is None
+    n = len(g.st.sets)
+    _quiet_tick(g, "0.15", 6, 0)
+    assert len(g.st.sets) == n              # no beat while nothing is shaving

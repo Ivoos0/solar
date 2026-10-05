@@ -86,8 +86,9 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
 * Usage history: read_usage_history() is the single seam; see its docstring.
   Coverage (distinct local days present vs the window) is reported as
   usage_samples=N; per-slot sample_days is not the coverage signal.
-* Peak guard coordination: if pyscript.peak_guard_shaving is "on" and the
-  decision would charge from the grid (charge_source == "grid"), the decision
+* Peak guard coordination: if pyscript.peak_guard_shaving is "on" with a fresh
+  last_beat attribute (at most 3 x guard_interval_seconds old; a stuck flag of
+  a stopped guard is ignored) and the decision would charge from the grid (charge_source == "grid"), the decision
   is replaced by an idle S6 Decision whose reasoning says so, and the veto
   field records GUARD(suppressed <selector> charge). The same downgrade is
   applied (marker NOGRID) when capacity is enabled but the grid sensors are
@@ -138,6 +139,10 @@ CORE_MODULES = ("config", "prices", "series", "battery", "trajectory",
 # The netted offtake sensor id also comes from config
 # (capacity_tariff.offtake_sensor, default sensor.slimmelezer_power_consumed).
 GUARD_FLAG_ENTITY = "pyscript.peak_guard_shaving"   # set by the peak guard (WP12)
+# The flag only counts while the guard keeps it fresh: its last_beat attribute
+# must be at most this many guard intervals old, else the flag is ignored (a
+# dead guard cannot clear a stuck "on").
+GUARD_BEAT_FACTOR = 3
 _BAD_STATES = (None, "", "unknown", "unavailable", "none", "None")
 
 # ---- tuning that is not user config ----------------------------------------
@@ -924,6 +929,34 @@ def _grid_state(cfg, local):
         own_grid_charge_kw=_own_grid_charge_kw(cfg, local))
 
 
+def _guard_is_shaving(cfg, local):
+    """True when the peak guard flag is "on" AND its heartbeat is fresh.
+
+    The guard rewrites the flag with last_beat = now at least once per guard
+    interval while shaving. A flag that is "on" with a missing, unparseable or
+    older-than GUARD_BEAT_FACTOR x guard_interval_seconds beat means the guard
+    is no longer running: it is ignored (and warned about) so grid charging is
+    not blocked forever by a stuck flag.
+    """
+    if _state_value(GUARD_FLAG_ENTITY) != "on":
+        return False
+    beat = _state_attr(GUARD_FLAG_ENTITY, "last_beat")
+    try:
+        when = datetime.fromisoformat(beat)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        age = (local - when).total_seconds()
+    except Exception:
+        age = None
+    if age is not None and age <= GUARD_BEAT_FACTOR * cfg.guard_interval_seconds:
+        return True
+    log.warning(  # noqa: F821
+        "battery_planner: peak guard flag is 'on' but its heartbeat is %s; "
+        "treating the guard as stopped" % (
+            "missing" if age is None else "%.0f s old" % age))
+    return False
+
+
 def _remember_grid_charge(d, local):
     """Note a recorded decision's grid-charge power for the next cycle."""
     global _last_grid_charge
@@ -989,7 +1022,7 @@ def _cycle(now):
                      usage_history_available=history_days > 0)
 
     if d.action == "charge" and d.charge_source == "grid":
-        if _state_value(GUARD_FLAG_ENTITY) == "on":
+        if _guard_is_shaving(cfg, local):
             d = _suppress_grid_charge(d, "GUARD", "peak guard is shaving")
         elif cfg.capacity_enabled and grid is None:
             d = _suppress_grid_charge(d, "NOGRID", "grid sensors unreadable")

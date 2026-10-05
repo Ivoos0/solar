@@ -366,9 +366,18 @@ retries. It does not halt.
 `pyscript/peak_guard.py` runs every 30 seconds and on each update of the netted offtake sensor. If the
 current quarter-hour is heading above the ceiling (this month's peak, never below the 2.5 kW floor),
 it records a shaving discharge and sets `pyscript.peak_guard_shaving` to `on`. While that is on, the
-planner does not grid-charge. The guard only reacts to a window that is already forming. It does not
+planner does not grid-charge. While shaving, the guard rewrites that entity every guard interval with
+a fresh `last_beat` attribute; if `last_beat` is missing or older than three guard intervals (90
+seconds by default) the planner ignores the `on`, logs a warning, and carries on, so a stopped guard
+cannot block charging for good. The guard only reacts to a window that is already forming. It does not
 hold charge back for an evening peak it could foresee. Like the planner, it only logs unless you add
-an inverter driver.
+an inverter driver. With a real driver the meter shows the offtake after the battery has already
+taken some of the load. The guard therefore adds the discharge power it is commanding back to the
+metered offtake before projecting the quarter-hour (the window energy comes from the meter and is not
+adjusted). The shave then stays at one steady value while the load persists and stops only when the
+load, without the battery, would no longer push the quarter-hour over the ceiling. The added-back
+power counts only while the guard keeps confirming the shave (within two guard intervals) and never
+with the `logging` driver, which commands nothing.
 
 Shaving matters mainly when the planner itself is holding energy back from the house. The planner
 does that when it charges the battery from the grid or stores surplus solar. The grid then supplies
@@ -562,9 +571,15 @@ Before you enable a real driver:
       mode, lower that setting; `0` sends on every planner cycle and every guard call.
 - [ ] Decide what the inverter does when commands stop. A failed `send` is logged and is not counted
       as sent, so the next decision tries it again.
-- [ ] Do not combine a real driver with the capacity-tariff guard yet. The guard reads net grid
-      offtake, which its own discharge lowers, and the commanded power is not added back, so the
-      shave would switch on and off repeatedly.
+- [ ] Know what the peak guard already handles, and what is left to you. Handled: the guard reads
+      net grid offtake, which its own discharge lowers, so it adds the power it is commanding back
+      before projecting (see [Peak guard](#peak-guard)); the command therefore stays steady instead
+      of switching on and off every 30 seconds. Still yours: the guard sends a command only when it
+      changes (the framework repeats it after `inverter.resend_minutes`, but only when the planner
+      or the guard calls `send` again), so make sure the inverter holds a discharge command for as
+      long as it takes to hear again, and that `send("idle", 0)` really releases it. The add-back
+      assumes the commanded power is what the inverter delivers; a driver that clips it (for example
+      at a lower inverter limit) should set `battery.max_discharge_kw` to that limit.
 - [ ] Run with `logging` first and compare a week of decisions with what the battery should have done.
 - [ ] Return the real charge from `read_charge_percent` and leave `SOC_IS_STUB` unset.
 
@@ -587,8 +602,9 @@ If you fork, do not publish `secrets.yaml` or `battery_planner/user_config.yaml`
   applies meanwhile.
 - Peak protection is reactive. The projection covers battery charge, not grid offtake, so the planner
   does not hold charge back for a foreseeable evening peak.
-- The peak guard does not add its own commanded discharge back to the offtake reading (see the driver
-  checklist).
+- The peak guard adds the discharge it commands back to the offtake reading, assuming the inverter
+  delivers that power. This has only been tested with simulated meter readings, never with a real
+  inverter (see the driver checklist).
 - Single solar plane, free forecast tier only, Flemish capacity tariff only, battery only.
 - The alert e-mails and the entity names on installs other than the original one have not been tested
   against a live Home Assistant. Send a test mail (install step 8) and check the entity names as

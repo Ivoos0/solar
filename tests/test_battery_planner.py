@@ -560,7 +560,7 @@ def test_grid_charge_passes_when_guard_is_off(env, monkeypatch):
 
 def test_grid_charge_downgraded_while_guard_shaving(env, monkeypatch):
     _force_grid_charge(env, monkeypatch)
-    env.state.set(env.mod.GUARD_FLAG_ENTITY, "on", {})
+    _flag(env, 10)
     env.run()
     keys = fields_of(env.decisions()[0])
     assert keys["action"] == "idle" and keys["power"] == "0.00kW"
@@ -577,7 +577,7 @@ def test_solar_charge_is_not_downgraded_by_guard(env, monkeypatch):
         lambda *a, **kw: mod.rules.Decision(
             "charge", 2.0, "S2", "solar surplus", [], [], "solar",
             real(*a, **kw).block_start))
-    env.state.set(mod.GUARD_FLAG_ENTITY, "on", {})
+    _flag(env, 10)
     env.run()
     assert fields_of(env.decisions()[0])["action"] == "charge"
 
@@ -590,6 +590,71 @@ def test_grid_charge_downgraded_when_grid_sensors_unreadable(env, monkeypatch):
     assert keys["action"] == "idle"
     assert "NOGRID" in keys["vetoes"]
     assert "grid_sensors_unavailable" in keys["degraded"]
+
+
+# ---- guard heartbeat: a stuck "on" flag must not block charging forever ------
+
+def _flag(env, beat_age_s, value="on"):
+    attrs = {}
+    if beat_age_s is not None:
+        attrs["last_beat"] = (env.clock - timedelta(seconds=beat_age_s)
+                              ).isoformat()
+    env.state.set(env.mod.GUARD_FLAG_ENTITY, value, attrs)
+
+
+def test_guard_flag_with_a_fresh_beat_suppresses_grid_charge(env, monkeypatch):
+    _force_grid_charge(env, monkeypatch)
+    _flag(env, 30)
+    env.run()
+    keys = fields_of(env.decisions()[0])
+    assert keys["action"] == "idle" and "GUARD" in keys["vetoes"]
+
+
+def test_guard_flag_beat_at_the_limit_still_counts(env, monkeypatch):
+    _force_grid_charge(env, monkeypatch)
+    _flag(env, 90)                  # 3 x the 30 s default guard interval
+    env.run()
+    assert fields_of(env.decisions()[0])["action"] == "idle"
+
+
+def test_stuck_on_flag_with_an_old_beat_is_ignored(env, monkeypatch):
+    _force_grid_charge(env, monkeypatch)
+    _flag(env, 91)
+    env.run()
+    keys = fields_of(env.decisions()[0])
+    assert keys["action"] == "charge" and "GUARD" not in keys["vetoes"]
+    assert any("heartbeat is 91 s old" in m for m in env.log.by_level["warning"])
+
+
+def test_on_flag_without_a_beat_is_ignored(env, monkeypatch):
+    _force_grid_charge(env, monkeypatch)
+    _flag(env, None)
+    env.run()
+    assert fields_of(env.decisions()[0])["action"] == "charge"
+    assert any("heartbeat is missing" in m for m in env.log.by_level["warning"])
+
+
+def test_unparseable_beat_is_ignored(env, monkeypatch):
+    _force_grid_charge(env, monkeypatch)
+    env.state.set(env.mod.GUARD_FLAG_ENTITY, "on", {"last_beat": "soon"})
+    env.run()
+    assert fields_of(env.decisions()[0])["action"] == "charge"
+
+
+def test_beat_window_follows_the_guard_interval(env):
+    env.write_config(
+        extra="capacity_tariff:\n  guard_interval_seconds: 60\n")
+    cfg = env.mod._load_config()
+    _flag(env, 180)
+    assert env.mod._guard_is_shaving(cfg, env.clock) is True
+    _flag(env, 181)
+    assert env.mod._guard_is_shaving(cfg, env.clock) is False
+
+
+def test_off_flag_is_off_whatever_the_beat(env):
+    cfg = env.mod._load_config()
+    _flag(env, 1, value="off")
+    assert env.mod._guard_is_shaving(cfg, env.clock) is False
 
 
 # ---- source hygiene ---------------------------------------------------------------------------

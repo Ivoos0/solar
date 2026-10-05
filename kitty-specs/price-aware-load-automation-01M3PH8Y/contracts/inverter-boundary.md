@@ -73,7 +73,7 @@ def read_charge_percent(): ...           # number, 0..100
 
 ## Config
 
-`inverter.type` (default `logging`; missing, null or `none` mean `logging`; otherwise `[a-z0-9_]+`) and `inverter.resend_minutes` (integer `>= 0`, default 15). See `user-config.md`. A non-`logging` driver transmits real commands and is the contributor's responsibility; README "Adding an inverter" holds the skeleton and the checklist, including the guard's FUTURE RISK (commanded discharge lowers the net offtake it reads; add-back and heartbeat needed before real control).
+`inverter.type` (default `logging`; missing, null or `none` mean `logging`; otherwise `[a-z0-9_]+`) and `inverter.resend_minutes` (integer `>= 0`, default 15). See `user-config.md`. A non-`logging` driver transmits real commands and is the contributor's responsibility; README "Adding an inverter" holds the skeleton and the checklist, including what the guard handles (it adds the commanded discharge back to the net offtake it reads, so a shave does not flip on and off; it refreshes a `last_beat` attribute on `pyscript.peak_guard_shaving` that the planner requires to be at most 3 guard intervals old) and what the driver author must still check (the guard sends a command only on change, so the inverter must hold a discharge command until the next one and honour `idle`; the add-back assumes the commanded power is delivered).
 
 ## Adding an inverter
 

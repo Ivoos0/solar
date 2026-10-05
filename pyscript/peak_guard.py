@@ -12,7 +12,7 @@ one Home Assistant state entity:
 
     pyscript.peak_guard_shaving      "on" while the guard is shaving a peak,
                                      "off" otherwise. Attributes: window_start,
-                                     shave_kw, since.
+                                     shave_kw, since, last_beat.
 
 THE GUARD WINS. While the entity is "on" the planner must treat any grid-charge
 proposal as vetoed (FR-050 expressed across two processes). Scenario: a cheap
@@ -25,6 +25,34 @@ entity is the belt to that braces because the guard has fresher numbers.
 The entity is cleared on stop, when capacity is disabled, and when the meter
 has been unreadable for GRACE_SECONDS (a dead sensor must not freeze the
 planner out of charging).
+
+HEARTBEAT. A guard that stops running (crash, kill, reload mid-shave) cannot
+clear the entity, and a stuck "on" would keep the planner from grid charging for
+good. So while shaving, every evaluation (at most once per guard interval)
+rewrites the entity with last_beat = now (local ISO). The planner treats the flag
+as off when last_beat is missing or older than 3 x guard_interval_seconds
+(battery_planner.GUARD_BEAT_FACTOR). A flag that only ever changed on a
+transition would look the same to the planner dead or alive; the beat is what
+tells them apart.
+
+ADD-BACK (why a real inverter does not make the shave flip every tick). The
+offtake sensor is NET: it already contains the effect of the discharge the guard
+commanded. With a real driver and the battery shaving, the offtake drops to the
+allowed rate, the projection then says "no peak", shave_kw would fall to 0, the
+guard would stop, offtake would rise, and it would start again: a command flip
+every ~30 s, which is hard on an inverter. So the guard keeps the power it is
+currently commanding (_flags["shave_kw"]) and ADDS it back to the metered
+offtake before projecting: unshaved offtake = metered offtake + commanded
+discharge. shave_kw then stays stable while the unshaved load persists and falls
+to 0 only when that load no longer threatens the ceiling. The window energy
+comes from the meter average (already actual, includes the discharge), so it is
+not touched: no double counting. Rules, same pattern as
+battery_planner._own_grid_charge_kw: nothing is added with the "logging" driver
+(it transmits nothing, so the meter shows no effect); the figure counts only
+while the guard is shaving and has re-affirmed it within 2 x guard interval (a
+skipped tick or a killed run must not leave a stale figure behind); it is
+clamped to 0..max_discharge_kw. The predictive e-mail warning is fed the METERED
+state, so it still fires if a commanded shave is not taking effect.
 
 DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
 -------------------------------------------------
@@ -114,11 +142,11 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   before anything else (module state is lost on reload, the entity is not). An
   unknown module state (None) is treated like "maybe shaving" by the grace
   logic. An exception in a tick clears the flag after the same GRACE_SECONDS.
-* FUTURE RISK (not implemented this mission): the guard reads NET offtake,
-  which its own discharge lowers. Before real transmission exists the
-  commanded discharge power must be added back, or the shave will bang-bang
-  on/off; a discharge command probably also needs a heartbeat re-send, while
-  today records are written only on change.
+* Net offtake and the commanded discharge: handled by the add-back above.
+  Still true: a command (and its decision record) is emitted only on change, so
+  inverter.apply periodic re-send (resend_minutes) does not run for a steady
+  shave; a driver whose command times out on its own must be given a duration
+  that outlasts a quarter-hour, or must tolerate a repeat.
 * Average-mode detection needs votes from several windows, yet samples from
   different windows must not be compared. The per-window buffer is discarded
   at every window boundary as required; before it is, its (at most two)
@@ -211,6 +239,8 @@ _flags = {
     "shave_kw": 0.0,       # power of the last recorded shave
     "since": None,
     "last_run": -1.0e9,
+    "command_at": None,    # monotonic time the current shave was last affirmed
+    "beat_at": -1.0e9,     # monotonic time of the last entity write while on
     "unreadable_since": None,
     "gap": False,          # meter was unreadable and has just recovered
     "vetoed_window": None,
@@ -463,7 +493,9 @@ def _predictive_warning(cfg, grid, shave, vetoed, batt, charge_is_stub, at):
         _warn("peak_warning", "predictive warning failed: %r" % (exc,))
 
 
-def _set_shaving_entity(on, window_start, shave_kw):
+def _set_shaving_entity(on, window_start, shave_kw, beat=None):
+    """Write the flag. `beat` (aware datetime) is the heartbeat; set it
+    whenever the flag is turned or kept "on"."""
     since = _flags["since"]
     state.set(  # noqa: F821
         SHAVING_ENTITY, "on" if on else "off",
@@ -471,7 +503,46 @@ def _set_shaving_entity(on, window_start, shave_kw):
             "window_start": window_start.isoformat() if window_start else None,
             "shave_kw": round(shave_kw, 3),
             "since": since.isoformat() if (on and since) else None,
+            "last_beat": beat.isoformat() if (on and beat) else None,
         })
+
+
+def _refresh_beat(cfg, now, started):
+    """Keep the planner view of "on" alive: rewrite the flag with a fresh
+    last_beat at most once per guard interval while shaving."""
+    if not _flags["shaving"]:
+        return
+    if started - _flags["beat_at"] < cfg.guard_interval_seconds - 1.0:
+        return
+    _flags["beat_at"] = started
+    _set_shaving_entity(True, capacity.window_start_of(now),
+                        _flags["shave_kw"], now)
+
+
+def _commanded_discharge_kw(cfg, at):
+    """Discharge power the guard is commanding right now (kW), else 0.0.
+
+    Non-zero only when a real driver (not "logging", which transmits nothing)
+    is configured, the guard is shaving, and that shave was last affirmed at
+    most 2 guard intervals ago. Clamped to 0..max_discharge_kw. The metered
+    offtake includes this discharge; the caller adds it back."""
+    if cfg.inverter_type == "logging" or not _flags["shaving"]:
+        return 0.0
+    when = _flags["command_at"]
+    if when is None:
+        return 0.0
+    age = at - when
+    if age < 0 or age > 2 * cfg.guard_interval_seconds:
+        return 0.0
+    return max(0.0, min(_flags["shave_kw"], cfg.max_discharge_kw))
+
+
+def _grid_state(offtake_kw, now, month_peak, cfg, is_restored, reported,
+                verdict):
+    return capacity.build_state(
+        offtake_kw, 0.0, now, month_peak, cfg, is_restored=is_restored,
+        reported_average_kw=reported, average_mode=verdict.mode,
+        mode_confidence=verdict.confidence)
 
 
 # ---- average-mode detection buffer -----------------------------------------
@@ -585,6 +656,7 @@ def _clear_shaving(window_start, why):
         log.warning("peak_guard: shaving flag cleared (%s)" % why)  # noqa: F821
     _flags["shaving"] = False
     _flags["shave_kw"] = 0.0
+    _flags["command_at"] = None
     _flags["since"] = None
     _set_shaving_entity(False, window_start, 0.0)
 
@@ -672,6 +744,7 @@ def _evaluate(trigger_type, started):
         if _flags["shaving"] is not False:
             _clear_shaving(None, "capacity tariff disabled")
         return
+    _refresh_beat(cfg, now, started)
 
     offtake, _, p_off = _read_sensor(cfg.offtake_sensor)
     reported, avg_updated, p_avg = _read_sensor(cfg.quarter_hour_average_sensor)
@@ -701,10 +774,18 @@ def _evaluate(trigger_type, started):
                 cfg.quarter_hour_average_sensor, _stamp_text(avg_updated, now)))
 
     verdict = _feed_detector(cfg, now, reported, offtake)
-    grid = capacity.build_state(
-        offtake, 0.0, now, month_peak, cfg, is_restored=is_restored,
-        reported_average_kw=reported, average_mode=verdict.mode,
-        mode_confidence=verdict.confidence)
+    # the meter shows offtake AFTER our own discharge: add it back (docstring)
+    addback = _commanded_discharge_kw(cfg, started)
+    metered = _grid_state(offtake, now, month_peak, cfg, is_restored,
+                          reported, verdict)
+    grid = metered if addback <= 0 else _grid_state(
+        offtake + addback, now, month_peak, cfg, is_restored, reported,
+        verdict)
+    if addback > 0:
+        offtake_text = ("offtake %.2f kW (metered %.2f kW + %.2f kW commanded "
+                        "discharge)" % (grid.offtake_kw, offtake, addback))
+    else:
+        offtake_text = "offtake %.2f kW" % grid.offtake_kw
     shave = capacity.shave_kw(grid, cfg)
 
     charge, charge_is_stub, charge_marker = inverter.read_charge(
@@ -731,17 +812,19 @@ def _evaluate(trigger_type, started):
                 now, cfg, grid, batt, verdict, took_ms, "idle", 0.0,
                 _render("idle", 0.0, fired, as_decided.suppressed),
                 "peak shave vetoed by %s: the battery is empty (%.1f%%), so "
-                "the peak is allowed to form (offtake %.2f kW, running "
+                "the peak is allowed to form (%s, running "
                 "average %.2f kW, ceiling %.2f kW)"
                 % (blocking, batt.charge_percent,
-                   grid.offtake_kw, grid.running_average_kw,
+                   offtake_text, grid.running_average_kw,
                    capacity.ceiling_kw(grid, cfg)))
             _emit("idle", 0.0, record, cfg)
             record_written = True
 
-    _predictive_warning(cfg, grid, shave, vetoed, batt, charge_is_stub, started)
+    _predictive_warning(cfg, metered, shave, vetoed, batt, charge_is_stub,
+                        started)
 
     if shave > 0:
+        _flags["command_at"] = started         # affirmed: the add-back stays
         moved = abs(shave - _flags["shave_kw"]) >= SHAVE_CHANGE_KW
         if not _flags["shaving"] or moved:
             starting = not _flags["shaving"]
@@ -750,16 +833,17 @@ def _evaluate(trigger_type, started):
             record = _make_record(
                 now, cfg, grid, batt, verdict, took_ms, "discharge", shave,
                 _render("discharge", shave, fired),
-                "peak shave (guard): %s; offtake %.2f kW, running average "
+                "peak shave (guard): %s; %s, running average "
                 "%.2f kW heading above the %.2f kW ceiling; discharge %.2f kW "
                 "to the house to hold it"
                 % ("shaving started" if starting else "shave power changed",
-                   grid.offtake_kw, grid.running_average_kw,
+                   offtake_text, grid.running_average_kw,
                    capacity.ceiling_kw(grid, cfg), shave))
             # flags and entity BEFORE the (cancellable) apply: see docstring
             _flags["shave_kw"] = shave
             _flags["shaving"] = True
-            _set_shaving_entity(True, window, shave)
+            _flags["beat_at"] = started
+            _set_shaving_entity(True, window, shave, now)
             _emit("discharge", shave, record, cfg)
         return
 
@@ -767,6 +851,7 @@ def _evaluate(trigger_type, started):
     if _flags["shaving"]:
         _flags["shaving"] = False              # before the cancellable apply
         _flags["shave_kw"] = 0.0
+        _flags["command_at"] = None
         _flags["since"] = None
         _set_shaving_entity(False, window, 0.0)
         if not record_written:
@@ -774,9 +859,9 @@ def _evaluate(trigger_type, started):
                 now, cfg, grid, batt, verdict, took_ms, "idle", 0.0,
                 _render("idle", 0.0, fired),
                 "peak shave (guard): shaving stopped, projected average is "
-                "back at or under the %.2f kW ceiling (offtake %.2f kW, "
+                "back at or under the %.2f kW ceiling (%s, "
                 "running average %.2f kW)"
-                % (capacity.ceiling_kw(grid, cfg), grid.offtake_kw,
+                % (capacity.ceiling_kw(grid, cfg), offtake_text,
                    grid.running_average_kw))
             _emit("idle", 0.0, record, cfg)
     elif _flags["shaving"] is None:
