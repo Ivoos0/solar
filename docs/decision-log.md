@@ -53,7 +53,7 @@ A value that does not apply is written explicitly (`none`, `n/a`, or a computed
 | `took` | `NNNms` | How long the cycle took |
 | `avg` | `N.NNkW` or `n/a` | Running quarter-hour average of grid offtake. `n/a` when capacity handling is off |
 | `ceiling` | `N.NNkW` or `n/a` | The peak level being defended: the larger of 2.5 kW and this month's peak |
-| `budget` | `N.NNkW` or `n/a` | Grid power still available for charging in this quarter-hour, after the household's own estimated draw and capped at `max_charge_kw`, measured against `capacity_tariff.stay_under_percent` of the ceiling (80 % of 2.5 kW = 2.0 kW by default). Negative when the window is already over that level |
+| `budget` | `N.NNkW` or `n/a` | Grid power still available for charging in this quarter-hour, after the household's own estimated draw and capped at `max_charge_kw`, measured against `capacity_tariff.stay_under_percent` of the ceiling (80 % of 2.5 kW = 2.0 kW by default). Negative when the window is already over that level. `0.00kW` in the last `timing.evaluation_interval_minutes` of the quarter-hour (grid charging stops one evaluation interval before it ends) |
 | `vetoes` | comma-separated or `none` | Rules that fired, and what each suppressed (see below) |
 | `selector` | `S0` to `S6` | The action that was chosen |
 | `why` | quoted text | The values that made the condition true |

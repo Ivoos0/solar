@@ -10,7 +10,8 @@ from datetime import datetime
 WINDOW_MINUTES = 15.0
 WINDOW_HOURS = 0.25
 MIN_ELAPSED_MINUTES = 1.0     # opening-seconds guard for divisions by elapsed
-NO_BUDGET_MINUTES = 1.0       # under this remaining, budget is 0.0
+NO_BUDGET_MINUTES = 1.0       # least remaining at which a budget exists, whatever
+                              # the evaluation interval (see no_budget_minutes)
 
 # detector tuning
 DETECT_MIN_MIN = 2.0
@@ -100,6 +101,20 @@ def _remaining_minutes(state):
     return WINDOW_MINUTES - state.elapsed_minutes
 
 
+def no_budget_minutes(config):
+    """Remaining minutes under which grid charging has no budget.
+
+    max(NO_BUDGET_MINUTES, evaluation_interval_minutes): a charge sized for
+    this quarter-hour keeps running until the planner decides again, which is
+    one evaluation interval later, so a charge started in the last interval
+    would run on into the next quarter-hour. Grid charging therefore stops one
+    evaluation interval before the quarter-hour ends. The peak guard and the
+    predictive warning keep the fixed NO_BUDGET_MINUTES: they re-evaluate every
+    guard interval (seconds) and do not size a charge.
+    """
+    return max(NO_BUDGET_MINUTES, float(config.evaluation_interval_minutes))
+
+
 def household_draw_kw(state):
     """Estimated household draw: metered offtake minus the planner's own grid
     charge, never below 0 (offtake_kw is metered at the connection point and
@@ -110,9 +125,9 @@ def household_draw_kw(state):
 def allowed_offtake_kw(state, config):
     """TOTAL grid offtake rate (household + charging) that would land the
     quarter-hour average exactly on charging_ceiling_kw at the window end.
-    May be negative; uncapped. 0.0 in the last NO_BUDGET_MINUTES."""
+    May be negative; uncapped. 0.0 in the last no_budget_minutes(config)."""
     remaining_min = _remaining_minutes(state)
-    if remaining_min < NO_BUDGET_MINUTES:
+    if remaining_min < no_budget_minutes(config):
         return 0.0
     allowance = charging_ceiling_kw(state, config) * WINDOW_HOURS
     return (allowance - state.window_energy_kwh) / (remaining_min / 60.0)
@@ -123,13 +138,14 @@ def budget_kw(state, config):
     allowed_offtake_kw - household_draw_kw, capped above at max_charge_kw.
     May be negative (V3 fires at <= 0). Measured against charging_ceiling_kw
     (stay_under_percent of the ceiling), so it is deliberately more cautious
-    than the real ceiling. 0.0 in the last NO_BUDGET_MINUTES.
+    than the real ceiling. 0.0 in the last no_budget_minutes(config) = the
+    larger of NO_BUDGET_MINUTES and the evaluation interval.
 
     window_energy_kwh is metered at the connection point (draw so far, already
     included); household_draw_kw covers the draw still to come, assumed to
     continue at its current rate.
     """
-    if _remaining_minutes(state) < NO_BUDGET_MINUTES:
+    if _remaining_minutes(state) < no_budget_minutes(config):
         return 0.0
     budget = allowed_offtake_kw(state, config) - household_draw_kw(state)
     return min(budget, config.max_charge_kw)

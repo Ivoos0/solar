@@ -367,7 +367,10 @@ once after a forced mode, and not repeated while the planner keeps idling.
 In this README, "charge" always means charge from the grid.
 
 Grid charging never exceeds the budget: the charging level (`stay_under_percent` of the ceiling) minus
-what the house is drawing. In the last minute of a quarter-hour the budget is 0.
+what the house is drawing. Grid charging stops one evaluation interval before the quarter-hour ends:
+in the last `timing.evaluation_interval_minutes` (5 by default, never less than 1) the budget is 0,
+so a charge sized for one quarter-hour does not run on into the next while the planner waits for its
+next decision. The peak guard and the peak warning are not affected; they re-check every 30 seconds.
 
 Price outage: if prices are missing, unparseable or already elapsed, no decisions are made. A `HALT`
 line is logged each cycle, one e-mail is sent on entry and then at most one per
