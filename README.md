@@ -712,30 +712,7 @@ Adding an inverter driver has moved to [docs/inverter-drivers.md](docs/inverter-
 
 The read-only AlphaESS example has moved to [docs/alphaess.md](docs/alphaess.md).
 
-## Known gaps
-
-- No inverter driver is shipped except `logging`, so nothing controls a battery.
-- Battery charge is a fixed 50 % unless `battery.soc_sensor` is set or a driver reads the real value.
-- Until a household load source is configured (usage history exists), the planner only peak-shaves
-  and otherwise idles: no grid charging, no solar storage, no exporting. The inverter's own behaviour
-  applies meanwhile.
-- Peak protection is reactive. The projection covers battery charge, not grid offtake, so the planner
-  does not hold charge back for a foreseeable evening peak.
-- The peak guard adds the discharge it commands back to the offtake reading, assuming the inverter
-  delivers that power. This has only been tested with simulated meter readings, never with a real
-  inverter (see the driver checklist).
-- Single solar plane, free forecast tier only, Flemish capacity tariff only, battery only.
-- The alert e-mails and the entity names on installs other than the original one have not been tested
-  against a live Home Assistant. Send a test mail (install step 8) and check the entity names as
-  described above.
-- The solar calibration (see [Solar calibration](#solar-calibration)) has only been tested with
-  generated history. It needs a `solar` energy counter, which is not configured by default, and then
-  about `solar.calibration_weeks` weeks of recording before it measures anything. The recorded prices,
-  battery and split fields are for later analysis.
-
-To adapt the planner: provider prices are `prices.*` in `user_config.yaml`; the capacity-tariff logic
-is in `pyscript/modules/capacity.py`; usage history is read by `read_usage_history` in
-`pyscript/battery_planner.py`.
+The known gaps have moved to [docs/known-gaps.md](docs/known-gaps.md).
 
 ## Credits and related projects
 
