@@ -183,8 +183,10 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `battery.soc_sensor` | none | entity id | Sensor with the battery charge in percent (0 to 100). When set, the planner and the peak guard read the charge from it instead of the driver's placeholder. `unavailable`, `unknown`, a non-number or a value outside 0 to 100 counts as unreadable: the planner holds and marks `soc_unavailable` |
 | `battery.power_sensor` | none | entity id | Sensor with the battery power, in W or kW (the unit attribute is read; any other unit counts as unreadable). Lets the planner measure the household draw (see [What the planner does](#what-the-planner-does)). Unreadable: the older estimate is used and records carry `battery_power_unavailable` |
 | `battery.power_positive` | `discharge` | `discharge` or `charge` | Which direction is positive in `battery.power_sensor`. `discharge`: positive while the battery gives power (AlphaESS). `charge`: positive while it takes power |
-| `battery.max_charge_kw` | `5.0` | kW | Highest charge power the planner proposes |
-| `battery.max_discharge_kw` | `5.0` | kW | Power used when exporting |
+| `battery.max_charge_sensor` | none | entity id | Sensor with the inverter's own maximum battery charge power, in W or kW (the unit attribute is read). When it reads above 0, the planner uses it as the charge limit, read again every cycle. Otherwise `battery.max_charge_kw` applies and records carry `battery_limits_fallback` |
+| `battery.max_discharge_sensor` | none | entity id | The same for the maximum discharge power: the limit for exporting and for peak shaving |
+| `battery.max_charge_kw` | `5.0` | kW | Highest charge power the planner proposes. Fallback when no `battery.max_charge_sensor` is set or it cannot be read |
+| `battery.max_discharge_kw` | `5.0` | kW | Power used when exporting and the cap on peak shaving. Fallback when no `battery.max_discharge_sensor` is set or it cannot be read |
 | `battery.round_trip_efficiency` | `0.90` | 0 to 1 | Share of stored energy you get back. A later price only counts at this fraction |
 | `solar.forecast_entity` | `sensor.forecast_solar_estimate` | entity id | The REST sensor from `configuration.yaml` |
 | `solar.forecast_attribute` | `watt_hours_period` | attribute name | Attribute holding the Wh per period |
@@ -235,7 +237,7 @@ more cautious and cheaper for you. Where no direction is safe, use the exact val
 | `prices.injection_multiplier`, `prices.injection_offset` | down | A lower selling price makes arbitrage less attractive and stops exporting at a negative price sooner |
 | `battery.capacity_kwh` | down | Use usable capacity, not nameplate. The planner then never counts on energy the battery does not have |
 | `battery.reserve_percent` | up | The planner stops exporting to the grid earlier |
-| `battery.max_charge_kw`, `battery.max_discharge_kw` | down | Commanded power never exceeds what the inverter does |
+| `battery.max_charge_kw`, `battery.max_discharge_kw` | down | Commanded power never exceeds what the inverter does. Readings from `battery.max_charge_sensor` and `battery.max_discharge_sensor` are used as read |
 | `battery.round_trip_efficiency` | down | Arbitrage needs a bigger price spread |
 | `capacity_tariff.stay_under_percent` | lower is safer | Less grid charging near the peak ceiling, at the cost of fewer cheap charges |
 | `forecast_solar_url` (kWp part) | down | A lower forecast means less counted-on solar |
@@ -299,6 +301,7 @@ Markers you can expect in `degraded=` on a fresh install:
 | Marker | Meaning |
 |---|---|
 | `soc_stubbed` | The battery charge is the 50 % placeholder. Normal until a driver or `battery.soc_sensor` supplies the real charge |
+| `battery_limits_fallback` | `battery.max_charge_sensor` or `battery.max_discharge_sensor` is set but cannot be read (or reads 0 or less). The numeric `battery.max_charge_kw` / `max_discharge_kw` apply for that direction |
 | `battery_power_unavailable` | `battery.power_sensor` is set but cannot be read (or its unit is not W or kW). The household draw is estimated from the meter alone, which can undercount while the battery covers the house |
 | `soc_unavailable` | `battery.soc_sensor` is set but cannot be read. The planner holds: no charging from the grid and no exporting until the sensor is back. Peak shaving is not affected |
 | `usage_history_unavailable` | No household usage history yet. Normal until a load source is configured; the planner only peak-shaves and otherwise idles meanwhile |
@@ -864,7 +867,7 @@ Before you enable a real driver:
       or the guard calls `send` again), so make sure the inverter holds a discharge command for as
       long as it takes to hear again, and that `send("idle", 0)` really releases it. The add-back
       assumes the commanded power is what the inverter delivers; a driver that clips it (for example
-      at a lower inverter limit) should set `battery.max_discharge_kw` to that limit.
+      at a lower inverter limit) should set `battery.max_discharge_kw` (or a `battery.max_discharge_sensor`) to that limit.
 - [ ] Run with `logging` first and compare a week of decisions with what the battery should have done.
 - [ ] Return the real charge from `read_charge_percent` and leave `SOC_IS_STUB` unset.
 
@@ -1000,6 +1003,26 @@ its register definitions; the register list itself comes from the AlphaESS Modbu
          scale: 0.1
          precision: 1
 
+       - name: AlphaESS Battery Max Charge Power
+         unique_id: AlphaESS_Battery_Max_Charge_Power
+         slave: !secret alphaess_modbus_slaveId
+         address: 0x012C
+         data_type: uint16
+         unit_of_measurement: W
+         device_class: power
+         state_class: measurement
+         scan_interval: 60
+
+       - name: AlphaESS Battery Max Discharge Power
+         unique_id: AlphaESS_Battery_Max_Discharge_Power
+         slave: !secret alphaess_modbus_slaveId
+         address: 0x012D
+         data_type: uint16
+         unit_of_measurement: W
+         device_class: power
+         state_class: measurement
+         scan_interval: 60
+
        - name: AlphaESS Inverter Work Mode      # optional, informational
          unique_id: AlphaESS_Inverter_Work_Mode
          slave: !secret alphaess_modbus_slaveId
@@ -1024,6 +1047,8 @@ is left out.
 |---|---|---|
 | `sensor.alphaess_soc_battery` | Battery charge in percent. The planner and the peak guard use it instead of the 50 % placeholder | `battery.soc_sensor` |
 | `sensor.alphaess_power_battery` | Battery power in W. Positive while the battery discharges, which is the default sign. It lets the planner see the load the battery is covering | `battery.power_sensor`, with `battery.power_positive: discharge` (use `charge` if yours is the other way round) |
+| `sensor.alphaess_battery_max_charge_power` | The inverter's maximum battery charge power in W. The planner uses it as its charge limit | `battery.max_charge_sensor` |
+| `sensor.alphaess_battery_max_discharge_power` | The inverter's maximum battery discharge power in W. The planner uses it as its export and peak shaving limit | `battery.max_discharge_sensor` |
 | `sensor.alphaess_total_energy_from_pv` | Solar energy counter, for the energy history and the solar calibration | `history.sensors.solar` |
 | `sensor.alphaess_total_energy_charge_battery` | Energy into the battery counter | `history.sensors.battery_charge` |
 | `sensor.alphaess_total_energy_discharge_battery` | Energy out of the battery counter | `history.sensors.battery_discharge` |
@@ -1039,6 +1064,8 @@ battery:
   soc_sensor: sensor.alphaess_soc_battery
   power_sensor: sensor.alphaess_power_battery
   power_positive: discharge
+  max_charge_sensor: sensor.alphaess_battery_max_charge_power
+  max_discharge_sensor: sensor.alphaess_battery_max_discharge_power
 history:
   sensors:
     solar: [sensor.alphaess_total_energy_from_pv]

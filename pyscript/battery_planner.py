@@ -428,6 +428,35 @@ def _battery_discharge_kw(cfg):
     return capacity.battery_discharge_from_power(power, cfg.power_positive)
 
 
+def _limit_kw(entity):
+    """Inverter power limit sensor as kW; None when unreadable or not above 0."""
+    kw = _power_kw(entity)
+    if kw is None or kw <= 0:
+        return None
+    return kw
+
+
+def _with_limits(cfg, markers):
+    """cfg with the inverter's own charge / discharge limits for this cycle.
+
+    A configured sensor that cannot be read (or reads 0 or less) leaves that
+    direction at battery.max_charge_kw / max_discharge_kw and adds the
+    battery_limits_fallback marker.
+    """
+    if cfg.max_charge_sensor is None and cfg.max_discharge_sensor is None:
+        return cfg
+    charge = None
+    if cfg.max_charge_sensor is not None:
+        charge = _limit_kw(cfg.max_charge_sensor)
+    discharge = None
+    if cfg.max_discharge_sensor is not None:
+        discharge = _limit_kw(cfg.max_discharge_sensor)
+    if ((cfg.max_charge_sensor is not None and charge is None)
+            or (cfg.max_discharge_sensor is not None and discharge is None)):
+        markers.append("battery_limits_fallback")
+    return config.with_limits(cfg, charge, discharge)
+
+
 def _read_soc(entity):
     """Battery charge in percent from a sensor; None when unreadable.
 
@@ -1234,6 +1263,7 @@ def _cycle(now):
     _recover(local)
 
     markers = []
+    cfg = _with_limits(cfg, markers)
     payload, forecast_age = _read_forecast(cfg, now)
     if payload is None:
         _forecast_failed(cfg, now)

@@ -250,6 +250,7 @@ _flags = {
     "warned": {},
     "primed": False,       # entity reconciled to "off" since import/reload
     "inverter_marker": None,  # degraded marker from the last charge reading
+    "limits_marker": None,  # battery_limits_fallback while a limit sensor fails
     "stale_window": None,  # window a stale-average WARNING was already logged
     "stale_info_window": None,  # window a low stale-average INFO was logged
     "stale_episode": False,  # a stale average was seen and has not refreshed yet
@@ -562,6 +563,33 @@ def _commanded_discharge_kw(cfg, at):
     return max(0.0, min(_flags["shave_kw"], cfg.max_discharge_kw))
 
 
+def _limit_kw(entity):
+    """Inverter power limit sensor as kW; None when unreadable or not above 0."""
+    kw, _, problem = _read_sensor(entity)
+    if problem or kw <= 0:
+        return None
+    return kw
+
+
+def _with_limits(cfg):
+    """cfg with the inverter's own charge / discharge limits for this tick
+    (same rule as battery_planner._with_limits). A configured sensor that
+    cannot be read keeps the numeric fallback and sets the degraded marker."""
+    _flags["limits_marker"] = None
+    if cfg.max_charge_sensor is None and cfg.max_discharge_sensor is None:
+        return cfg
+    charge = None
+    if cfg.max_charge_sensor is not None:
+        charge = _limit_kw(cfg.max_charge_sensor)
+    discharge = None
+    if cfg.max_discharge_sensor is not None:
+        discharge = _limit_kw(cfg.max_discharge_sensor)
+    if ((cfg.max_charge_sensor is not None and charge is None)
+            or (cfg.max_discharge_sensor is not None and discharge is None)):
+        _flags["limits_marker"] = "battery_limits_fallback"
+    return site_config.with_limits(cfg, charge, discharge)
+
+
 def _battery_discharge_kw(cfg):
     """Battery power from battery.power_sensor (kW, discharge positive), or
     None: no sensor configured, or it cannot be read (the household draw is
@@ -658,6 +686,8 @@ def _make_record(now, cfg, grid, batt, verdict, took_ms, action, power_kw,
         degraded = [m for m in degraded if m != "soc_stubbed"]
     if _flags["inverter_marker"]:
         degraded.append(_flags["inverter_marker"])
+    if _flags["limits_marker"]:
+        degraded.append(_flags["limits_marker"])
     if verdict.confidence == "assumed":
         degraded.append("avg_mode_assumed")
     if grid.is_restored:
@@ -785,6 +815,7 @@ def _evaluate(trigger_type, started):
         if _flags["shaving"] is not False:
             _clear_shaving(None, "capacity tariff disabled")
         return
+    cfg = _with_limits(cfg)
     _refresh_beat(cfg, now, started)
 
     offtake, _, p_off = _read_sensor(cfg.offtake_sensor)
