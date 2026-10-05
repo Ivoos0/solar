@@ -572,7 +572,8 @@ Fields per block (energy in kWh; any field is `null` when unknown):
 | `forecast_solar_kwh` | The forecast for the block when it started, before any [solar calibration](#solar-calibration); `null` if the forecast was missing |
 | `solar_ratio` | `solar_kwh` divided by `forecast_solar_kwh`. `null` unless both are known and the forecast was at least 0.05 kWh (below that the ratio is noise). Not capped; the cap applies only when the ratio is used |
 | `consumption_price`, `injection_price` | Prices of the block, as known when it started |
-| `soc_percent` | Charge at the start; `null` while the charge is a stub |
+| `soc_percent` | Battery charge (%) at the start of the block; `null` while the charge is a stub or unreadable |
+| `soc_end_percent` | Battery charge (%) at the end of the block, read with the snapshot that closes it (the next block's start). `null` when that reading is a stub or unreadable, and in the `null` records of a gap. Records written before this field existed do not have it |
 | `complete` | `true` only if every configured counter was readable at both readings and gave a valid difference |
 | `start_read_at`, `snapshot_read_at` | When the counters were actually read |
 
