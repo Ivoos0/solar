@@ -16,6 +16,7 @@ from test_battery_planner import (  # noqa: F401  (env is a fixture)
 ACTION = "sensor.battery_planner_action"
 BUDGET = "sensor.battery_planner_budget"
 HALTED = "binary_sensor.battery_planner_halted"
+RATIO = "sensor.battery_planner_solar_ratio"
 OFFTAKE = "sensor.slimmelezer_power_consumed"
 
 
@@ -31,11 +32,11 @@ def kw(text):
     return float(text.replace("kW", ""))
 
 
-def test_normal_cycle_publishes_the_three_sensors(env):
+def test_normal_cycle_publishes_the_sensors(env):
     env.run()
     log = fields_of(env.decisions()[0])
     assert sorted(set(e for e, _, _ in env.state.published)) == sorted(
-        [ACTION, BUDGET, HALTED])
+        [ACTION, BUDGET, HALTED, RATIO])
     value, a = last(env, ACTION)
     assert value == log["action"]
     assert a["friendly_name"] == "Battery planner action"
@@ -76,7 +77,7 @@ def test_published_values_are_ui_friendly(env):
 def test_published_once_per_cycle(env):
     env.run()
     n = len(env.state.published)
-    assert n == 3
+    assert n == 4
     env.run(T0 + STEP)
     assert len(env.state.published) == 2 * n
 

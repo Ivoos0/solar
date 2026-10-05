@@ -217,10 +217,11 @@ def test_exactly_the_usage_window_is_allowed():
 
 
 def test_history_weeks_two_allows_14_days():
-    cfg = _cfg(retention={"keep_days": 14}, usage={"history_weeks": 2})
+    two = {"calibration_weeks": 2}              # the solar window counts too
+    cfg = _cfg(retention={"keep_days": 14}, usage={"history_weeks": 2}, solar=two)
     assert cfg.retention_keep_days == 14
     with pytest.raises(config.ConfigError, match="usage.history_weeks"):
-        _cfg(retention={"keep_days": 13}, usage={"history_weeks": 2})
+        _cfg(retention={"keep_days": 13}, usage={"history_weeks": 2}, solar=two)
 
 
 def test_default_keep_days_conflicts_with_a_very_long_usage_window():

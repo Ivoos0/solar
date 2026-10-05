@@ -22,6 +22,8 @@ _MAP = [
     ("battery", "round_trip_efficiency", "round_trip_efficiency"),
     ("solar", "forecast_entity", "forecast_entity"),
     ("solar", "forecast_attribute", "forecast_attribute"),
+    ("solar", "calibration_default", "solar_calibration_default"),
+    ("solar", "calibration_weeks", "solar_calibration_weeks"),
     ("timing", "block_minutes", "block_minutes"),
     ("timing", "evaluation_interval_minutes", "evaluation_interval_minutes"),
     ("timing", "forecast_retry_minutes", "forecast_retry_minutes"),
@@ -134,6 +136,11 @@ class SiteConfig:
     usage_history_weeks: int = 4
     usage_grouping: str = "same_weekday"
     usage_recency_weighting: str = "linear"
+    # Solar calibration: the ratio applied to the forecast until
+    # solar_calibration_weeks weeks of measured history exist. Both are applied
+    # AFTER the cached series is read, so neither is in fingerprint().
+    solar_calibration_default: float = 1.0
+    solar_calibration_weeks: int = 4
     inverter_type: str = "logging"
     inverter_resend_minutes: int = 15
     # Home Assistant entities. Deliberately NOT in fingerprint(): they name
@@ -277,16 +284,26 @@ def _errors(cfg):
     if isinstance(cfg.usage_history_weeks, float) or cfg.usage_history_weeks < 1:
         bad("usage_history_weeks", cfg.usage_history_weeks,
             "must be an integer >= 1")
+    if not 0 < cfg.solar_calibration_default <= 2:
+        bad("solar.calibration_default", cfg.solar_calibration_default,
+            "must be > 0 and <= 2")
+    if (isinstance(cfg.solar_calibration_weeks, float)
+            or cfg.solar_calibration_weeks < 1):
+        bad("solar.calibration_weeks", cfg.solar_calibration_weeks,
+            "must be an integer >= 1")
     if isinstance(cfg.retention_keep_days, float) or cfg.retention_keep_days < 1:
         bad("retention.keep_days", cfg.retention_keep_days,
             "must be an integer >= 1")
-    elif (isinstance(cfg.usage_history_weeks, int)
-            and cfg.usage_history_weeks >= 1
-            and cfg.retention_keep_days < 7 * cfg.usage_history_weeks):
-        bad("retention.keep_days", cfg.retention_keep_days,
-            "must be at least 7 * usage.history_weeks (usage.history_weeks=%d "
-            "needs %d days of history to build the usage profile)"
-            % (cfg.usage_history_weeks, 7 * cfg.usage_history_weeks))
+    else:
+        weeks = [w for w in (cfg.usage_history_weeks, cfg.solar_calibration_weeks)
+                 if isinstance(w, int) and w >= 1]
+        if weeks and cfg.retention_keep_days < 7 * max(weeks):
+            bad("retention.keep_days", cfg.retention_keep_days,
+                "must be at least 7 * max(usage.history_weeks, "
+                "solar.calibration_weeks) (usage.history_weeks=%d and "
+                "solar.calibration_weeks=%d need %d days of history)"
+                % (cfg.usage_history_weeks, cfg.solar_calibration_weeks,
+                   7 * max(weeks)))
     if cfg.usage_grouping not in _GROUPINGS:
         bad("usage_grouping", cfg.usage_grouping,
             "must be one of %s" % ", ".join(_GROUPINGS))

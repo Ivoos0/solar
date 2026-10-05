@@ -62,6 +62,17 @@ solar:
                                 # States and set the real name here.
   forecast_attribute: watt_hours_period
                                 # attribute holding {timestamp: Wh} per period
+  # Solar calibration (see the README, section "Solar calibration"): the forecast
+  # is often too high or too low for your roof, so it is multiplied by a ratio.
+  # The ratio is measured from your own energy history and needs a counter under
+  # history.sensors.solar. Until that history spans calibration_weeks weeks the
+  # configured calibration_default is used (1.0 = no correction).
+  calibration_default: 1.0      # > 0 and <= 2. Real solar is usually about 80 % of
+                                # the forecast? Use 0.8 (round DOWN: a lower ratio
+                                # counts on less solar)
+  calibration_weeks: 4          # whole number >= 1: weeks of measured history needed,
+                                # and the weeks the measured ratio is averaged over
+                                # (retention.keep_days must be at least 7 x this)
 
 # Belgian capaciteitstarief, billed on grid offtake only.
 capacity_tariff:
@@ -150,9 +161,9 @@ sensors:
 # files dated more than keep_days days ago go. Nothing else is touched (state,
 # cache, last_snapshot.json, this file).
 retention:
-  keep_days: 90                 # whole days, at least 1 and at least 7 times
-                                # usage.history_weeks (the usage profile needs
-                                # that much history; 4 weeks = 28 days)
+  keep_days: 90                 # whole days, at least 1 and at least 7 times the larger of
+                                # usage.history_weeks and solar.calibration_weeks (both
+                                # need that much history; 4 weeks = 28 days)
 
 timing:
   block_minutes: 15

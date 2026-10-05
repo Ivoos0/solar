@@ -34,6 +34,9 @@ Loaded once per cycle from `battery_planner/user_config.yaml` by the adapter, pa
 | `billing_floor_kw` | float | kW | 2.5 | C-013 — no saving below it |
 | `guard_interval_seconds` | int | seconds | 30 | NFR-010 |
 | `usage_history_weeks` | int | weeks | 4 | Trailing window for the usage profile (>= 1) (FR-005) |
+| `solar_calibration_default` | float | — | 1.0 | Ratio applied to the forecast until `solar_calibration_weeks` weeks of measured history exist; `> 0` and `<= 2`. NOT part of the cache fingerprint (applied after the cache is read) |
+| `solar_calibration_weeks` | int | weeks | 4 | Weeks of history needed before measured ratios are used, and the window they are averaged over (>= 1). `retention_keep_days` must be at least 7 times the larger of this and `usage_history_weeks`. NOT part of the cache fingerprint |
+| `sensors_enabled` | bool | — | true | Publish `sensor.battery_planner_action`, `_budget`, `_solar_ratio` and `binary_sensor.battery_planner_halted` once per cycle. NOT part of the cache fingerprint |
 | `usage_recency_weighting` | str | — | `linear` | `linear` \| `none`. `linear` weights each date by `usage_history_weeks` minus its week index (0 = the most recent 7 days), so with four weeks the weights are 4, 3, 2, 1; `none` is a plain mean. Part of the cache fingerprint |
 | `usage_grouping` | str | — | `same_weekday` | `same_weekday` \| `day_type` (FR-059). Part of the cache fingerprint: changing it invalidates the cached usage profile |
 | `quarter_hour_average_mode` | str | — | `auto` | FR-055, FR-057 — `auto` \| `running` \| `accumulating` |
@@ -82,9 +85,15 @@ A block absent from the price map is still projected by the trajectory — the b
 | `expected_kwh` | float | kWh | Recency-weighted mean (`usage_recency_weighting`) over the configured window for this block, grouped by `usage_grouping` (same weekday, or day type) |
 | `sample_days` | int | days | Distinct dates that contributed to this slot (a plain count, unaffected by recency weights): up to `usage_history_weeks` under same-weekday grouping, up to about 5x that under day-type grouping. A genuine sample count, so it now does signal thin history; the adapter still reports overall coverage separately (FR-005, FR-059) |
 
+### Solar ratio (energy history field and calibration)
+
+Every energy-history block record has a `solar_ratio` field: `solar_kwh / forecast_solar_kwh`, `null` unless both are known and the forecast was at least `SOLAR_RATIO_MIN_FORECAST_KWH` (0.05 kWh; below that the ratio is noise). It is stored unclamped. Records written before the field existed are fine: the calibration works from `solar_kwh` and `forecast_solar_kwh`.
+
+Calibration (`history.solar_calibration`, pure): with fewer than `solar_calibration_weeks` weeks of history (the span between the oldest and newest block that has a ratio is under 7 x weeks days) every block uses `solar_calibration_default`. Otherwise the ratio for a forecast block starting at local time of day T is `sum(measured solar) / sum(forecast solar)` over the blocks of the last `solar_calibration_weeks` weeks whose local time of day is within +-60 minutes of T (inclusive) and that have a ratio; with fewer than 12 such blocks that time of day uses the default. The applied ratio is clamped to [0, 2]. The energy-weighted form is used because a plain mean of per-block ratios lets a tiny dawn block count as much as a midday block.
+
 ### Usage history source
 
-`read_usage_history` returns `[(aware block_start, load_kwh)]`, oldest first, read from the planner's own energy-history files (`battery_planner/history/blocks-YYYY-MM-DD.jsonl`, one JSON object per 15-minute block, written by `pyscript/modules/history.py`; see the README section "Energy history"). Only blocks whose `load_kwh` is known are returned, so the list is empty (and V4 keeps grid charging off) until a `load` counter, or a `solar` counter together with both battery counters, is configured. Other recorded fields (`import_kwh`, `export_kwh`, `solar_kwh`, the load split, `forecast_solar_kwh`, prices, `complete`, read times) are for later analysis and feed no decision yet.
+`read_usage_history` returns `[(aware block_start, load_kwh)]`, oldest first, read from the planner's own energy-history files (`battery_planner/history/blocks-YYYY-MM-DD.jsonl`, one JSON object per 15-minute block, written by `pyscript/modules/history.py`; see the README section "Energy history"). Only blocks whose `load_kwh` is known are returned, so the list is empty (and V4 keeps grid charging off) until a `load` counter, or a `solar` counter together with both battery counters, is configured. Other recorded fields (`import_kwh`, `export_kwh`, the load split, prices, `complete`, read times) are for later analysis and feed no decision yet; `solar_kwh`, `forecast_solar_kwh` and `solar_ratio` feed the solar calibration (above).
 
 ---
 

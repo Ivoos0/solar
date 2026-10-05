@@ -50,6 +50,8 @@ Past `*_cache_stale_minutes` from `computed_at`:
 1. Refresh the series.
 2. If refresh is impossible — forecast unreachable, history unavailable — **use the stale series and mark the decision degraded**, recording the age in `degraded` (FR-036, SC-014).
 
+The solar series in the cache is always the RAW forecast. The solar calibration ratio (`solar.calibration_default` / measured per time of day) is applied on top of it every cycle after the cache is read, so a changed ratio or setting needs no cache rebuild and nothing is ever scaled twice. The energy history also records the raw forecast (`forecast_solar_kwh`) so the ratio never feeds back into itself.
+
 Old is not the same as missing. A stale forecast still beats no plan; only missing *price* data is a halt condition (FR-021).
 
 ## Invalidation

@@ -175,6 +175,8 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `battery.round_trip_efficiency` | `0.90` | 0 to 1 | Share of stored energy you get back. A later price only counts at this fraction |
 | `solar.forecast_entity` | `sensor.forecast_solar_estimate` | entity id | The REST sensor from `configuration.yaml` |
 | `solar.forecast_attribute` | `watt_hours_period` | attribute name | Attribute holding the Wh per period |
+| `solar.calibration_default` | `1.0` | factor (above 0, up to 2) | The forecast is multiplied by this until enough measured history exists. `0.8` counts on 80 % of the forecast. `1.0` changes nothing. See [Solar calibration](#solar-calibration) |
+| `solar.calibration_weeks` | `4` | weeks (whole number, 1 or more) | Weeks of measured history needed before measured ratios replace `solar.calibration_default`, and the number of weeks they are averaged over |
 | `capacity_tariff.enabled` | `true` | true/false | `false` turns off all peak logic (the peak budget limit, peak shaving, the peak guard's shaving, the grid-charge cap) |
 | `capacity_tariff.billing_floor_kw` | `2.5` | kW | Peaks at or below this cost nothing extra. Sets the lowest ceiling |
 | `capacity_tariff.stay_under_percent` | `80` | % (above 0, up to 100) | Grid charging stays under this share of the ceiling |
@@ -191,7 +193,7 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `history.sensors.solar`, `.battery_charge`, `.battery_discharge`, `.load` | `[]` | entity ids (list) | Cumulative kWh counters. See [Energy history](#energy-history) |
 | `report.enabled` | `true` | true/false | Writes the [daily report](#daily-report) |
 | `sensors.enabled` | `true` | true/false | Publishes the planner state as Home Assistant [sensors](#sensors). `false` publishes nothing |
-| `retention.keep_days` | `90` | days | Logs, history and reports older than this are deleted every night. At least 1, and at least 7 times `usage.history_weeks`. See [Daily cleanup](#daily-cleanup) |
+| `retention.keep_days` | `90` | days | Logs, history and reports older than this are deleted every night. At least 1, and at least 7 times the larger of `usage.history_weeks` and `solar.calibration_weeks`. See [Daily cleanup](#daily-cleanup) |
 | `timing.block_minutes` | `15` | minutes | Planning block length. Must divide 60. Keep 15 to match the price list |
 | `timing.evaluation_interval_minutes` | `5` | minutes | How often the planner runs |
 | `timing.forecast_retry_minutes` | `10` | minutes | Minimum gap between forced forecast refreshes after failures |
@@ -223,6 +225,7 @@ more cautious and cheaper for you. Where no direction is safe, use the exact val
 | `battery.round_trip_efficiency` | down | Arbitrage needs a bigger price spread |
 | `capacity_tariff.stay_under_percent` | lower is safer | Less grid charging near the peak ceiling, at the cost of fewer cheap charges |
 | `forecast_solar_url` (kWp part) | down | A lower forecast means less counted-on solar |
+| `solar.calibration_default` | down | A lower ratio counts on less solar. Use the share of the forecast you usually get, rounded down |
 | `capacity_tariff.billing_floor_kw` | exact | Take the value from your bill. A wrong floor changes what the ceiling protects |
 | `timing.*`, `capacity_tariff.guard_interval_seconds`, `alerts.*_minutes` | exact | Timing preferences with no safe direction |
 
@@ -286,6 +289,8 @@ Markers you can expect in `degraded=` on a fresh install:
 | `usage_samples=N` | The usage profile rests on fewer than `usage.history_weeks` x 7 days of history (N days). Disappears as history builds up |
 | `cache_age_solar=...`, `cache_age_usage=...` | A cached series was used, with its age |
 | `forecast_age=...` | The forecast was used, but the sensor last refreshed 75 minutes or more ago (a normal hourly refresh keeps it under that) |
+| `solar_ratio=0.83` | The forecast for the current or next block was multiplied by this ratio, measured from your own history (see [Solar calibration](#solar-calibration)). Absent when the ratio is 1.00 |
+| `solar_ratio_configured=0.80` | The same, but the ratio is `solar.calibration_default` because there is not enough measured history yet. Absent when it is 1.00 |
 | `solar_zero_fallback` | The forecast was unavailable (or older than `timing.solar_cache_stale_minutes`), so solar was treated as zero. The planner retries and does not halt |
 | `grid_sensors_unavailable` | Capacity logic is on but the grid sensors are unreadable. Grid charging is suppressed |
 | `inverter_driver_unavailable`, `inverter_read_failed` | The configured driver is missing or its charge reading failed |
@@ -438,7 +443,7 @@ next evaluation.
 ## Sensors
 
 Once per planner cycle (every `timing.evaluation_interval_minutes`) the planner publishes its latest
-state as three Home Assistant entities. Publishing never changes a decision; if it fails, the
+state as four Home Assistant entities. Publishing never changes a decision; if it fails, the
 planner logs a warning (at most once an hour) and carries on. Set `sensors.enabled: false` to turn it
 off.
 
@@ -447,6 +452,7 @@ off.
 | `sensor.battery_planner_action` | The last action: `charge`, `discharge`, `export` or `idle` (`unknown` during a price outage) | `power_kw`, `selector`, `vetoes`, `why` (the reason in words), `degraded` (the markers, comma separated), `soc_percent` (`null` while the charge is the 50 % placeholder), `decided_at` (local time), `source` |
 | `sensor.battery_planner_budget` | Power the planner may still draw from the grid for charging, in kW. Can be negative. `unknown` when the peak logic is off or its sensors cannot be read | `ceiling_kw`, `average_kw`, `month_peak_kw` |
 | `binary_sensor.battery_planner_halted` | `on` while prices are missing and no decisions are made, `off` otherwise | `cause`, `since` (both empty while `off`) |
+| `sensor.battery_planner_solar_ratio` | The [solar calibration](#solar-calibration) ratio applied to the forecast block now. `unknown` while there is no forecast | `source` (`measured` or `configured`), `weeks_of_history` (weeks between the oldest and newest block with a ratio, counted over the window the planner reads, which is `solar.calibration_weeks` plus one day) |
 
 A missing value is shown as `unknown` (or empty in an attribute), never as the number from an earlier
 cycle. The long texts (`why`, `degraded`) are attributes because a state is limited to 255 characters.
@@ -521,7 +527,8 @@ Fields per block (energy in kWh; any field is `null` when unknown):
 | `battery_charge_kwh`, `battery_discharge_kwh` | Energy into and out of the battery |
 | `load_kwh`, `load_source` | Household consumption: `measured` from a `load` counter, else `derived`, else `null` |
 | `load_from_solar_kwh`, `load_from_battery_kwh`, `load_from_net_kwh`, `split_method` | Where the load came from |
-| `forecast_solar_kwh` | The forecast for the block when it started; `null` if the forecast was missing |
+| `forecast_solar_kwh` | The forecast for the block when it started, before any [solar calibration](#solar-calibration); `null` if the forecast was missing |
+| `solar_ratio` | `solar_kwh` divided by `forecast_solar_kwh`. `null` unless both are known and the forecast was at least 0.05 kWh (below that the ratio is noise). Not capped; the cap applies only when the ratio is used |
 | `consumption_price`, `injection_price` | Prices of the block, as known when it started |
 | `soc_percent` | Charge at the start; `null` while the charge is a stub |
 | `complete` | `true` only if every configured counter was readable at both readings and gave a valid difference |
@@ -542,6 +549,54 @@ interval after the boundary. Both read times are in every record.
 History files are deleted after `retention.keep_days` days (default 90), see
 [Daily cleanup](#daily-cleanup). To keep more, raise that setting. To keep it forever, copy the
 `history` folder somewhere else before it expires.
+
+### Solar calibration
+
+The forecast is often too high (or too low) for your roof. If real production is usually about 80 %
+of what forecast.solar says, the planner would count on solar that never arrives. The planner
+therefore compares the measured solar energy with the forecast in its energy history and corrects
+the forecast with a ratio (0.8 in that example).
+
+It needs a `solar` counter under `history.sensors` (see [Energy history](#energy-history)). Without
+one nothing is measured, and the configured `solar.calibration_default` applies all the time; with the
+default of `1.0` the forecast is used as it is. No `solar` counter is shipped as a default, so this
+is the situation on a fresh install.
+
+Which ratio is used:
+
+1. **Not enough history yet.** Until the measured blocks span `solar.calibration_weeks` weeks (default 4,
+   counted from the oldest to the newest block that has a ratio), every block uses
+   `solar.calibration_default`. Records then carry `solar_ratio_configured=0.80`.
+2. **Enough history.** For a forecast block that starts at a certain time of day, the planner looks at all
+   blocks of the last `solar.calibration_weeks` weeks that start within one hour before or after that
+   time of day (the hour on either side included; at 15-minute blocks that is 9 blocks a day) and
+   divides the total measured solar by the total forecast solar of those blocks. Records then carry
+   `solar_ratio=0.83`. Blocks without a ratio (no counter value, or a forecast below 0.05 kWh) are left
+   out.
+3. **Too few blocks around that time of day.** With fewer than 12 usable blocks the configured value
+   is used for that time of day. That is why early morning and evening usually show the configured
+   value even when midday shows a measured one.
+
+The ratio is never above 2 and never below 0. It is recalculated at most once an hour, from the history
+files, and applied to the stored forecast every cycle, so changing `solar.calibration_default` takes
+effect on the next cycle. The stored forecast and the forecast in the energy history are always the
+uncorrected figures, so the ratio never feeds back into itself. The [daily report](#daily-report) also
+compares measured solar with the uncorrected forecast.
+
+Totals are used rather than an average of the per-block ratios, because the total energy error is what
+matters: a dawn block with 0.06 kWh forecast and a noisy 0.12 kWh measured (ratio 2.0) should not
+weigh as much as a midday block with 1.2 kWh.
+
+A marker `solar_ratio=...` or `solar_ratio_configured=...` is added to the `degraded` field when the
+ratio for the current or next block with forecast solar is not 1.00, and the
+`sensor.battery_planner_solar_ratio` entity shows the ratio now (see [Sensors](#sensors)). Outside
+daylight that sensor shows the configured value, because there is nothing to measure.
+
+Choose `solar.calibration_default` as the share of the forecast you normally get, rounded down. Keep
+`retention.keep_days` at 7 times `solar.calibration_weeks` or more; the planner refuses to start
+otherwise, because the cleanup would delete history the calibration needs. Leave a few days of margin
+above that minimum: right after the 03:30 cleanup the history can be a little shorter than the weeks you
+asked for, and the configured value then applies until that morning's first measured blocks arrive.
 
 ### Daily report
 
@@ -583,11 +638,11 @@ Everything else is left alone: your `user_config.yaml`, the `state` and `cache` 
 it). Each night one line in the Home Assistant log says how many files were removed. A file that
 cannot be removed is reported as a warning and tried again the next night.
 
-`retention.keep_days` must be a whole number of at least 1 and at least 7 times `usage.history_weeks`,
-because the usage profile is built from that many weeks of history. With the default 4 weeks the lowest
-accepted value is 28; if the value is too low the planner reports a configuration error that names
-both settings, and nothing is deleted until you fix it. If you set `usage.history_weeks` above 12, raise
-`retention.keep_days` too.
+`retention.keep_days` must be a whole number of at least 1 and at least 7 times the larger of
+`usage.history_weeks` and `solar.calibration_weeks`, because the usage profile and the solar calibration
+are built from that many weeks of history. With the default 4 weeks the lowest accepted value is 28; if
+the value is too low the planner reports a configuration error that names the settings, and nothing is
+deleted until you fix it. If you set either of them above 12, raise `retention.keep_days` too.
 
 ## Updating
 
@@ -711,9 +766,10 @@ If you fork, do not publish `secrets.yaml` or `battery_planner/user_config.yaml`
 - The alert e-mails and the entity names on installs other than the original one have not been tested
   against a live Home Assistant. Send a test mail (install step 8) and check the entity names as
   described above.
-- `solar_realisation_ratio` in `pyscript/modules/history.py` (measured over forecast solar) is
-  implemented and tested but not applied to any decision. The recorded prices, battery and split
-  fields are for later analysis.
+- The solar calibration (see [Solar calibration](#solar-calibration)) has only been tested with
+  generated history. It needs a `solar` energy counter, which is not configured by default, and then
+  about `solar.calibration_weeks` weeks of recording before it measures anything. The recorded prices,
+  battery and split fields are for later analysis.
 
 To adapt the planner: provider prices are `prices.*` in `user_config.yaml`; the capacity-tariff logic
 is in `pyscript/modules/capacity.py`; usage history is read by `read_usage_history` in

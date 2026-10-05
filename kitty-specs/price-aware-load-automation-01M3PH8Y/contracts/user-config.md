@@ -48,6 +48,9 @@ battery:
 solar:
   forecast_entity: sensor.forecast_solar_estimate   # unconfirmed on the live install
   forecast_attribute: watt_hours_period
+  calibration_default: 1.0      # > 0 and <= 2; the forecast is multiplied by this until the
+                                # history spans calibration_weeks weeks (round DOWN)
+  calibration_weeks: 4          # integer >= 1; weeks of history needed AND averaged over
 
 # Belgian capaciteitstarief. Billed on the rolling average of the last twelve
 # monthly peaks, floored at 2.5 kW, on grid offtake only.
@@ -136,7 +139,7 @@ sensors:
 
 # Retention (see the README, section "Daily cleanup")
 retention:
-  keep_days: 90                 # delete logs, history and reports whose file-name date is older; >= 7 * usage.history_weeks
+  keep_days: 90                 # delete logs, history and reports whose file-name date is older; >= 7 * max(usage.history_weeks, solar.calibration_weeks)
 
 timing:
   block_minutes: 15
@@ -182,11 +185,12 @@ Checked at load. A failure is a **startup error, not a degraded cycle** — bad 
 | `history.enabled` is a boolean; each `history.sensors.<quantity>` is a list of entity ids (`domain.object_id`) without duplicates; only the quantities `import`, `export`, `solar`, `battery_charge`, `battery_discharge`, `load` are accepted | A typo must not silently disable a counter. The `history` section does not join the cache fingerprint (it names where data is read from) |
 | `report.enabled` is a boolean; default true | A typo must not silently turn the report off. It does not join the cache fingerprint |
 | `sensors.enabled` is a boolean; default true | A typo must not silently turn the sensors off. It does not join the cache fingerprint. The published entities are: `sensor.battery_planner_action` (state = last action, or `unknown`; attributes `power_kw`, `selector`, `vetoes`, `why`, `degraded` as strings, `soc_percent`, `decided_at`, `source`), `sensor.battery_planner_budget` (state = grid charge budget in kW or `unknown`; attributes `ceiling_kw`, `average_kw`, `month_peak_kw`) and `binary_sensor.battery_planner_halted` (`on`/`off`; attributes `cause`, `since`) |
-| `retention.keep_days` is an integer `>= 1` (no booleans, no floats); default 90. It must also be `>= 7 * usage.history_weeks`, else the error names both keys | The daily cleanup deletes files older than this, and the usage profile needs `usage.history_weeks` weeks of energy history, so keeping less would delete data the planner reads. It does not join the cache fingerprint |
+| `retention.keep_days` is an integer `>= 1` (no booleans, no floats); default 90. It must also be `>= 7 * max(usage.history_weeks, solar.calibration_weeks)`, else the error names `retention.keep_days`, `usage.history_weeks` and `solar.calibration_weeks` | The daily cleanup deletes files older than this, the usage profile needs `usage.history_weeks` weeks of energy history and the solar calibration needs `solar.calibration_weeks`, so keeping less would delete data the planner reads. It does not join the cache fingerprint |
+| `solar.calibration_default` is a number `> 0` and `<= 2` (no booleans); default 1.0. `solar.calibration_weeks` is an integer `>= 1` (no booleans, no floats); default 4 | The default is the ratio applied to the forecast until `solar.calibration_weeks` weeks of measured history exist, and is rounded DOWN by the user (a lower ratio counts on less solar). Neither joins the cache fingerprint: the ratio is applied to the cached RAW series every cycle, never stored in the cache |
 
 ## Cache invalidation
 
-Changing `solar.*`, `timing.block_minutes`, `usage.history_weeks`, `usage.grouping` or `usage.recency_weighting` changes what a cached block *means*, so cached series built under the old values are discarded (FR-037). (The usage settings only affect the usage profile, but they share the fingerprint for simplicity; a rare change costs one extra solar refetch.) The cache stores a fingerprint of exactly these fields; a mismatch is a miss, not an error.
+Changing `solar.*` (except `solar.calibration_default` and `solar.calibration_weeks`, which are applied after the cache is read), `timing.block_minutes`, `usage.history_weeks`, `usage.grouping` or `usage.recency_weighting` changes what a cached block *means*, so cached series built under the old values are discarded (FR-037). (The usage settings only affect the usage profile, but they share the fingerprint for simplicity; a rare change costs one extra solar refetch.) The cache stores a fingerprint of exactly these fields; a mismatch is a miss, not an error.
 
 ## Secrets
 

@@ -33,10 +33,18 @@ true instant-by-instant mix is unknowable.
 """
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 SCHEMA = 1
+
+# Solar calibration (see "Solar calibration" at the end of this file).
+# A block's solar_ratio is stored only when the forecast was at least this big:
+# the ratio of two tiny numbers (dawn, dusk, heavy cloud) is noise.
+SOLAR_RATIO_MIN_FORECAST_KWH = 0.05
+SOLAR_RATIO_WINDOW_MINUTES = 60      # +- this many minutes around a time of day
+SOLAR_RATIO_MIN_BLOCKS = 12          # fewer contributing blocks: use the default
+SOLAR_RATIO_MAX = 2.0                # applied ratios are clamped to [0, this]
 SPLIT_METHOD = "priority_v1"
 QUANTITIES = ("import", "export", "solar", "battery_charge",
               "battery_discharge", "load")
@@ -52,7 +60,7 @@ RECORD_FIELDS = (
     "import_kwh", "export_kwh", "solar_kwh", "battery_charge_kwh",
     "battery_discharge_kwh", "load_kwh", "load_source", "from_net_kwh",
     "load_from_solar_kwh", "load_from_battery_kwh", "load_from_net_kwh",
-    "split_method", "forecast_solar_kwh", "consumption_price",
+    "split_method", "forecast_solar_kwh", "solar_ratio", "consumption_price",
     "injection_price", "soc_percent", "complete", "start_read_at",
     "snapshot_read_at",
 )
@@ -208,6 +216,7 @@ def block_record(start, end, block_minutes, tz):
     if s is not None:
         rec["split_method"] = SPLIT_METHOD
     rec["forecast_solar_kwh"] = start.forecast_solar_kwh
+    rec["solar_ratio"] = solar_ratio_of(d["solar"], start.forecast_solar_kwh)
     rec["consumption_price"] = start.consumption_price
     rec["injection_price"] = start.injection_price
     rec["soc_percent"] = start.soc_percent
@@ -319,3 +328,187 @@ def solar_realisation_ratio(records, weeks, min_forecast_kwh=1.0):
     if total_forecast < min_forecast_kwh or total_forecast <= 0:
         return None
     return sum(p[1] for p in chosen) / total_forecast
+
+
+# ---- solar calibration -----------------------------------------------------------
+#
+# The forecast tends to over- or underestimate (for example real solar is
+# consistently about 80 % of the forecast). Every block record stores
+# solar_ratio = measured solar / forecast solar (None unless both are known and
+# the forecast was at least SOLAR_RATIO_MIN_FORECAST_KWH). The planner corrects
+# the forecast with a ratio per time of day:
+#
+# * Fewer than `weeks` weeks of history (the span between the oldest and the
+#   newest block that has a ratio is under 7 * weeks days): the configured
+#   default for every block.
+# * Otherwise, for a forecast block starting at local time of day T: over all
+#   history blocks of the last `weeks` weeks whose local time of day is within
+#   +- SOLAR_RATIO_WINDOW_MINUTES of T (inclusive; 9 blocks a day at 15 minutes)
+#   and that have a ratio,
+#       ratio(T) = sum(measured solar) / sum(forecast solar).
+#   This energy-weighted average is used instead of a plain mean of the
+#   per-block ratios because a plain mean lets a block with 0.06 kWh forecast
+#   (and a noisy 0.12 measured, ratio 2.0) count as much as a midday block of
+#   1.2 kWh: the total energy error is what matters, so big blocks must weigh
+#   more. With fewer than SOLAR_RATIO_MIN_BLOCKS contributing blocks the default
+#   is used for that T.
+# * The applied ratio is clamped to [0, SOLAR_RATIO_MAX] at use time; the stored
+#   per-block value is never clamped.
+#
+# Pure functions: the adapter reads the files and the clock, caches the result
+# for the hour, and applies it on top of the RAW forecast series every cycle.
+
+def solar_ratio_of(solar_kwh, forecast_kwh):
+    """measured / forecast solar of one block, or None when either is unknown
+    (or negative) or the forecast is below SOLAR_RATIO_MIN_FORECAST_KWH."""
+    if not (_finite(solar_kwh) and _finite(forecast_kwh)):
+        return None
+    if solar_kwh < 0 or forecast_kwh < SOLAR_RATIO_MIN_FORECAST_KWH:
+        return None
+    return round(solar_kwh / forecast_kwh, 4)
+
+
+def _ratio_blocks(records, tz):
+    """[(start UTC, local minute of day, solar kWh, forecast kWh)], oldest first.
+
+    Worked out from solar_kwh and forecast_solar_kwh with the rule of
+    solar_ratio_of, so records written before the solar_ratio field existed
+    count too. A duplicate block_start keeps the last record.
+    """
+    by_start = {}
+    for rec in records:
+        solar, forecast = rec.get("solar_kwh"), rec.get("forecast_solar_kwh")
+        if solar_ratio_of(solar, forecast) is None:
+            continue
+        try:
+            start = _start(rec)
+        except (KeyError, TypeError, ValueError):
+            continue
+        local = start.astimezone(tz)
+        by_start[start] = (start, local.hour * 60 + local.minute,
+                           float(solar), float(forecast))
+    return [by_start[k] for k in sorted(by_start)]
+
+
+def default_calibration(default, weeks):
+    """Calibration that applies the configured default everywhere."""
+    return {"default": default, "weeks": weeks, "span_days": 0.0,
+            "enough": False, "ratios": {}}
+
+
+def solar_calibration(records, now, weeks, default, tz, block_minutes):
+    """Per-time-of-day solar ratios from history `records`.
+
+    Returns {"default", "weeks", "span_days" (oldest to newest block that has a
+    ratio), "enough" (that span >= 7 * weeks days), "ratios"}; ratios maps a
+    local minute of day (a multiple of block_minutes) to the measured ratio for
+    blocks starting then, only where at least SOLAR_RATIO_MIN_BLOCKS blocks
+    contribute. Anything not in ratios uses the default. No clock: `now` ends
+    the window.
+    """
+    cal = default_calibration(default, weeks)
+    blocks = _ratio_blocks(records, tz)
+    if not blocks:
+        return cal
+    span = blocks[-1][0] - blocks[0][0]
+    cal["span_days"] = span.total_seconds() / 86400.0
+    if span < timedelta(days=7 * weeks):
+        return cal
+    cal["enough"] = True
+    end = _utc(now)
+    cutoff = end - timedelta(days=7 * weeks)
+    by_minute = {}                         # local minute of day -> [solar, forecast, n]
+    for start, minute, solar, forecast in blocks:
+        if start < cutoff or start > end:
+            continue
+        cell = by_minute.setdefault(minute, [0.0, 0.0, 0])
+        cell[0] += solar
+        cell[1] += forecast
+        cell[2] += 1
+    ratios = {}
+    for target in range(0, 24 * 60, block_minutes):
+        solar_sum, forecast_sum, count = 0.0, 0.0, 0
+        for minute, cell in by_minute.items():
+            gap = abs(minute - target)
+            gap = min(gap, 24 * 60 - gap)            # around midnight too
+            if gap <= SOLAR_RATIO_WINDOW_MINUTES:
+                solar_sum += cell[0]
+                forecast_sum += cell[1]
+                count += cell[2]
+        if count >= SOLAR_RATIO_MIN_BLOCKS and forecast_sum > 0:
+            ratios[target] = min(max(solar_sum / forecast_sum, 0.0),
+                                 SOLAR_RATIO_MAX)
+    cal["ratios"] = ratios
+    return cal
+
+
+def _minute_of_block(when, tz, block_minutes):
+    local = when.astimezone(tz)
+    minute = local.hour * 60 + local.minute
+    return minute - minute % block_minutes
+
+
+def calibration_ratio(cal, minute_of_day):
+    """(ratio, "measured" | "configured") for a block starting at this local
+    minute of day. Clamped to [0, SOLAR_RATIO_MAX]."""
+    measured = cal["ratios"].get(minute_of_day)
+    if measured is not None:
+        return min(max(measured, 0.0), SOLAR_RATIO_MAX), "measured"
+    return min(max(cal["default"], 0.0), SOLAR_RATIO_MAX), "configured"
+
+
+def apply_solar_calibration(slots, cal, tz, block_minutes):
+    """New ForecastSlot list with each block's expected_kwh times its ratio.
+
+    Takes the RAW series and returns a new list (slots are frozen): applying it
+    to its own output would apply the ratio twice, so the adapter always starts
+    from the raw series. Zero-fallback slots stay as they are.
+    """
+    out = []
+    for slot in slots:
+        if slot.is_zero_fallback:
+            out.append(slot)
+            continue
+        ratio, _ = calibration_ratio(
+            cal, _minute_of_block(slot.block_start, tz, block_minutes))
+        out.append(slot if ratio == 1.0
+                   else replace(slot, expected_kwh=slot.expected_kwh * ratio))
+    return out
+
+
+def current_solar_ratio(cal, now, tz, block_minutes):
+    """(ratio, source) applied to the block containing `now`."""
+    return calibration_ratio(
+        cal, _minute_of_block(block_floor(now, block_minutes), tz, block_minutes))
+
+
+def weeks_of_history(cal):
+    """Weeks between the oldest and newest block with a ratio (one decimal)."""
+    return round(cal["span_days"] / 7.0, 1)
+
+
+def calibration_marker(cal, raw_slots, now, tz, block_minutes):
+    """Degraded marker for the current and the next block, or None.
+
+    "solar_ratio=0.83" for a measured ratio, "solar_ratio_configured=0.80" for
+    the configured one; none when the ratio rounds to 1.00. Blocks without
+    forecast solar are skipped: the ratio changes nothing there (at night a
+    configured 0.8 would otherwise mark every record).
+    """
+    step = timedelta(minutes=block_minutes)
+    current = block_floor(now, block_minutes)
+    by_start = {}
+    for slot in raw_slots:
+        if not slot.is_zero_fallback and slot.expected_kwh > 0:
+            by_start[_utc(slot.block_start)] = slot
+    for start in (current, current + step):
+        if start not in by_start:
+            continue
+        ratio, source = calibration_ratio(
+            cal, _minute_of_block(start, tz, block_minutes))
+        if round(ratio, 2) == 1.0:
+            continue
+        if source == "measured":
+            return "solar_ratio=%.2f" % ratio
+        return "solar_ratio_configured=%.2f" % ratio
+    return None

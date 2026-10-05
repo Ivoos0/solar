@@ -84,6 +84,15 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
   The recorder is wrapped: a failure is logged (rate-limited) and never touches
   the decision. The planner never deletes files; pyscript/housekeeping.py removes the old
   ones (retention.keep_days).
+* Solar calibration (history.py, "solar calibration"): the cache and the history
+  hold the RAW forecast. Every cycle the ratio of the time of day is applied on
+  top of the raw series (_calibrated), so a changed ratio or setting takes
+  effect at once and nothing is applied twice. The per-time-of-day ratios are
+  recomputed from the last solar.calibration_weeks weeks of history files at
+  most once per clock hour (or when the date or the settings change), never
+  every cycle. A read/calculation failure falls back to the configured default
+  (or the raw series) with a rate-limited warning. Markers: solar_ratio=0.83
+  (measured) or solar_ratio_configured=0.80 (configured), none at 1.00.
 * Usage history: read_usage_history() is the single seam; see its docstring.
   Coverage (distinct local days present vs the window) is reported as
   usage_samples=N; per-slot sample_days is not the coverage signal.
@@ -156,6 +165,7 @@ _BAD_STATES = (None, "", "unknown", "unavailable", "none", "None")
 SENSOR_ACTION = "sensor.battery_planner_action"
 SENSOR_BUDGET = "sensor.battery_planner_budget"
 SENSOR_HALTED = "binary_sensor.battery_planner_halted"
+SENSOR_SOLAR_RATIO = "sensor.battery_planner_solar_ratio"
 UNKNOWN = "unknown"
 
 # ---- tuning that is not user config ----------------------------------------
@@ -189,6 +199,8 @@ _hist_warned = {}                     # warning kind -> last time logged
 _peak_alert_loaded = False            # peak_alert.json read once per process
 _peak_alert_last = None               # (YYYY-MM, kW) of the last notified peak
 _last_grid_charge = None              # (local time, kW) of the last recorded grid-charge decision
+_calibration = None                   # history.solar_calibration result, per clock hour
+_calibration_key = None               # what it was computed for (date, hour, settings)
 
 
 def _now():
@@ -811,18 +823,14 @@ def _record_history(cfg, now, price_map=None, solar=None, zero_fallback=False,
             pass
 
 
-def read_usage_history(cfg, local):
-    """Per-INTERVAL household kWh as [(aware datetime, kwh)], oldest first.
+def _read_history_records(cfg, local, window):
+    """Every record of the history files of the last `window` (a timedelta).
 
-    Read from the planner's own daily history files (blocks-YYYY-MM-DD.jsonl)
-    covering cfg.usage_history_weeks weeks. Only blocks whose load_kwh is known
-    are returned, so with no `load` counter and no complete solar + battery
-    counter set configured this is [] (and V4 keeps grid charging off). Missing
-    files are normal; unreadable files and corrupt lines are skipped, counted
-    and warned about (rate-limited). Interval energy, never meter totals.
+    Files are blocks-YYYY-MM-DD.jsonl, one per local date from (local - window)
+    to today. Missing files are normal; unreadable files and corrupt lines are
+    skipped, counted and warned about (rate-limited).
     """
     tz = ZoneInfo(cfg.timezone)
-    window = timedelta(weeks=cfg.usage_history_weeks)
     day = (local - window).astimezone(tz).date()
     last = local.astimezone(tz).date()
     paths = []
@@ -840,7 +848,75 @@ def read_usage_history(cfg, local):
     if bad or found["errors"]:
         _hist_warn("read", "skipped %d corrupt line(s), %d unreadable file(s)"
                    % (bad, len(found["errors"])), local)
+    return records
+
+
+def read_usage_history(cfg, local):
+    """Per-INTERVAL household kWh as [(aware datetime, kwh)], oldest first.
+
+    Read from the planner's own daily history files (blocks-YYYY-MM-DD.jsonl)
+    covering cfg.usage_history_weeks weeks. Only blocks whose load_kwh is known
+    are returned, so with no `load` counter and no complete solar + battery
+    counter set configured this is [] (and V4 keeps grid charging off). Missing
+    files are normal; unreadable files and corrupt lines are skipped, counted
+    and warned about (rate-limited). Interval energy, never meter totals.
+    """
+    window = timedelta(weeks=cfg.usage_history_weeks)
+    records = _read_history_records(cfg, local, window)
     return history.usage_series(records, since=local - window)
+
+
+def _solar_calibration(cfg, local):
+    """The solar calibration (history.solar_calibration), recomputed at most
+    once per clock hour (and when the date or the calibration settings change),
+    so the history files are not read every cycle. Never raises: a read or
+    calculation failure falls back to the configured default for that hour."""
+    global _calibration, _calibration_key
+    key = (local.date().isoformat(), local.hour, cfg.solar_calibration_weeks,
+           cfg.solar_calibration_default, cfg.block_minutes)
+    if _calibration is not None and key == _calibration_key:
+        return _calibration
+    weeks = cfg.solar_calibration_weeks
+    try:
+        # One day more than the window, so the span test can reach 7 * weeks days.
+        records = _read_history_records(cfg, local, timedelta(days=7 * weeks + 1))
+        cal = history.solar_calibration(
+            records, local, weeks, cfg.solar_calibration_default,
+            ZoneInfo(cfg.timezone), cfg.block_minutes)
+    except Exception as exc:
+        _warn_hourly("solar_calibration",
+                     "solar calibration failed, using the configured ratio: %r"
+                     % (exc,), local)
+        cal = history.default_calibration(cfg.solar_calibration_default, weeks)
+    _calibration, _calibration_key = cal, key
+    return cal
+
+
+def _calibrated(cfg, local, raw, zero_fallback, markers):
+    """(solar series with the calibration applied, ratio info for the sensor).
+
+    `raw` is the series as built or cached (never modified: it is what the cache
+    holds and what the history records as the forecast). The ratio info is
+    (ratio, source, weeks_of_history), or None when there is no forecast. Never
+    raises: on failure the raw series is used, uncalibrated.
+    """
+    if zero_fallback:
+        return raw, None
+    try:
+        tz = ZoneInfo(cfg.timezone)
+        cal = _solar_calibration(cfg, local)
+        solar = history.apply_solar_calibration(raw, cal, tz, cfg.block_minutes)
+        marker = history.calibration_marker(cal, raw, local, tz, cfg.block_minutes)
+        if marker:
+            markers.append(marker)
+        ratio, source = history.current_solar_ratio(
+            cal, local, tz, cfg.block_minutes)
+        return solar, (ratio, source, history.weeks_of_history(cal))
+    except Exception as exc:
+        _warn_hourly("solar_calibration",
+                     "solar calibration failed, forecast used as is: %r"
+                     % (exc,), local)
+        return raw, None
 
 
 def _usage(cfg, local, span_start, span_end, markers):
@@ -1012,11 +1088,12 @@ def _publish_halted(on, cause, since, now):
         "cause": cause, "since": since}, now)
 
 
-def _publish_sensors(cfg, local, record, grid, stubbed):
+def _publish_sensors(cfg, local, record, grid, stubbed, solar_ratio=None):
     """Publish this cycle's decision. NEVER raises, never touches a decision.
 
     Missing data is published as "unknown" (state) or null (attribute), never
-    as the figure of an earlier cycle.
+    as the figure of an earlier cycle. solar_ratio is (ratio, source,
+    weeks_of_history) of the block now, or None when there is no forecast.
     """
     try:
         if not cfg.sensors_enabled:
@@ -1044,6 +1121,13 @@ def _publish_sensors(cfg, local, record, grid, stubbed):
             "month_peak_kw": _rounded(
                 None if grid is None else grid.month_peak_kw, 2)}, local)
         _publish_halted(False, None, None, local)
+        _publish(SENSOR_SOLAR_RATIO,
+                 UNKNOWN if solar_ratio is None else round(solar_ratio[0], 2), {
+            "friendly_name": "Battery planner solar ratio",
+            "icon": "mdi:solar-power",
+            "source": None if solar_ratio is None else solar_ratio[1],
+            "weeks_of_history": None if solar_ratio is None else solar_ratio[2]},
+            local)
     except Exception as exc:
         _warn_hourly("sensor_publish", "publishing failed: %r" % (exc,), local)
 
@@ -1103,7 +1187,8 @@ def _cycle(now):
             markers.append("forecast_age=" + cache.format_minutes(forecast_age))
     midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
     span_end = midnight.astimezone(timezone.utc) + timedelta(hours=SERIES_SPAN_HOURS)
-    solar, zero_fallback = _solar(cfg, local, midnight, span_end, payload, markers)
+    solar_raw, zero_fallback = _solar(cfg, local, midnight, span_end, payload, markers)
+    solar, solar_ratio = _calibrated(cfg, local, solar_raw, zero_fallback, markers)
     usage, history_days = _usage(cfg, local, midnight, span_end, markers)
     window_days = cfg.usage_history_weeks * 7
     coverage = history_days if history_days < window_days else None
@@ -1149,10 +1234,12 @@ def _cycle(now):
         log.error("battery_planner: decision could not be recorded")  # noqa: F821
     else:
         _remember_grid_charge(d, local)
-    _publish_sensors(cfg, local, record, grid, bat.is_stubbed)
+    _publish_sensors(cfg, local, record, grid, bat.is_stubbed, solar_ratio)
     if took > SLOW_CYCLE_MS:
         log.warning(f"battery_planner: slow cycle {took}ms")  # noqa: F821
-    _record_history(cfg, now, price_map, solar, zero_fallback,
+    # The history records the RAW forecast: a calibrated one would feed the
+    # ratio back into itself.
+    _record_history(cfg, now, price_map, solar_raw, zero_fallback,
                     None if charge_is_stub else charge)
 
 
