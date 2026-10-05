@@ -42,11 +42,21 @@ forbidden, so the loop always terminates.
 Action classes a veto can forbid: "discharge" (serve the house from the
 battery), "export" (discharge to the grid), "grid_charge", "solar_charge"
 (store surplus solar: a charge proposal with charge_source "solar").
-  V1  charge_percent <= reserve_percent  -> {"discharge", "export"}
+  V1  charge_percent <= reserve_percent  -> {"export"} only
   V2  injection_price < 0 (0.0 does not) -> {"export"} only
   V3  capacity budget_kw <= 0            -> {"grid_charge"} only
   V4  no usable usage history            -> {"grid_charge", "export",
                                              "solar_charge"}
+  V5  battery empty (charge_percent <= 0
+      or stored_kwh <= 0)                -> {"discharge"} only
+RESERVE SEMANTICS: reserve_percent limits what the battery may EXPORT to the
+grid; it is a floor for exporting, not a target to hold. The planner never buys
+power to keep the battery up to the reserve (when the battery reaches it the
+house simply imports), and peak shaving (S0) may use charge below the reserve.
+The planner cannot know the inverter's own minimum charge (the driver / the
+inverter enforces that), so the only lower bound it applies to a discharge is V5:
+the battery is truly empty. V5 is a separate veto (not buried in S0) so an empty
+battery shows up in the record's vetoes field as V5(suppressed S0 discharge).
 V4 ("no usage profile"): without history the trajectory cannot know the
 household load. A grid charge could land on top of an unseen peak, and the
 "solar > usage now" test of S2 and the spill/saturation maths of S3 are
@@ -54,8 +64,8 @@ meaningless at zero usage. So every price-driven selector (S1-S5) is held and
 the planner falls through to idle (S6), whose reasoning says "no usage history:
 planner holds". V4 does NOT forbid "discharge": the only discharge proposal is
 S0 peak shaving, which does not depend on usage history (it reads the live grid
-state) and protects the capacity tariff, so it still acts (V1's reserve veto
-still applies to it). V4 fires whether or not capacity logic is active.
+state) and protects the capacity tariff, so it still acts (only V5, an empty
+battery, can stop it). V4 fires whether or not capacity logic is active.
 V3 and the grid-charge cap use the budget against stay_under_percent of the
 ceiling (capacity.charging_ceiling_kw), e.g. 80 % of 2.5 kW = 2.0 kW; S0 and
 the reported ceiling still use the real ceiling.
@@ -105,11 +115,12 @@ FORBID_GRID_CHARGE = "grid_charge"
 FORBID_SOLAR_CHARGE = "solar_charge"
 
 VETO_FORBIDS = {
-    "V1": frozenset({FORBID_DISCHARGE, FORBID_EXPORT}),
+    "V1": frozenset({FORBID_EXPORT}),
     "V2": frozenset({FORBID_EXPORT}),
     "V3": frozenset({FORBID_GRID_CHARGE}),
     "V4": frozenset({FORBID_GRID_CHARGE, FORBID_EXPORT,
                     FORBID_SOLAR_CHARGE}),
+    "V5": frozenset({FORBID_DISCHARGE}),
 }
 
 
@@ -169,6 +180,8 @@ def establish_vetoes(battery_state, current_price, config, grid_state=None,
     """Return (forbidden action classes, [fired veto ids]). Data only.
 
     usage_history_available defaults to the SAFE False (V4 fires).
+    V1 (at or below the reserve) forbids only export; V5 (battery empty)
+    forbids only discharge.
 
     current_price is the PricePoint of the current block or None (no V2 then).
     Never chooses, logs or short-circuits.
@@ -183,6 +196,8 @@ def establish_vetoes(battery_state, current_price, config, grid_state=None,
         fired.append("V3")
     if not usage_history_available:
         fired.append("V4")
+    if battery_state.charge_percent <= 0 or battery_state.stored_kwh <= 0:
+        fired.append("V5")
     forbidden = frozenset()
     for v in fired:
         forbidden = forbidden | VETO_FORBIDS[v]

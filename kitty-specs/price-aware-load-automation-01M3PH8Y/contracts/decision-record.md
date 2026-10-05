@@ -77,7 +77,7 @@ vetoes=V2 | selector=S2 |
   why="injection -0.0043; surplus 2.4kW, headroom 3.2kWh, charging from solar"
 ```
 
-V4 fires on every cycle while there is no usage history (until the energy history holds a known household load, see the README section "Energy history"), so it appears bare on most records, and as `V4(suppressed ...)` whenever a price-driven selector (grid charge, solar charge or export) would have acted. The suppressed entries are rendered separately, one per suppressed proposal, e.g. `V4(suppressed S1 charge)` and `V4(suppressed S2 charge)` (see render_vetoes). V4 does not forbid the S0 peak-shave discharge; only V1 (reserve) does.
+V4 fires on every cycle while there is no usage history (until the energy history holds a known household load, see the README section "Energy history"), so it appears bare on most records, and as `V4(suppressed ...)` whenever a price-driven selector (grid charge, solar charge or export) would have acted. The suppressed entries are rendered separately, one per suppressed proposal, e.g. `V4(suppressed S1 charge)` and `V4(suppressed S2 charge)` (see render_vetoes). V4 does not forbid the S0 peak-shave discharge. Neither does V1 (reserve): V1 forbids export only. Only V5 (battery empty, forbids discharge) stops a peak shave, e.g. `V5(suppressed S0 discharge)`.
 
 This is the case the spec got wrong twice. A record showing a veto **must** also name the selector that finally fired (SC-010) — a veto alone is never a complete decision.
 

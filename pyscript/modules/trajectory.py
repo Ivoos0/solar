@@ -22,6 +22,12 @@ Absorption is bound by TWO independent ceilings plus the surplus itself:
   absorbed = min(surplus, max_charge_kw * block_hours, headroom)
 so spill can occur while headroom remains (charge-power limit).
 
+The reserve is the projection's floor, not a target: the do-nothing baseline
+stops serving the house from the battery there and counts the rest as grid
+shortfall (the house imports at that time). That is a modelling assumption for
+the selectors; in real life the reserve only limits exporting to the grid, peak
+shaving may use charge below it, and the inverter has its own minimum charge.
+
 If the battery starts below the reserve floor it is NOT lifted to the floor
 (that would create energy): it simply cannot discharge until it climbs back.
 """

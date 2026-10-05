@@ -18,6 +18,9 @@ def from_percent(charge_percent, config, is_stubbed=True):
     usable   = max(0, stored - capacity * reserve_percent / 100)
     headroom = capacity - stored
     Below the reserve floor there is no usable energy (0.0, not negative).
+    "Usable" is the energy the planner counts on for the house and for
+    export; the reserve itself only forbids exporting (veto V1), and peak
+    shaving may still draw on the charge under it (it stops at empty, V5).
     """
     if not 0 <= charge_percent <= 100:
         raise ValueError(

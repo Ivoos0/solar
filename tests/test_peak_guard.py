@@ -294,17 +294,31 @@ def test_quiet_window_no_log_no_inverter_call(make_guard):
     assert g.st.values[SHAVING] == "off"
 
 
-def test_battery_at_reserve_is_vetoed_by_v1(make_guard):
+def test_battery_at_reserve_still_shaves(make_guard):
+    # the reserve limits exporting only: peak shaving may use charge below it
     g = make_guard().at(12, 7, 30)
     g.inv.charge_percent = 10.0
+    g.tick(**PEAK_ARGS)
+    assert len(g.discharges) == 1
+    assert g.discharges[0][2].vetoes_applied == ["V1", "V3"]
+    g.inv.charge_percent = 3.0
+    g.tick(**PEAK_ARGS)
+    assert g.st.values[SHAVING] == "on"
+
+
+def test_empty_battery_is_vetoed_by_v5(make_guard):
+    g = make_guard().at(12, 7, 30)
+    g.inv.charge_percent = 0.0
     g.tick(**PEAK_ARGS)
     assert g.discharges == []
     assert len(g.inv.calls) == 1
     action, power, rec = g.inv.calls[0]
     assert action == "idle" and power == 0.0
     assert rec.source == "guard" and rec.selector == "S0"
-    assert rec.vetoes_applied == ["V1(suppressed S0 discharge)", "V3"]
+    assert "V5(suppressed S0 discharge)" in rec.vetoes_applied
+    assert "V1" in rec.vetoes_applied
     assert "peak is allowed to form" in rec.reasoning
+    assert "empty" in rec.reasoning
     assert g.st.values[SHAVING] == "off"
     # same window again: recorded once, not per tick
     g.tick(**PEAK_ARGS)

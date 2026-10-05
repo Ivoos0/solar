@@ -38,7 +38,7 @@ prices:
 
 battery:
   capacity_kwh: 10.0            # REQUIRED - no sensible default
-  reserve_percent: 10.0         # never planned below
+  reserve_percent: 10.0         # never export to the grid below (a limit, not a target)
   max_charge_kw: 5.0            # binds per block, independent of capacity
   max_discharge_kw: 5.0
   round_trip_efficiency: 0.90   # gates arbitrage and the solar-hold decision

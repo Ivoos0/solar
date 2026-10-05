@@ -168,7 +168,7 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `prices.entity` | `sensor.entso_prices_average_electricity_price` | entity id | Sensor that carries the price list |
 | `prices.attribute` | `prices` | attribute name | Attribute of that sensor holding the `{time, price}` list |
 | `battery.capacity_kwh` | **required** | kWh | Battery size the planner uses |
-| `battery.reserve_percent` | `10.0` | % | Charge level the planner will not discharge or export below (the reserve limit) |
+| `battery.reserve_percent` | `10.0` | % | Charge level the planner will not export to the grid below. It is a limit on exporting, not a target: the planner never buys power to keep the battery up to it, and peak shaving may use charge below it. The inverter's own minimum charge still applies |
 | `battery.max_charge_kw` | `5.0` | kW | Highest charge power the planner proposes |
 | `battery.max_discharge_kw` | `5.0` | kW | Power used when exporting |
 | `battery.round_trip_efficiency` | `0.90` | 0 to 1 | Share of stored energy you get back. A later price only counts at this fraction |
@@ -214,7 +214,7 @@ more cautious and cheaper for you. Where no direction is safe, use the exact val
 | `prices.consumption_multiplier`, `prices.consumption_offset` | up | A higher buying price makes grid charging (for a negative price or for arbitrage) less attractive |
 | `prices.injection_multiplier`, `prices.injection_offset` | down | A lower selling price makes arbitrage less attractive and stops exporting at a negative price sooner |
 | `battery.capacity_kwh` | down | Use usable capacity, not nameplate. The planner then never counts on energy the battery does not have |
-| `battery.reserve_percent` | up | The planner stops discharging and exporting earlier |
+| `battery.reserve_percent` | up | The planner stops exporting to the grid earlier |
 | `battery.max_charge_kw`, `battery.max_discharge_kw` | down | Commanded power never exceeds what the inverter does |
 | `battery.round_trip_efficiency` | down | Arbitrage needs a bigger price spread |
 | `capacity_tariff.stay_under_percent` | lower is safer | Less grid charging near the peak ceiling, at the cost of fewer cheap charges |
@@ -316,6 +316,11 @@ reaches) from the price list, the solar forecast and your usage profile. Then it
 rules that forbid certain actions, and tries the possible actions in a fixed order. The first action
 that none of the rules forbids is the decision. The log records the reason in words (`why`).
 
+The reserve (`battery.reserve_percent`) limits exporting to the grid. It never makes the planner buy
+power to keep the battery up: when the battery reaches the reserve the house simply imports at that
+time. Peak shaving may use charge below the reserve, and the inverter's own minimum charge still
+applies.
+
 ### Labels in the decision log
 
 The decision log prints short labels for the rules and actions. These are the labels the log prints,
@@ -326,10 +331,11 @@ Vetoes:
 
 | Label | Forbids | When |
 |---|---|---|
-| V1 | discharge, export | Charge is at or below `battery.reserve_percent` |
+| V1 | export | Charge is at or below `battery.reserve_percent`. Only exporting to the grid is forbidden; peak shaving may still use charge below it |
 | V2 | export | The injection price is negative |
 | V3 | grid charging | No capacity budget is left in this quarter-hour |
 | V4 | grid charging, solar charging, export | There is no usable usage history. Peak shaving (S0) is not affected |
+| V5 | discharge | The battery is empty (0 % charge). The planner cannot know your inverter's own minimum charge, so this is the only lower limit it applies to peak shaving |
 
 Selectors, in the order they are tried:
 
@@ -370,7 +376,9 @@ the household plus the charge, and a sudden load can push the quarter-hour over 
 guard then discharges to cut the grid draw, and the planner stops grid-charging while it shaves. If
 your inverter already runs the house from the battery whenever it has charge, the grid draw is low
 and the guard has nothing to do. It cannot add discharge beyond what the inverter allows, and it
-does nothing at or below the reserve.
+stops only when the battery is empty. The reserve does not stop it: `battery.reserve_percent` only limits
+exporting to the grid, so the guard may use charge below it. The inverter's own minimum charge still
+applies.
 
 ### Alert e-mails
 

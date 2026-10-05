@@ -125,7 +125,11 @@ def test_v1_boundary(site_config, pct, fires):
         battery.from_percent(pct, site_config), price(0, 0.2, 0.05),
         site_config)
     assert ("V1" in fired) is fires
-    assert forbidden == ({"discharge", "export"} if fires else set())
+    # the reserve limits EXPORT only; V5 (empty battery) is the sole discharge
+    # lower bound
+    assert forbidden == (({"export"} | ({"discharge"} if pct <= 0 else set()))
+                         if fires else set())
+    assert ("V5" in fired) is (pct <= 0)
 
 
 @pytest.mark.parametrize("inj,fires", [
@@ -145,7 +149,50 @@ def test_v1_and_v2_together(site_config):
         battery.from_percent(10, site_config), price(0, 0.2, -0.01),
         site_config)
     assert fired == ["V1", "V2"]
+    assert forbidden == {"export"}
+
+
+def test_v5_battery_empty_forbids_discharge_only(site_config):
+    forbidden, fired = establish_vetoes(
+        battery.from_percent(0.0, site_config), price(0, 0.2, 0.05),
+        site_config)
+    assert fired == ["V1", "V5"]
     assert forbidden == {"discharge", "export"}
+    # just above empty: only V1 fires, discharge stays allowed
+    forbidden, fired = establish_vetoes(
+        battery.from_percent(0.1, site_config), price(0, 0.2, 0.05),
+        site_config)
+    assert fired == ["V1"] and forbidden == {"export"}
+
+
+def test_v5_fires_on_zero_stored_kwh_alone(site_config):
+    class Empty:
+        charge_percent = 5.0
+        stored_kwh = 0.0
+    forbidden, fired = establish_vetoes(Empty(), None, site_config)
+    assert "V5" in fired and "discharge" in forbidden
+
+
+def test_s0_peak_shaves_below_the_reserve(site_config):
+    # 5 % is under the 10 % reserve: export is forbidden, shaving is not
+    d = go(site_config, [FLAT] * 3, g=SHAVE, pct=5.0)
+    assert (d.selector, d.action, d.target_power_kw) == (
+        "S0", "discharge", pytest.approx(1.5))
+    assert d.vetoes_fired == ["V1", "V3"] and d.suppressed == []
+
+
+def test_s0_stops_when_the_battery_is_empty(site_config):
+    d = go(site_config, [FLAT] * 3, g=SHAVE, pct=0.0)
+    assert d.selector == "S6" and d.action == "idle"
+    assert d.vetoes_fired == ["V1", "V3", "V5"]
+    assert d.suppressed == [("S0", "discharge", "V5")]
+
+
+def test_export_is_still_forbidden_below_the_reserve(site_config):
+    # spill ahead, now is the best injection block, but 5 % <= reserve: V1
+    d = go(site_config, [(0.2, 0.05), (0.2, 0.01)], pct=5.0, spill=1.0)
+    assert ("S3", "export", "V1") in d.suppressed
+    assert d.action != "export"
 
 
 @pytest.mark.parametrize("g,fires", [
@@ -203,11 +250,17 @@ def test_s0_tried_before_s1(site_config):
 
 def test_s0_vetoed_by_v1_and_v3_leaves_idle(site_config):
     d = go(site_config, [(-0.05, 0.02)] * 3, pct=10.0, g=SHAVE)
+    # below the reserve S0 still shaves (V1 forbids export only); S1 would
+    # be vetoed by V3 but S0 comes first
     assert d.vetoes_fired == ["V1", "V3"]
-    assert d.suppressed[0] == ("S0", "discharge", "V1")
+    assert (d.selector, d.action) == ("S0", "discharge")
+    assert d.suppressed == []
+    # empty battery: V5 stops the shave, V3 leaves S1 no budget either
+    d = go(site_config, [(-0.05, 0.02)] * 3, pct=0.0, g=SHAVE)
+    assert d.vetoes_fired == ["V1", "V3", "V5"]
+    assert d.suppressed[0] == ("S0", "discharge", "V5")
     assert ("S1", "charge", "V3") in d.suppressed
     assert d.selector == "S6" and d.action == "idle"
-    # a shaving situation has no charge budget left: S1 cannot take over
     assert d.target_power_kw == 0.0
 
 
@@ -638,11 +691,11 @@ def test_three_consecutive_vetoed_proposals_no_loop(site_config):
     g = grid(offtake=4.0, energy=0.9, peak=2.5, avg=9.0)
     # shave: projected 0.9+4/6 = 1.5667; needed (1.5667-0.625)*6 = 5.65 ->
     # clamped to offtake-floor 1.5. budget (0.625-0.9)*6 = -1.65 <= 0.
-    d = go(site_config, [(-0.05, -0.01), (0.20, -0.05)], pct=10.0, g=g,
+    d = go(site_config, [(-0.05, -0.01), (0.20, -0.05)], pct=0.0, g=g,
            spill=1.0)
-    assert d.vetoes_fired == ["V1", "V2", "V3"]
+    assert d.vetoes_fired == ["V1", "V2", "V3", "V5"]
     assert d.suppressed == [
-        ("S0", "discharge", "V1"),
+        ("S0", "discharge", "V5"),
         ("S1", "charge", "V3"),
         ("S3", "export", "V1+V2"),
         ("S5", "charge", "V3"),
@@ -864,10 +917,13 @@ def test_v4_leaves_peak_shaving_alone(site_config):
 
 
 def test_v4_does_not_suppress_s0_but_v1_still_does(site_config):
-    # reserve veto V1 forbids the S0 discharge; V4 alone never does.
-    d = go(site_config, [FLAT] * 3, g=SHAVE, pct=5.0, history=False)
+    # an empty battery (V5) forbids the S0 discharge; V4 alone never does,
+    # and neither does being under the reserve (V1 is export-only).
+    d = go(site_config, [FLAT] * 3, g=SHAVE, pct=0.0, history=False)
     assert (d.selector, d.action) == ("S6", "idle")
-    assert d.suppressed == [("S0", "discharge", "V1")]
+    assert d.suppressed == [("S0", "discharge", "V5")]
+    d = go(site_config, [FLAT] * 3, g=SHAVE, pct=5.0, history=False)
+    assert (d.selector, d.action) == ("S0", "discharge")
 
 
 def test_v4_renders_in_the_vetoes_field(site_config):

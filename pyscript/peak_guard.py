@@ -1,7 +1,7 @@
 """Peak guard: evaluate the capacity-tariff shave (S0) every ~30 s.
 
 A pyscript top-level SCRIPT. It is deliberately narrow (FR-051, NFR-010,
-NFR-011): three meter numbers, WP11 arithmetic, the V1 reserve veto and the
+NFR-011): three meter numbers, WP11 arithmetic, the V5 empty-battery veto and the
 inverter boundary. No trajectory, no prices, no series, no cache, no forecast.
 
 THE TWO LOOPS AND WHICH WINS (read before changing either)
@@ -94,13 +94,16 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   avg/ceiling/budget are real (capacity.*). degraded carries soc_stubbed and,
   when relevant, avg_mode_assumed / meter_restored. The detected average mode
   and its confidence are stated in why (FR-058).
-* Vetoes: only vetoes that forbid "discharge" BLOCK a shave, i.e. V1. V3
+* Vetoes: only vetoes that forbid "discharge" BLOCK a shave, i.e. V5 (battery
+  empty: charge 0 %). The reserve (V1) forbids EXPORT only, so the guard shaves
+  below the reserve; the planner cannot know the inverter's own minimum charge,
+  which the inverter / driver enforces itself. V3
   (budget <= 0) will normally be fired in a peak but forbids only grid
   charging, so it blocks nothing; it is still RENDERED, bare, in the vetoes
   field of shave and stop records (same as the planner: decision.render_vetoes
   over the fired list), e.g. vetoes=V3. V2 needs a price: none here. A vetoed
   shave is recorded as action=idle, selector S0, with
-  vetoes=V1(suppressed S0 discharge) (plus any bare fired ones, e.g. ,V3).
+  vetoes=V5(suppressed S0 discharge) (plus any bare fired ones, e.g. ,V1,V3).
 * Cancellation (@task_unique default kill_me=False: a new trigger KILLS the
   running task, so a hung run can never blind the guard). A kill can land at
   the await inside inverter.apply. Therefore module state and
@@ -417,8 +420,9 @@ def _notify(cfg, title, message):
 def _guard_note(cfg, shave, vetoed, batt, charge_is_stub):
     """One sentence on what the guard is doing about a predicted crossing."""
     if vetoed:
-        note = ("The guard CANNOT shave it: veto V1, the battery at %.1f%% is "
-                "at or below the %.1f%% reserve." % (
+        note = ("The guard CANNOT shave it: veto V5, the battery is empty "
+                "(%.1f%%). Being under the %.1f%% reserve would not stop it; "
+                "the reserve only limits exporting." % (
                     batt.charge_percent, cfg.reserve_percent))
     elif shave > 0:
         note = "The guard is shaving: discharging %.2f kW to hold it." % shave
@@ -726,10 +730,10 @@ def _evaluate(trigger_type, started):
             record = _make_record(
                 now, cfg, grid, batt, verdict, took_ms, "idle", 0.0,
                 _render("idle", 0.0, fired, as_decided.suppressed),
-                "peak shave vetoed by %s: battery at %.1f%% is at or below the "
-                "%.1f%% reserve, so the peak is allowed to form (offtake "
-                "%.2f kW, running average %.2f kW, ceiling %.2f kW)"
-                % (blocking, batt.charge_percent, cfg.reserve_percent,
+                "peak shave vetoed by %s: the battery is empty (%.1f%%), so "
+                "the peak is allowed to form (offtake %.2f kW, running "
+                "average %.2f kW, ceiling %.2f kW)"
+                % (blocking, batt.charge_percent,
                    grid.offtake_kw, grid.running_average_kw,
                    capacity.ceiling_kw(grid, cfg)))
             _emit("idle", 0.0, record, cfg)

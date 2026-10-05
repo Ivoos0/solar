@@ -227,11 +227,21 @@ def test_message_uses_the_configured_floor_and_the_month_peak(wg):
 
 def test_message_says_when_the_guard_cannot_shave(wg):
     g = wg()
-    g.inv.charge_percent = 10.0                      # at the reserve: V1
+    g.inv.charge_percent = 0.0                       # empty: V5
     two_ticks(g, **HIGH)
     msg = warned(g)[0][2]["message"]
-    assert "CANNOT shave" in msg and "V1" in msg and "10.0%" in msg
+    assert "CANNOT shave" in msg and "V5" in msg and "empty" in msg
+    assert "only limits exporting" in msg
     assert g.discharges == []
+
+
+def test_message_says_the_guard_shaves_below_the_reserve(wg):
+    g = wg()
+    g.inv.charge_percent = 5.0                       # under the reserve
+    two_ticks(g, **HIGH)
+    msg = warned(g)[0][2]["message"]
+    assert "CANNOT" not in msg and "is shaving" in msg
+    assert len(g.discharges) >= 1
 
 
 def test_failed_send_is_retried_and_not_marked_sent(wg):
