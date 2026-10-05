@@ -76,7 +76,7 @@ battery:
   round_trip_efficiency: 0.90   # gates arbitrage and the solar-hold decision
 
 # The roof (position, tilt, direction, kWp) is NOT configured here: it lives only
-# in forecast_solar_url in secrets.yaml. See README, Install step 5.
+# in forecast_solar_url in secrets.yaml. See docs/install.md, step 5.
 solar:
   forecast_entity: sensor.forecast_solar_estimate
                                 # The REST sensor from configuration.yaml that

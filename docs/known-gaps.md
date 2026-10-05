@@ -14,8 +14,8 @@ What the planner does not do yet, and what has not been tested. Back to the [REA
   inverter (see the [driver checklist](inverter-drivers.md#adding-an-inverter-driver)).
 - Single solar plane, free forecast tier only, Flemish capacity tariff only, battery only.
 - The alert e-mails and the entity names on installs other than the original one have not been tested
-  against a live Home Assistant. Send a test mail ([install](../README.md#install) step 8) and check the entity names as
-  described in [Install](../README.md#install) and [Sensors](alerts-and-sensors.md#sensors).
+  against a live Home Assistant. Send a test mail ([install](install.md#install) step 8) and check the entity names as
+  described in [Install](install.md#install) and [Sensors](alerts-and-sensors.md#sensors).
 - The solar calibration (see [Solar calibration](history-and-reports.md#solar-calibration)) has only been tested with
   generated history. It needs a `solar` energy counter, which is not configured by default, and then
   about `solar.calibration_weeks` weeks of recording before it measures anything. The recorded prices,
