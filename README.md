@@ -659,6 +659,15 @@ What it contains:
 - **Energy**: grid import and export, solar produced against what was forecast (as a percentage; 100%
   means the forecast was right), battery charge and discharge, and household load when it is known.
   Totals only add up the blocks that have a value, and the table shows how many that was.
+- **Battery charge**: only when the history has charge readings and `battery.capacity_kwh` is set. It
+  gives the first, last, lowest and highest charge of the day, then compares the battery counters with
+  the change in charge over the blocks that have both a start and an end charge. The counters give
+  the energy stored (charged minus discharged); the charge gives the same figure as the change in
+  percentage times `battery.capacity_kwh`. Both are shown in kWh, with the difference as a percentage
+  of the energy that moved (charged plus discharged). A small difference is normal, because the
+  battery loses some energy when charging and discharging. When the difference is more than 25 % of the
+  energy that moved (and at least 1 kWh moved), the Data quality section says so. That usually means
+  `battery.capacity_kwh` is wrong, or a battery counter is wrong or was reset.
 - **Blocks recorded**: how many of the expected blocks for that day exist. A normal day has 96; the
   day the clocks go forward has 92 and the day they go back has 100.
 - **Data quality**: only present when something is off, for example a missing file, lines that could

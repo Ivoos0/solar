@@ -34,6 +34,10 @@ SPECIAL_KINDS = ("HALT", "RECOVERED", "SKIP")
 GUARD_GAP_SECONDS = 120          # a longer pause between guard lines ends an episode
 MAX_EPISODES_LISTED = 10
 NULL_SHARE_NOTED = 0.10          # a quantity missing in >= 10 % of blocks is noted
+# Battery charge cross-check: counters against the change in charge. Round-trip
+# losses make some difference normal, so only a large one is flagged.
+CHARGE_DIFF_FLAG_SHARE = 0.25    # difference above 25 % of the throughput ...
+CHARGE_DIFF_MIN_THROUGHPUT_KWH = 1.0   # ... when at least this much moved
 
 # (history field, label) in report order.
 ENERGY_ROWS = (
@@ -190,8 +194,57 @@ def parse_decision_log(text):
 
 # ---- energy history ------------------------------------------------------------
 
-def summarise_history(text, day, tz, block_minutes):
-    """Summarise a day's block records (duplicates by block start: last wins)."""
+def summarise_charge(blocks, capacity_kwh):
+    """Battery charge summary of a day's blocks, or None.
+
+    None when no battery capacity is known or no block has a charge reading.
+    first / last / lowest / highest cover soc_percent (start of the block) and
+    soc_end_percent (end of it), in time order. The cross-check uses only
+    blocks that have BOTH charges and BOTH battery counters:
+      expected_kwh = sum(battery_charge_kwh - battery_discharge_kwh)
+      change_kwh   = sum((soc_end - soc_start) / 100 * capacity_kwh)
+      throughput   = sum(battery_charge_kwh + battery_discharge_kwh)
+    """
+    if not _finite(capacity_kwh) or capacity_kwh <= 0:
+        return None
+    readings = []
+    for b in blocks:
+        for key in ("soc_percent", "soc_end_percent"):
+            if _finite(b.get(key)):
+                readings.append(float(b[key]))
+    if not readings:
+        return None
+    expected = change = throughput = 0.0
+    used = 0
+    for b in blocks:
+        values = [b.get(k) for k in ("soc_percent", "soc_end_percent",
+                                     "battery_charge_kwh",
+                                     "battery_discharge_kwh")]
+        if not all(_finite(v) for v in values):
+            continue
+        start, end, charged, discharged = values
+        expected += charged - discharged
+        change += (end - start) / 100.0 * capacity_kwh
+        throughput += charged + discharged
+        used += 1
+    out = {"first": readings[0], "last": readings[-1],
+           "lowest": min(readings), "highest": max(readings),
+           "blocks": used, "expected_kwh": expected, "change_kwh": change,
+           "throughput_kwh": throughput, "difference_kwh": change - expected,
+           "difference_share": None, "suspect": False}
+    if used and throughput > 0:
+        out["difference_share"] = abs(change - expected) / throughput
+        out["suspect"] = (
+            throughput >= CHARGE_DIFF_MIN_THROUGHPUT_KWH
+            and out["difference_share"] > CHARGE_DIFF_FLAG_SHARE)
+    return out
+
+
+def summarise_history(text, day, tz, block_minutes, capacity_kwh=None):
+    """Summarise a day's block records (duplicates by block start: last wins).
+
+    capacity_kwh (battery.capacity_kwh) enables the battery charge summary.
+    """
     records, bad = history.parse_lines(text)
     by_start = {}
     for rec in records:
@@ -216,6 +269,7 @@ def summarise_history(text, day, tz, block_minutes):
     ratio = paired_solar / paired_forecast if paired_forecast > 0 else None
     return {
         "malformed": bad,
+        "charge": summarise_charge(blocks, capacity_kwh),
         "recorded": len(blocks),
         "complete": len([b for b in blocks if b.get("complete") is True]),
         "expected": expected_blocks(day, tz, block_minutes),
@@ -325,6 +379,27 @@ def _energy_lines(h):
     return out
 
 
+def _charge_lines(c):
+    out = ["## Battery charge", ""]
+    out.append("- Charge: first %.1f%%, last %.1f%%, lowest %.1f%%, highest %.1f%%"
+               % (c["first"], c["last"], c["lowest"], c["highest"]))
+    if not c["blocks"] or c["difference_share"] is None:
+        out.append("- Counters against charge: n/a (no block with both "
+                   "charges and both battery counters)")
+        return out
+    out.append("- Counters against charge, over %s with both charges and both "
+               "counters:" % _n(c["blocks"], "block"))
+    out.append("  - Stored change from the counters (charged minus "
+               "discharged): %+.2f kWh" % c["expected_kwh"])
+    out.append("  - Change in charge (percentage times battery capacity): "
+               "%+.2f kWh" % c["change_kwh"])
+    out.append("  - Difference: %+.2f kWh, %.0f%% of the %.2f kWh moved "
+               "(charged plus discharged)"
+               % (c["difference_kwh"], 100 * c["difference_share"],
+                  c["throughput_kwh"]))
+    return out
+
+
 def _quality_notes(d, h):
     notes = []
     if d is None:
@@ -358,21 +433,34 @@ def _quality_notes(d, h):
                            if known == 0 else "counter unreadable or reset")
                     notes.append("%s has no value in %d of %d blocks (%s)."
                                  % (label, missing, h["recorded"], why))
+        c = h["charge"]
+        if c is not None and c["suspect"]:
+            notes.append(
+                "The battery counters and the change in charge differ by "
+                "%.0f%% of the %.2f kWh moved (%+.2f kWh against %+.2f kWh). "
+                "Check battery.capacity_kwh and the battery counters; "
+                "round-trip losses explain only a small difference."
+                % (100 * c["difference_share"], c["throughput_kwh"],
+                   c["expected_kwh"], c["change_kwh"]))
     return notes
 
 
-def build_report(day, decisions_text, history_text, *, tz, block_minutes, now):
+def build_report(day, decisions_text, history_text, *, tz, block_minutes, now,
+                 capacity_kwh=None):
     """Markdown report for the local `day`, or None when there is no data.
 
     decisions_text / history_text: file contents, or None when the file does
     not exist. `now` is the (aware) generation time, shown in the header.
+    capacity_kwh: battery capacity for the battery charge section (omitted
+    when None).
     """
     has_d = decisions_text is not None and bool(decisions_text.strip())
     has_h = history_text is not None and bool(history_text.strip())
     if not has_d and not has_h:
         return None
     d = parse_decision_log(decisions_text) if has_d else None
-    h = (summarise_history(history_text, day, tz, block_minutes)
+    h = (summarise_history(history_text, day, tz, block_minutes,
+                           capacity_kwh)
          if has_h else None)
     out = ["# Battery planner report for %s" % day.isoformat(), "",
            "Generated %s (%s)." % (
@@ -382,6 +470,8 @@ def build_report(day, decisions_text, history_text, *, tz, block_minutes, now):
         out += _decision_lines(d, tz) + [""]
     if h is not None:
         out += _energy_lines(h) + [""]
+        if h["charge"] is not None:
+            out += _charge_lines(h["charge"]) + [""]
     notes = _quality_notes(d, h)
     if notes:
         out += ["## Data quality", ""] + ["- " + n for n in notes] + [""]

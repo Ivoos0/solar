@@ -39,7 +39,7 @@ def line(when, action="idle", selector="S6", vetoes=(), degraded=(), avg=None,
 
 def hist_line(start_local, imp=None, exp=None, solar=None, forecast=None,
               charge=None, discharge=None, load=None, source=None,
-              complete=True):
+              complete=True, soc=None, soc_end=None):
     rec = dict.fromkeys(history.RECORD_FIELDS)
     start = start_local.astimezone(UTC)
     rec.update(schema=1, block_start=start.isoformat(),
@@ -47,7 +47,8 @@ def hist_line(start_local, imp=None, exp=None, solar=None, forecast=None,
                import_kwh=imp, export_kwh=exp, solar_kwh=solar,
                forecast_solar_kwh=forecast, battery_charge_kwh=charge,
                battery_discharge_kwh=discharge, load_kwh=load,
-               load_source=source, complete=complete)
+               load_source=source, complete=complete, soc_percent=soc,
+               soc_end_percent=soc_end)
     return history.to_line(rec)
 
 
@@ -420,3 +421,172 @@ def test_report_module_has_no_io_clock_or_ha_imports():
     assert "open" not in {n.func.id for n in ast.walk(tree)
                           if isinstance(n, ast.Call)
                           and isinstance(n.func, ast.Name)}
+
+
+# ---- battery charge section -------------------------------------------------------
+
+def charge_report(blocks, capacity=10.0, day=DAY):
+    """Report text for blocks [(start_local, charge, discharge, soc, soc_end)]."""
+    hist = "\n".join(hist_line(t, charge=c, discharge=d, soc=a, soc_end=b)
+                      for t, c, d, a, b in blocks)
+    return report.build_report(day, None, hist, tz=BRU, block_minutes=15,
+                               now=NOW, capacity_kwh=capacity)
+
+
+def section(text):
+    lines = text.splitlines()
+    start = lines.index("## Battery charge")
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i].startswith("## ")), len(lines))
+    return lines[start:end]
+
+
+def test_hand_computed_cross_check_without_difference():
+    # 10 kWh battery, 2.0 kWh in, 0.5 kWh out, 40 % -> 55 %:
+    # expected +1.5 kWh, charge change 15 % of 10 kWh = +1.5 kWh, difference 0.
+    text = charge_report([(local(10), 2.0, 0.5, 40.0, 55.0)])
+    assert section(text) == [
+        "## Battery charge", "",
+        "- Charge: first 40.0%, last 55.0%, lowest 40.0%, highest 55.0%",
+        "- Counters against charge, over 1 block with both charges and both "
+        "counters:",
+        "  - Stored change from the counters (charged minus discharged): "
+        "+1.50 kWh",
+        "  - Change in charge (percentage times battery capacity): +1.50 kWh",
+        "  - Difference: +0.00 kWh, 0% of the 2.50 kWh moved (charged plus "
+        "discharged)", ""]
+    assert "differ by" not in text
+
+
+def test_first_last_lowest_highest_use_both_fields_in_time_order():
+    text = charge_report([                       # file order is not time order
+        (local(12), 0.1, 0.1, 30.0, 35.0),
+        (local(10), 0.1, 0.1, 50.0, 20.0),
+        (local(11), 0.1, 0.1, 20.0, 30.0),
+    ])
+    assert ("- Charge: first 50.0%, last 35.0%, lowest 20.0%, highest 50.0%"
+            in section(text))
+
+
+def test_blocks_without_both_charges_count_for_range_not_for_cross_check():
+    text = charge_report([
+        (local(10), 2.0, 0.5, 40.0, 55.0),
+        (local(11), 1.0, 0.0, 90.0, None),       # no end charge
+        (local(12), 1.0, 0.0, None, 10.0),       # no start charge
+        (local(13), None, 0.0, 40.0, 50.0),      # no counter
+    ])
+    sec = section(text)
+    assert "- Charge: first 40.0%, last 50.0%, lowest 10.0%, highest 90.0%" in sec
+    assert any("over 1 block " in l for l in sec)
+    assert ("  - Difference: +0.00 kWh, 0% of the 2.50 kWh moved (charged plus "
+            "discharged)") in sec
+
+
+def test_only_end_values_still_give_the_range():
+    text = charge_report([(local(10), None, None, None, 61.0)])
+    sec = section(text)
+    assert "- Charge: first 61.0%, last 61.0%, lowest 61.0%, highest 61.0%" in sec
+    assert ("- Counters against charge: n/a (no block with both charges and "
+            "both battery counters)") in sec
+
+
+def test_large_difference_is_flagged_in_data_quality():
+    # charge change +0.5 kWh against +1.5 kWh expected: 1.0 of 2.5 kWh = 40 %
+    text = charge_report([(local(10), 2.0, 0.5, 40.0, 45.0)])
+    assert "  - Difference: -1.00 kWh, 40% of the 2.50 kWh moved" in text
+    quality = text.split("## Data quality")[1]
+    assert ("differ by 40% of the 2.50 kWh moved (+1.50 kWh against "
+            "+0.50 kWh)") in quality
+    assert "battery.capacity_kwh" in quality
+
+
+@pytest.mark.parametrize("soc_end, flagged", [
+    (50.0, False),        # difference exactly 25 % of 4.0 kWh: not above it
+    (49.0, True),         # 27.5 %
+    (51.0, False),        # 22.5 %
+    (80.0, True),         # more charge gained than counted: 50 %
+])
+def test_flag_threshold_is_above_25_percent(soc_end, flagged):
+    text = charge_report([(local(10), 3.0, 1.0, 40.0, soc_end)])
+    assert ("differ by" in text) is flagged
+
+
+def test_small_throughput_is_never_flagged():
+    # difference 0.4 of 0.6 kWh (67 %), but under 1 kWh moved
+    text = charge_report([(local(10), 0.5, 0.1, 40.0, 40.0)])
+    assert "  - Difference: -0.40 kWh, 67% of the 0.60 kWh moved" in text
+    assert "differ by" not in text
+    # exactly 1 kWh moved counts
+    text = charge_report([(local(10), 0.5, 0.5, 40.0, 50.0)])
+    assert "differ by 100% of the 1.00 kWh moved" in text
+
+
+def test_round_trip_losses_are_not_flagged():
+    # 3.0 in, 2.0 out, +9 % of 10 kWh = +0.9 kWh against +1.0 kWh expected
+    text = charge_report([(local(10), 3.0, 2.0, 40.0, 49.0)])
+    assert "  - Difference: -0.10 kWh, 2% of the 5.00 kWh moved" in text
+    assert "differ by" not in text
+
+
+def test_sums_are_over_blocks_not_a_net_of_the_day():
+    text = charge_report([(local(10), 1.0, 0.0, 40.0, 50.0),
+                          (local(11), 0.0, 1.0, 50.0, 40.0)])
+    assert ("  - Stored change from the counters (charged minus discharged): "
+            "+0.00 kWh") in text
+    assert "0% of the 2.00 kWh moved" in text
+
+
+@pytest.mark.parametrize("capacity", [None, 0, -1.0, float("nan"), "10"])
+def test_no_usable_capacity_skips_the_section(capacity):
+    text = charge_report([(local(10), 2.0, 0.5, 40.0, 55.0)], capacity=capacity)
+    assert "## Battery charge" not in text
+
+
+def test_no_charge_data_skips_the_section():
+    assert "## Battery charge" not in charge_report(
+        [(local(10), 2.0, 0.5, None, None)])
+    old = history.parse_lines(
+        hist_line(local(10), imp=1.0, charge=1.0, discharge=0.0))[0][0]
+    del old["soc_percent"], old["soc_end_percent"]           # old format
+    text = report.build_report(DAY, None, history.to_line(old) + "\n",
+                               tz=BRU, block_minutes=15, now=NOW,
+                               capacity_kwh=10.0)
+    assert "## Battery charge" not in text and "| Imported from the grid" in text
+
+
+def test_garbage_charge_values_are_ignored():
+    rec = history.parse_lines(
+        hist_line(local(10), charge=1.0, discharge=0.0))[0][0]
+    rec.update(soc_percent="40", soc_end_percent=True)
+    text = report.build_report(DAY, None, history.to_line(rec) + "\n", tz=BRU,
+                               block_minutes=15, now=NOW, capacity_kwh=10.0)
+    assert "## Battery charge" not in text
+
+
+def test_without_capacity_argument_the_report_is_unchanged():
+    hist = hist_line(local(10), imp=1.0, charge=2.0, discharge=0.5, soc=40.0,
+                     soc_end=55.0)
+    text = report.build_report(DAY, None, hist, tz=BRU, block_minutes=15, now=NOW)
+    assert "## Battery charge" not in text
+
+
+def test_section_sits_after_energy_before_data_quality():
+    text = charge_report([(local(10), 2.0, 0.5, 40.0, 45.0)])
+    assert text.index("## Energy") < text.index("## Battery charge") \
+        < text.index("## Data quality")
+
+
+@pytest.mark.parametrize("day, count", [
+    (date(2026, 3, 29), 92), (date(2026, 10, 25), 100)])
+def test_dst_days_count_every_block_once_and_only_that_day(day, count):
+    first = datetime(day.year, day.month, day.day, tzinfo=BRU).astimezone(UTC)
+    blocks = [(first + timedelta(minutes=15 * i), 0.1, 0.1,
+               20.0 + i * 0.5, 20.5 + i * 0.5) for i in range(count)]
+    # a block of the next day and of the previous day must not count
+    blocks.append((first + timedelta(minutes=15 * count), 0.1, 0.1, 99.0, 99.0))
+    blocks.append((first - timedelta(minutes=15), 0.1, 0.1, 1.0, 1.0))
+    sec = section(charge_report(blocks, day=day))
+    assert "over %d blocks" % count in sec[3]
+    last = 20.5 + (count - 1) * 0.5
+    assert ("- Charge: first 20.0%%, last %.1f%%, lowest 20.0%%, highest %.1f%%"
+            % (last, last)) in sec
