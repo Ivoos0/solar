@@ -48,8 +48,31 @@ prices:
 battery:
   capacity_kwh: CHANGE_ME       # REQUIRED - no sensible default (number, kWh)
   reserve_percent: 10.0         # never export to the grid below (a limit, not a target)
-  max_charge_kw: 5.0            # binds PER BLOCK, independent of capacity
-  max_discharge_kw: 5.0
+  # soc_sensor: sensor.alphaess_soc_battery
+                                # OPTIONAL. A sensor holding the battery charge in
+                                # percent (0..100). Without it the charge is the
+                                # driver's placeholder (50 % with the logging
+                                # driver). Set but unreadable: the planner holds
+                                # (no grid charging, no export). See the README,
+                                # section "AlphaESS inverter, read-only".
+  # power_sensor: sensor.alphaess_power_battery
+                                # OPTIONAL. Battery power, in W or kW (the unit
+                                # attribute is read). With it the grid charge
+                                # budget counts the house load the battery is
+                                # covering. Unreadable: the older estimate is used.
+  # power_positive: discharge   # which sign means what in power_sensor:
+                                # discharge (positive = battery gives power, the
+                                # AlphaESS case) or charge
+  # The inverter's own charge / discharge limits. If it exposes them as sensors,
+  # name them here: they are read every cycle and replace the numbers below.
+  # max_charge_sensor: sensor.alphaess_battery_max_charge_power
+  # max_discharge_sensor: sensor.alphaess_battery_max_discharge_power
+                                # W or kW (the unit attribute is read). Set but
+                                # unreadable or 0: the numbers below apply and
+                                # records carry battery_limits_fallback.
+  # max_charge_kw: 5.0          # ONLY IF YOU HAVE NO SENSOR. Default 5.0. Binds PER
+  #                             # BLOCK, independent of capacity. Also the fallback.
+  # max_discharge_kw: 5.0       # ONLY IF YOU HAVE NO SENSOR. Default 5.0.
   round_trip_efficiency: 0.90   # gates arbitrage and the solar-hold decision
 
 # The roof (position, tilt, direction, kWp) is NOT configured here: it lives only
@@ -134,6 +157,10 @@ history:
     solar: []                   # PV production counter(s), e.g. from the inverter
     battery_charge: []          # energy into the battery
     battery_discharge: []       # energy out of the battery
+    # With the read-only AlphaESS setup in the README:
+    # solar: [sensor.alphaess_total_energy_from_pv]
+    # battery_charge: [sensor.alphaess_total_energy_charge_battery]
+    # battery_discharge: [sensor.alphaess_total_energy_discharge_battery]
     load: []                    # household consumption counter, if you have one
                                 # Usage history (and so grid charging) unlocks
                                 # with `load`, or with solar + battery_charge +

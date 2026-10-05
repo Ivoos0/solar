@@ -85,7 +85,7 @@ def price(i, cons, inj):
 
 def go(cfg, plist, now_i=0, pct=50.0, g=CALM, sat=None, breach=None,
        spill=0.0, leftover=0.0, solar=None, usage=None, shortfall=None,
-       hide=(), history=True, forecast=True):
+       hide=(), history=True, forecast=True, soc_known=True):
     # history: True/False -> usage_history_available; None -> omit the kwarg
     """Build trajectory + price_map by hand and decide.
 
@@ -109,6 +109,8 @@ def go(cfg, plist, now_i=0, pct=50.0, g=CALM, sat=None, breach=None,
     pmap = {T0 + i * STEP: price(i, *p) for i, p in enumerate(plist)
             if p is not None}
     kw = {} if history is None else {"usage_history_available": history}
+    if soc_known is not True:
+        kw["soc_known"] = soc_known
     if forecast is not True:
         kw["forecast_available"] = forecast
     return _rules.decide(traj, pmap, battery.from_percent(pct, cfg), g, cfg,

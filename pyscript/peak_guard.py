@@ -123,7 +123,10 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   when relevant, avg_mode_assumed / meter_restored. The detected average mode
   and its confidence are stated in why.
 * Vetoes: only vetoes that forbid "discharge" BLOCK a shave, i.e. V5 (battery
-  empty: charge 0 %). The reserve (V1) forbids EXPORT only, so the guard shaves
+  empty: charge 0 %). V5 needs a reading: with battery.soc_sensor configured
+  but unreadable (degraded=soc_unavailable) it is not evaluated and the guard
+  still shaves; V7 (no battery reading) fires but forbids only grid charging
+  and export, so it blocks nothing here. The reserve (V1) forbids EXPORT only, so the guard shaves
   below the reserve; the planner cannot know the inverter's own minimum charge,
   which the inverter / driver enforces itself. V3
   (budget <= 0) will normally be fired in a peak but forbids only grid
@@ -247,6 +250,7 @@ _flags = {
     "warned": {},
     "primed": False,       # entity reconciled to "off" since import/reload
     "inverter_marker": None,  # degraded marker from the last charge reading
+    "limits_marker": None,  # battery_limits_fallback while a limit sensor fails
     "stale_window": None,  # window a stale-average WARNING was already logged
     "stale_info_window": None,  # window a low stale-average INFO was logged
     "stale_episode": False,  # a stale average was seen and has not refreshed yet
@@ -432,6 +436,24 @@ def _read_sensor(entity):
     return value * factor, stamp, None
 
 
+def _read_soc(entity):
+    """Battery charge in percent from a sensor; None when unreadable
+    (unknown/unavailable, not a number, or outside 0..100)."""
+    try:
+        raw = state.get(entity)  # noqa: F821
+    except Exception:
+        return None
+    if raw is None or str(raw).strip().lower() in _BAD:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not 0 <= value <= 100:                # also False for NaN
+        return None
+    return value
+
+
 def _notify(cfg, title, message):
     """Send one e-mail through the configured notify service (the same call
     shape as battery_planner._notify; a pyscript script cannot import it and
@@ -541,12 +563,52 @@ def _commanded_discharge_kw(cfg, at):
     return max(0.0, min(_flags["shave_kw"], cfg.max_discharge_kw))
 
 
+def _limit_kw(entity):
+    """Inverter power limit sensor as kW; None when unreadable or not above 0."""
+    kw, _, problem = _read_sensor(entity)
+    if problem or kw <= 0:
+        return None
+    return kw
+
+
+def _with_limits(cfg):
+    """cfg with the inverter's own charge / discharge limits for this tick
+    (same rule as battery_planner._with_limits). A configured sensor that
+    cannot be read keeps the numeric fallback and sets the degraded marker."""
+    _flags["limits_marker"] = None
+    if cfg.max_charge_sensor is None and cfg.max_discharge_sensor is None:
+        return cfg
+    charge = None
+    if cfg.max_charge_sensor is not None:
+        charge = _limit_kw(cfg.max_charge_sensor)
+    discharge = None
+    if cfg.max_discharge_sensor is not None:
+        discharge = _limit_kw(cfg.max_discharge_sensor)
+    if ((cfg.max_charge_sensor is not None and charge is None)
+            or (cfg.max_discharge_sensor is not None and discharge is None)):
+        _flags["limits_marker"] = "battery_limits_fallback"
+    return site_config.with_limits(cfg, charge, discharge)
+
+
+def _battery_discharge_kw(cfg):
+    """Battery power from battery.power_sensor (kW, discharge positive), or
+    None: no sensor configured, or it cannot be read (the household draw is
+    then estimated from the offtake alone)."""
+    if cfg.power_sensor is None:
+        return None
+    power, _, problem = _read_sensor(cfg.power_sensor)
+    if problem:
+        return None
+    return capacity.battery_discharge_from_power(power, cfg.power_positive)
+
+
 def _grid_state(offtake_kw, now, month_peak, cfg, is_restored, reported,
-                verdict):
+                verdict, battery_discharge_kw=None):
     return capacity.build_state(
         offtake_kw, 0.0, now, month_peak, cfg, is_restored=is_restored,
         reported_average_kw=reported, average_mode=verdict.mode,
-        mode_confidence=verdict.confidence)
+        mode_confidence=verdict.confidence,
+        battery_discharge_kw=battery_discharge_kw)
 
 
 # ---- average-mode detection buffer -----------------------------------------
@@ -620,8 +682,12 @@ def _make_record(now, cfg, grid, batt, verdict, took_ms, action, power_kw,
                  vetoes, reasoning):
     """Full DecisionRecord for a guard decision (see docstring for renderings)."""
     degraded = decision.degraded_markers(batt)
+    if _flags["inverter_marker"] == "soc_unavailable":
+        degraded = [m for m in degraded if m != "soc_stubbed"]
     if _flags["inverter_marker"]:
         degraded.append(_flags["inverter_marker"])
+    if _flags["limits_marker"]:
+        degraded.append(_flags["limits_marker"])
     if verdict.confidence == "assumed":
         degraded.append("avg_mode_assumed")
     if grid.is_restored:
@@ -749,6 +815,7 @@ def _evaluate(trigger_type, started):
         if _flags["shaving"] is not False:
             _clear_shaving(None, "capacity tariff disabled")
         return
+    cfg = _with_limits(cfg)
     _refresh_beat(cfg, now, started)
 
     offtake, _, p_off = _read_sensor(cfg.offtake_sensor)
@@ -781,11 +848,16 @@ def _evaluate(trigger_type, started):
     verdict = _feed_detector(cfg, now, reported, offtake)
     # the meter shows offtake AFTER our own discharge: add it back (docstring)
     addback = _commanded_discharge_kw(cfg, started)
+    # The sensor reading already includes the commanded discharge. The state
+    # with the add-back has offtake + addback, so it takes the add-back out of
+    # the sensor figure once: the household draw (offtake + battery) is the
+    # same in both and nothing is counted twice.
+    sensor_kw = _battery_discharge_kw(cfg)
     metered = _grid_state(offtake, now, month_peak, cfg, is_restored,
-                          reported, verdict)
+                          reported, verdict, sensor_kw)
     grid = metered if addback <= 0 else _grid_state(
         offtake + addback, now, month_peak, cfg, is_restored, reported,
-        verdict)
+        verdict, None if sensor_kw is None else sensor_kw - addback)
     if addback > 0:
         offtake_text = ("offtake %.2f kW (metered %.2f kW + %.2f kW commanded "
                         "discharge)" % (grid.offtake_kw, offtake, addback))
@@ -793,12 +865,22 @@ def _evaluate(trigger_type, started):
         offtake_text = "offtake %.2f kW" % grid.offtake_kw
     shave = capacity.shave_kw(grid, cfg)
 
-    charge, charge_is_stub, charge_marker = inverter.read_charge(
-        cfg.inverter_type, CORE_DIR)
+    soc_known = True
+    if cfg.soc_sensor is None:
+        charge, charge_is_stub, charge_marker = inverter.read_charge(
+            cfg.inverter_type, CORE_DIR)
+        batt = battery.from_percent(charge, cfg, is_stubbed=charge_is_stub)
+    else:                                    # real reading: never the stub
+        charge = _read_soc(cfg.soc_sensor)
+        soc_known = charge is not None
+        charge_is_stub = not soc_known
+        charge_marker = None if soc_known else "soc_unavailable"
+        batt = (battery.from_percent(charge, cfg, is_stubbed=False)
+                if soc_known else battery.unknown(cfg))
     _flags["inverter_marker"] = charge_marker
-    batt = battery.from_percent(charge, cfg, is_stubbed=charge_is_stub)
     forbidden, fired = rules.establish_vetoes(
-        batt, None, cfg, grid, usage_history_available=True)   # never grid-charges: V4 is moot
+        batt, None, cfg, grid, usage_history_available=True,   # never grid-charges: V4 is moot
+        soc_known=soc_known)
     blocking = "+".join([v for v in fired
                          if rules.FORBID_DISCHARGE in rules.VETO_FORBIDS[v]])
     took_ms = (_monotonic() - started) * 1000.0

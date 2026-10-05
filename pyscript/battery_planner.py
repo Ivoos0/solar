@@ -5,7 +5,7 @@ Cycle, fired every minute and gated on
 config.evaluation_interval_minutes so that value is really configurable:
 
   config -> prices (missing/stale: HALT) -> forecast (missing: zero solar +
-  bounded retry) -> solar/usage series (cache) -> charge (stub) -> battery ->
+  bounded retry) -> solar/usage series (cache) -> charge (sensor or stub) -> battery ->
   trajectory -> grid state -> rules.decide -> decision.build -> inverter.apply
 
 Documented readings and guesses (this file cannot be run outside Home Assistant)
@@ -393,6 +393,85 @@ def _sensor_kw(entity):
         return None
     unit = _state_attr(entity, "unit_of_measurement")
     return number / 1000.0 if unit == "W" else number
+
+
+def _power_kw(entity):
+    """Signed power sensor as kW: W is converted, kW kept, any other unit (or
+    none) is unreadable. None when unreadable."""
+    value = _state_value(entity)
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or abs(number) == float("inf"):
+        return None
+    unit = _state_attr(entity, "unit_of_measurement")
+    if isinstance(unit, str):
+        unit = unit.strip()
+    if unit == "W":
+        return number / 1000.0
+    if unit == "kW":
+        return number
+    return None
+
+
+def _battery_discharge_kw(cfg):
+    """Battery power from battery.power_sensor, discharge positive; None when
+    no sensor is configured or it cannot be read."""
+    if cfg.power_sensor is None:
+        return None
+    power = _power_kw(cfg.power_sensor)
+    if power is None:
+        return None
+    return capacity.battery_discharge_from_power(power, cfg.power_positive)
+
+
+def _limit_kw(entity):
+    """Inverter power limit sensor as kW; None when unreadable or not above 0."""
+    kw = _power_kw(entity)
+    if kw is None or kw <= 0:
+        return None
+    return kw
+
+
+def _with_limits(cfg, markers):
+    """cfg with the inverter's own charge / discharge limits for this cycle.
+
+    A configured sensor that cannot be read (or reads 0 or less) leaves that
+    direction at battery.max_charge_kw / max_discharge_kw and adds the
+    battery_limits_fallback marker.
+    """
+    if cfg.max_charge_sensor is None and cfg.max_discharge_sensor is None:
+        return cfg
+    charge = None
+    if cfg.max_charge_sensor is not None:
+        charge = _limit_kw(cfg.max_charge_sensor)
+    discharge = None
+    if cfg.max_discharge_sensor is not None:
+        discharge = _limit_kw(cfg.max_discharge_sensor)
+    if ((cfg.max_charge_sensor is not None and charge is None)
+            or (cfg.max_discharge_sensor is not None and discharge is None)):
+        markers.append("battery_limits_fallback")
+    return config.with_limits(cfg, charge, discharge)
+
+
+def _read_soc(entity):
+    """Battery charge in percent from a sensor; None when unreadable.
+
+    Unreadable: unknown/unavailable, not a number, or outside 0..100.
+    """
+    value = _state_value(entity)
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not 0 <= number <= 100:               # also False for NaN
+        return None
+    return number
 
 
 def _counter_kwh(entity):
@@ -996,8 +1075,12 @@ def _save_mode_samples():
         _mode_saved = data
 
 
-def _grid_state(cfg, local):
-    """capacity.GridState, or None (capacity off, or a sensor is unreadable)."""
+def _grid_state(cfg, local, battery_discharge_kw=None):
+    """capacity.GridState, or None (capacity off, or a sensor is unreadable).
+
+    battery_discharge_kw: battery power (kW, discharge positive) from
+    battery.power_sensor, or None to estimate the household draw instead.
+    """
     global _mode_samples
     if not cfg.capacity_enabled:
         return None
@@ -1016,7 +1099,8 @@ def _grid_state(cfg, local):
     return capacity.build_state(
         offtake, 0.0, local, peak, cfg, reported_average_kw=reported,
         average_mode=verdict.mode, mode_confidence=verdict.confidence,
-        own_grid_charge_kw=_own_grid_charge_kw(cfg, local))
+        own_grid_charge_kw=_own_grid_charge_kw(cfg, local),
+        battery_discharge_kw=battery_discharge_kw)
 
 
 def _guard_is_shaving(cfg, local):
@@ -1179,6 +1263,7 @@ def _cycle(now):
     _recover(local)
 
     markers = []
+    cfg = _with_limits(cfg, markers)
     payload, forecast_age = _read_forecast(cfg, now)
     if payload is None:
         _forecast_failed(cfg, now)
@@ -1194,20 +1279,35 @@ def _cycle(now):
     window_days = cfg.usage_history_weeks * 7
     coverage = history_days if history_days < window_days else None
 
-    charge, charge_is_stub, charge_marker = inverter.read_charge(
-        cfg.inverter_type, CORE_DIR)
-    if charge_marker:
-        markers.append(charge_marker)
-    bat = battery.from_percent(charge, cfg, is_stubbed=charge_is_stub)
+    soc_known = True
+    if cfg.soc_sensor is None:
+        charge, charge_is_stub, charge_marker = inverter.read_charge(
+            cfg.inverter_type, CORE_DIR)
+        if charge_marker:
+            markers.append(charge_marker)
+        bat = battery.from_percent(charge, cfg, is_stubbed=charge_is_stub)
+    else:                                    # real reading: never the stub
+        charge = _read_soc(cfg.soc_sensor)
+        if charge is None:
+            soc_known, charge_is_stub = False, True
+            markers.append("soc_unavailable")
+            bat = battery.unknown(cfg)
+        else:
+            charge_is_stub = False
+            bat = battery.from_percent(charge, cfg, is_stubbed=False)
     block_start = local.replace(
         minute=(local.minute // cfg.block_minutes) * cfg.block_minutes,
         second=0, microsecond=0)
     traj = trajectory.project(bat, solar, usage, price_map, cfg,
                               start_time=block_start)
-    grid = _grid_state(cfg, local)
+    battery_kw = _battery_discharge_kw(cfg)
+    if cfg.power_sensor is not None and battery_kw is None:
+        markers.append("battery_power_unavailable")
+    grid = _grid_state(cfg, local, battery_kw)
     d = rules.decide(traj, price_map, bat, grid, cfg, local,
                      usage_history_available=history_days > 0,
-                     forecast_available=not zero_fallback)
+                     forecast_available=not zero_fallback,
+                     soc_known=soc_known)
 
     if d.action == "charge":
         if _guard_is_shaving(cfg, local):
@@ -1224,6 +1324,8 @@ def _cycle(now):
     degraded = decision.degraded_markers(
         bat, solar_zero_fallback=zero_fallback, cache_markers=markers,
         usage_samples=coverage)
+    if not soc_known:                        # soc_unavailable says it already
+        degraded = [m for m in degraded if m != "soc_stubbed"]
     took = int((_now() - started).total_seconds() * 1000)
     record = decision.build(d, traj, bat, price_now, degraded, now=local,
                             duration_ms=took, grid_state=grid, config=cfg)

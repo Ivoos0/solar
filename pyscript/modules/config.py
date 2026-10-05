@@ -1,7 +1,7 @@
 """Site configuration: parse and validate a plain dict. Pure - no I/O."""
 import hashlib
 import re
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 
 _MODES = ("auto", "running", "accumulating")
 _GROUPINGS = ("same_weekday", "day_type")
@@ -20,6 +20,11 @@ _MAP = [
     ("battery", "max_charge_kw", "max_charge_kw"),
     ("battery", "max_discharge_kw", "max_discharge_kw"),
     ("battery", "round_trip_efficiency", "round_trip_efficiency"),
+    ("battery", "soc_sensor", "soc_sensor"),
+    ("battery", "power_sensor", "power_sensor"),
+    ("battery", "power_positive", "power_positive"),
+    ("battery", "max_charge_sensor", "max_charge_sensor"),
+    ("battery", "max_discharge_sensor", "max_discharge_sensor"),
     ("solar", "forecast_entity", "forecast_entity"),
     ("solar", "forecast_attribute", "forecast_attribute"),
     ("solar", "calibration_default", "solar_calibration_default"),
@@ -78,8 +83,19 @@ _NON_NUMERIC = (
     "price_attribute", "forecast_entity", "forecast_attribute",
     "quarter_hour_average_sensor", "month_peak_sensor", "history_enabled",
     "peak_alert_enabled", "peak_warning_enabled", "report_enabled",
-    "sensors_enabled", "inverter_dry_run",
+    "sensors_enabled", "inverter_dry_run", "soc_sensor",
+    "power_sensor", "power_positive", "max_charge_sensor",
+    "max_discharge_sensor",
 ) + _HISTORY_SENSOR_ATTRS
+
+# Optional entity-name fields: None = not configured, else domain.object_id.
+_OPTIONAL_ENTITY_FIELDS = (
+    ("soc_sensor", "battery.soc_sensor"),
+    ("power_sensor", "battery.power_sensor"),
+    ("max_charge_sensor", "battery.max_charge_sensor"),
+    ("max_discharge_sensor", "battery.max_discharge_sensor"),
+)
+_POWER_POSITIVE = ("discharge", "charge")
 
 # Entity-name fields (checked as domain.object_id) and attribute-name fields
 # (checked as non-empty strings), with the config key shown in errors.
@@ -113,6 +129,9 @@ class SiteConfig:
     injection_multiplier: float = 0.94
     injection_offset: float = -0.011
     reserve_percent: float = 10.0
+    # Fallback limits: used only when no max_*_sensor is set (or it cannot be
+    # read). With a sensor the inverter's own limit is read every cycle and
+    # replaces these for that cycle (see with_limits).
     max_charge_kw: float = 5.0
     max_discharge_kw: float = 5.0
     round_trip_efficiency: float = 0.90
@@ -147,6 +166,20 @@ class SiteConfig:
     # True: a plan-style driver's service calls are logged, not executed.
     # Not in fingerprint(): it changes what is done, not what a block means.
     inverter_dry_run: bool = False
+    # Optional sensor holding the real battery charge (percent, 0..100). None:
+    # the charge is the inverter driver's value (a placeholder while the
+    # driver is "logging"). Not in fingerprint(): it names where data is read.
+    soc_sensor: object = None
+    # Optional sensors with the inverter's maximum battery charge / discharge
+    # power (W or kW). Not in fingerprint(): they name where data is read.
+    max_charge_sensor: object = None
+    max_discharge_sensor: object = None
+    # Optional sensor with the battery power (W or kW, signed). power_positive
+    # says which direction is positive: "discharge" (default) or "charge".
+    # With it the household draw is measured, not estimated (see
+    # capacity.household_draw_kw). Not in fingerprint().
+    power_sensor: object = None
+    power_positive: str = "discharge"
     # Home Assistant entities. Deliberately NOT in fingerprint(): they name
     # where data is read from, not what a block means.
     price_entity: str = "sensor.entso_prices_average_electricity_price"
@@ -187,6 +220,18 @@ class SiteConfig:
             "%s=%r" % (n, getattr(self, n)) for n in _FINGERPRINT_FIELDS
         )
         return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:8]
+
+
+def with_limits(cfg, charge_kw=None, discharge_kw=None):
+    """A NEW config with max_charge_kw / max_discharge_kw replaced by the
+    inverter's readings (kW). None, or a value that is not a number above 0,
+    keeps the configured fallback for that direction. cfg is never mutated."""
+    changes = {}
+    if _num(charge_kw) and charge_kw > 0:
+        changes["max_charge_kw"] = float(charge_kw)
+    if _num(discharge_kw) and discharge_kw > 0:
+        changes["max_discharge_kw"] = float(discharge_kw)
+    return replace(cfg, **changes) if changes else cfg
 
 
 def _num(v):
@@ -237,6 +282,15 @@ def _errors(cfg):
                 r"[a-z0-9_]+\.[a-z0-9_]+", v):
             bad(label, v, "must be an entity id like domain.object_id: "
                 "lowercase letters, digits, underscore, exactly one dot")
+    for attr, label in _OPTIONAL_ENTITY_FIELDS:
+        v = getattr(cfg, attr)
+        if v is not None and (not isinstance(v, str) or not re.fullmatch(
+                r"[a-z0-9_]+\.[a-z0-9_]+", v)):
+            bad(label, v, "must be an entity id like domain.object_id: "
+                "lowercase letters, digits, underscore, exactly one dot")
+    if cfg.power_positive not in _POWER_POSITIVE:
+        bad("battery.power_positive", cfg.power_positive,
+            "must be one of %s" % ", ".join(_POWER_POSITIVE))
     for attr, label in _ATTRIBUTE_FIELDS:
         v = getattr(cfg, attr)
         if not isinstance(v, str) or not v.strip():
