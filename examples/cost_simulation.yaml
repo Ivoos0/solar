@@ -11,82 +11,24 @@
 #     - 0.011, EUR/kWh) are only an example. The planner's own prices are set in
 #     battery_planner/user_config.yaml (see the prices section); keep both in
 #     step if you want the simulation to match what the planner assumes.
-#   * Set the input_number helpers (day/night tariff) to your current prices.
 #   * sensor.entso_prices_current_electricity_market_price comes from the
 #     ENTSO-e integration; the sensor.slimmelezer_energy_* counters come from the
 #     SlimmeLezer. Rename them if yours differ.
-#   * The "Actual ..." utility meters read sensor.energy_consumed_total_cost and
-#     sensor.energy_produced_total_compensation. Those sensors are not defined
-#     here; create them yourself or delete those meters.
 #
 # HOW TO INCLUDE IT
 #   Copy this file to <ha-config>/examples/cost_simulation.yaml, then add this to
-#   your configuration.yaml (Home Assistant "packages" merge the input_number:,
-#   template: and utility_meter: blocks with the ones you already have):
+#   your configuration.yaml (Home Assistant "packages" merge the template: and
+#   utility_meter: blocks with the ones you already have; this package include
+#   is untested):
 #       homeassistant:
 #         packages:
 #           cost_simulation: !include examples/cost_simulation.yaml
 #   Restart Home Assistant. To remove it, delete that line.
 
-input_number:
-  price_consumption_day:
-    name: "Price Consumption Day (Tweevoudig Dag)"
-    min: -1
-    max: 2
-    step: 0.001
-    unit_of_measurement: "EUR/kWh"
-    mode: box
-    icon: mdi:weather-sunny
-
-  price_consumption_night:
-    name: "Price Consumption Night (Tweevoudig Nacht)"
-    min: -1
-    max: 2
-    step: 0.001
-    unit_of_measurement: "EUR/kWh"
-    mode: box
-    icon: mdi:weather-night
-
-  price_injection_day:
-    name: "Price Injection Day (Tweevoudig Dag)"
-    min: -1
-    max: 2
-    step: 0.001
-    unit_of_measurement: "EUR/kWh"
-    mode: box
-    icon: mdi:transmission-tower-export
-
-  price_injection_night:
-    name: "Price Injection Night (Tweevoudig Nacht)"
-    min: -1
-    max: 2
-    step: 0.001
-    unit_of_measurement: "EUR/kWh"
-    mode: box
-    icon: mdi:transmission-tower-export
-
 template:
   - sensor:
-      - name: "Current Consumption Price"
-        unit_of_measurement: "EUR/kWh"
-        state: >
-          {% set hour = now().hour %}
-          {% set weekday = now().weekday() %}
-          {% if weekday < 5 and hour >= 7 and hour < 22 %}
-            {{ states('input_number.price_consumption_day') | float(0) | round(4) }}
-          {% else %}
-            {{ states('input_number.price_consumption_night') | float(0) | round(4) }}
-          {% endif %}
-        attributes:
-          tariff: >
-            {% set hour = now().hour %}
-            {% set weekday = now().weekday() %}
-            {% if weekday < 5 and hour >= 7 and hour < 22 %}
-              Tweevoudig Dag
-            {% else %}
-              Tweevoudig Nacht
-            {% endif %}
-
+      # Adjust the entity name below if your ENTSO-e integration names the
+      # market price sensor differently.
       - name: "Dynamic Consumption Price"
         unit_of_measurement: "EUR/kWh"
         state_class: measurement
@@ -112,26 +54,6 @@ template:
           {% endif %}
         availability: >
           {{ states('sensor.entso_prices_current_electricity_market_price') not in ['unknown', 'unavailable', 'none'] }}
-
-      - name: "Current Injection Price"
-        unit_of_measurement: "EUR/kWh"
-        state: >
-          {% set hour = now().hour %}
-          {% set weekday = now().weekday() %}
-          {% if weekday < 5 and hour >= 7 and hour < 22 %}
-            {{ states('input_number.price_injection_day') | float(0) | round(4) }}
-          {% else %}
-            {{ states('input_number.price_injection_night') | float(0) | round(4) }}
-          {% endif %}
-        attributes:
-          tariff: >
-            {% set hour = now().hour %}
-            {% set weekday = now().weekday() %}
-            {% if weekday < 5 and hour >= 7 and hour < 22 %}
-              Tweevoudig Dag
-            {% else %}
-              Tweevoudig Nacht
-            {% endif %}
   - sensor:
       - name: "Energy Consumed Total"
         unit_of_measurement: "kWh"
@@ -209,16 +131,6 @@ utility_meter:
     cycle: daily
     name: "Simulated Dynamic Compensation Daily"
 
-  daily_actual_cost:
-    source: sensor.energy_consumed_total_cost
-    cycle: daily
-    name: "Actual Cost Daily"
-
-  daily_actual_compensation:
-    source: sensor.energy_produced_total_compensation
-    cycle: daily
-    name: "Actual Compensation Daily"
-
   monthly_dynamic_cost:
     source: sensor.simulated_dynamic_cost_total
     cycle: monthly
@@ -228,13 +140,3 @@ utility_meter:
     source: sensor.simulated_dynamic_compensation_total
     cycle: monthly
     name: "Simulated Dynamic Compensation Monthly"
-
-  monthly_actual_cost:
-    source: sensor.energy_consumed_total_cost
-    cycle: monthly
-    name: "Actual Cost Monthly"
-
-  monthly_actual_compensation:
-    source: sensor.energy_produced_total_compensation
-    cycle: monthly
-    name: "Actual Compensation Monthly"
