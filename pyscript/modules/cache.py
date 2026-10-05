@@ -6,7 +6,7 @@ but usable as a fallback) and invalidation (discard) are separate questions.
 Nothing here raises except CacheError.
 """
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 KINDS = ("solar", "usage")
@@ -121,14 +121,43 @@ def invalidation_reason(series, now, config, expected_kind=None):
     return None
 
 
-def age_description(series, now):
-    """Compact age: "14m" (<1h), "3h12m" (<24h), "2d3h" (>=24h). Never negative."""
-    total = max(0, int(age_minutes(series, now)))
+def format_minutes(total):
+    """Compact duration: "14m" (<1h), "3h12m" (<24h), "2d3h" (>=24h). Never negative."""
+    total = max(0, int(total))
     if total < 60:
         return "%dm" % total
     if total < 1440:
         return "%dh%dm" % (total // 60, total % 60)
     return "%dd%dh" % (total // 1440, (total % 1440) // 60)
+
+
+def age_description(series, now):
+    """Compact age of a cached series, e.g. "3h12m"."""
+    return format_minutes(age_minutes(series, now))
+
+
+def as_datetime(value):
+    """A tz-aware datetime from a datetime or ISO string; naive means UTC.
+    None for anything else (including an unparsable string)."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def stamp_age_minutes(stamp, now):
+    """Minutes from a source's freshness stamp to now, never negative.
+    None when there is no usable stamp (the age check is then skipped)."""
+    stamp = as_datetime(stamp)
+    if stamp is None or not isinstance(now, datetime) or now.tzinfo is None:
+        return None
+    return max(0.0, (now - stamp).total_seconds() / 60.0)
 
 
 def age_marker(series, now):

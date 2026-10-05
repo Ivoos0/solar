@@ -227,3 +227,22 @@ def test_purity():
     import inspect
     src = inspect.getsource(cache)
     assert "import json" not in src and "open(" not in src and "datetime.now" not in src
+
+
+def test_format_minutes():
+    assert [cache.format_minutes(m) for m in (-5, 0, 59.9, 60, 80, 1439, 1440, 3000)] == [
+        "0m", "0m", "59m", "1h0m", "1h20m", "23h59m", "1d0h", "2d2h"]
+
+
+def test_as_datetime_and_stamp_age():
+    aware = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+    now = aware + timedelta(minutes=80)
+    assert cache.as_datetime(aware) == aware
+    assert cache.as_datetime(aware.isoformat()) == aware
+    assert cache.as_datetime(aware.replace(tzinfo=None)) == aware      # naive = UTC
+    for bad in (None, "nope", 12, object()):
+        assert cache.as_datetime(bad) is None
+    assert cache.stamp_age_minutes(aware, now) == 80
+    assert cache.stamp_age_minutes(now, aware) == 0                    # never negative
+    assert cache.stamp_age_minutes(None, now) is None
+    assert cache.stamp_age_minutes(aware, now.replace(tzinfo=None)) is None

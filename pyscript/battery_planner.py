@@ -135,6 +135,7 @@ CONFIG_RETRY_MINUTES = 5              # cadence while the config is unusable
 SERIES_SPAN_HOURS = 72
 MAX_FETCHES_PER_HOUR = 12             # NFR-002, shared with the hourly poll
 FORECAST_FAILURES_BEFORE_RETRY = 2
+FORECAST_AGE_MARKER_MINUTES = 75      # older than a normal hourly refresh: mark it
 SLOW_CYCLE_MS = 5000                  # NFR-001
 MAX_MODE_SAMPLES = 400
 HISTORY_WARN_MINUTES = 60             # per warning kind, energy history
@@ -518,9 +519,37 @@ def _check_peak_alert(cfg, local):
 
 # ---- forecast and solar series -----------------------------------------------
 
-def _read_forecast(cfg):
+def _state_stamp(entity):
+    """Freshness stamp of a sensor, or None. last_reported moves on every poll
+    even when the value is unchanged; last_updated is the fallback. pyscript
+    keeps both on the StateVal from state.get(), not in state.getattr()."""
+    try:
+        raw = state.get(entity)  # noqa: F821
+    except Exception:
+        return None
+    stamp = cache.as_datetime(getattr(raw, "last_reported", None))
+    if stamp is None:
+        stamp = cache.as_datetime(getattr(raw, "last_updated", None))
+    return stamp
+
+
+def _read_forecast(cfg, now):
+    """(payload, age in minutes). payload is None when the attribute is
+    missing/empty or the sensor's data is older than timing.solar_cache_stale_minutes
+    (then the old payload is not used). age is None when the sensor carries no
+    usable stamp; the age check is skipped silently in that case."""
     payload = _state_attr(cfg.forecast_entity, cfg.forecast_attribute)
-    return payload if isinstance(payload, dict) and payload else None
+    if not isinstance(payload, dict) or not payload:
+        return None, None
+    age = cache.stamp_age_minutes(_state_stamp(cfg.forecast_entity), now)
+    if age is not None and age > cfg.solar_cache_stale_minutes:
+        _warn_hourly("forecast_age",
+                     "forecast sensor %s has not refreshed for %s (limit %dm); "
+                     "ignoring its old data" % (
+                         cfg.forecast_entity, cache.format_minutes(age),
+                         cfg.solar_cache_stale_minutes), now)
+        return None, age
+    return payload, age
 
 
 def _forecast_ok():
@@ -618,13 +647,17 @@ def _solar(cfg, local, span_start, span_end, payload, markers):
     return series.zero_solar_series(cfg, span_start, span_end), True
 
 
-def _hist_warn(kind, message, now):
+def _warn_hourly(kind, message, now):
     """log.warning at most once per HISTORY_WARN_MINUTES per kind."""
     last = _hist_warned.get(kind)
     if last is not None and (now - last).total_seconds() < HISTORY_WARN_MINUTES * 60:
         return
     _hist_warned[kind] = now
-    log.warning("battery_planner: energy history: " + message)  # noqa: F821
+    log.warning("battery_planner: " + message)  # noqa: F821
+
+
+def _hist_warn(kind, message, now):
+    _warn_hourly(kind, "energy history: " + message, now)
 
 
 def _history_block_context(cfg, boundary, price_map, solar, zero_fallback):
@@ -837,11 +870,13 @@ def _cycle(now):
     _recover(local)
 
     markers = []
-    payload = _read_forecast(cfg)
+    payload, forecast_age = _read_forecast(cfg, now)
     if payload is None:
         _forecast_failed(cfg, now)
     else:
         _forecast_ok()
+        if forecast_age is not None and forecast_age >= FORECAST_AGE_MARKER_MINUTES:
+            markers.append("forecast_age=" + cache.format_minutes(forecast_age))
     midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
     span_end = midnight.astimezone(timezone.utc) + timedelta(hours=SERIES_SPAN_HOURS)
     solar, zero_fallback = _solar(cfg, local, midnight, span_end, payload, markers)
