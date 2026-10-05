@@ -166,7 +166,7 @@ Before you enable a real driver:
       as sent, so the next decision tries it again.
 - [ ] Know what the peak guard already handles, and what is left to you. Handled: the guard reads
       net grid offtake, which its own discharge lowers, so it adds the power it is commanding back
-      before projecting (see [Peak guard](../README.md#peak-guard)); the command therefore stays steady instead
+      before projecting (see [Peak guard](how-it-works.md#peak-guard)); the command therefore stays steady instead
       of switching on and off every 30 seconds. Still yours: the guard sends a command only when it
       changes (the framework repeats it at 80 % of your `COMMAND_HOLD_MINUTES`, else after
       `inverter.resend_minutes`, but only when the planner

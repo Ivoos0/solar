@@ -148,12 +148,12 @@ Selectors, in the order they are tried:
 
 | Label | Action |
 |---|---|
-| S0 | Peak shave: discharge to the house when the quarter-hour is heading above the ceiling. Mostly relevant when the planner is holding energy back (see [Peak guard](../README.md#peak-guard)) |
+| S0 | Peak shave: discharge to the house when the quarter-hour is heading above the ceiling. Mostly relevant when the planner is holding energy back (see [Peak guard](how-it-works.md#peak-guard)) |
 | S1 | Charge from the grid while the consumption price is negative |
 | S3 | Export when the battery would otherwise overflow and now is the best injection price in the window |
 | S4 | Charge from the grid in the cheapest blocks when that is cheaper than importing later, ahead of the battery reaching the reserve. The comparison is the price now divided by `battery.round_trip_efficiency` against the average buying price (weighted by energy) of the blocks where the house would otherwise import. It needs usage history, like the other price-driven choices |
 | S5 | Charge from the grid when a later injection price, after round-trip losses, beats the price now |
-| S6 | Idle: nothing applies, so the planner cancels any forced mode and the inverter does what it does by default (see [What the planner does](../README.md#what-the-planner-does)) |
+| S6 | Idle: nothing applies, so the planner cancels any forced mode and the inverter does what it does by default (see [What the planner does](how-it-works.md#what-the-planner-does)) |
 
 There is no S2, and the other labels keep their numbers. Storing surplus solar needs no rule: the inverter's own default does it. By default
 the inverter charges the battery from solar surplus until it is full and then exports, and drains it to

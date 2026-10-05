@@ -12,7 +12,7 @@ The e-mails the planner sends and the Home Assistant entities it publishes. Back
 All e-mails go through the notifier `notify.<alerts.notify_service>` to `alerts.address`.
 
 Price outage (halt). Sent when prices become unavailable, then at most once per
-`alerts.realert_minutes`. Fix the price source as described in [What the planner does](../README.md#what-the-planner-does).
+`alerts.realert_minutes`. Fix the price source as described in [What the planner does](how-it-works.md#what-the-planner-does).
 
 Peak warning, before (`alerts.peak_warning_enabled`). The peak guard projects the current
 quarter-hour's average from the energy so far and the current offtake. If the projection is above the
