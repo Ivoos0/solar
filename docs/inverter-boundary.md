@@ -1,5 +1,16 @@
 # Inverter boundary
 
+The exact interface and rules between the planner, the peak guard and an inverter driver. Back to the [README](../README.md).
+
+**Contents**
+
+- [What the adapters call (`inverter.py`)](#what-the-adapters-call-inverterpy)
+- [What a driver implements (`inverter_<type>.py`)](#what-a-driver-implements-inverter_typepy)
+- [Rules](#rules)
+- [Plan-style drivers (service calls through Home Assistant)](#plan-style-drivers-service-calls-through-home-assistant)
+- [Settings](#settings)
+- [Adding an inverter](#adding-an-inverter)
+
 The planner and the peak guard never talk to an inverter directly. They call
 `pyscript/modules/inverter.py`, which writes the decision line and then hands
 the intent to a driver file, `pyscript/modules/inverter_<type>.py`, selected

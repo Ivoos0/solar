@@ -1,5 +1,7 @@
 # Cache files
 
+The cached series the planner keeps, and when they are rebuilt. Back to the [README](../README.md).
+
 `<ha-config>/battery_planner/cache/` holds two derived series so each cycle only
 does the work that changed:
 

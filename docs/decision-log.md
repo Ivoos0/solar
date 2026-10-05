@@ -1,5 +1,16 @@
 # Decision log format
 
+The format of the decision log: one line per planner or peak guard evaluation. Back to the [README](../README.md).
+
+**Contents**
+
+- [Format](#format)
+- [Fields](#fields)
+- [Vetoes](#vetoes)
+- [Degraded markers](#degraded-markers)
+- [HALT record](#halt-record)
+- [Labels in the decision log](#labels-in-the-decision-log)
+
 The planner and the peak guard write one line per evaluation to
 `<ha-config>/battery_planner/decisions-YYYY-MM-DD.log`. Nothing else is
 recorded about what the planner decided, so the line carries everything needed

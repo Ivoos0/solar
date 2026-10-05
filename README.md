@@ -36,6 +36,16 @@ Source: <https://github.com/Ivoos0/solar>
   planner holds". Only peak protection still acts, because it reads the live grid reading and does
   not need history. While the planner holds, the inverter's own behaviour applies.
 
+- The main known gaps (the full list is in [Known gaps](docs/known-gaps.md)):
+  - Peak protection is reactive. The projection covers battery charge, not grid offtake, so the planner
+    does not hold charge back for a foreseeable evening peak.
+  - The peak guard adds the discharge it commands back to the offtake reading, assuming the inverter
+    delivers that power. This has only been tested with simulated meter readings, never with a real
+    inverter (see the [driver checklist](docs/inverter-drivers.md#adding-an-inverter-driver)).
+  - The alert e-mails and the entity names on installs other than the original one have not been tested
+    against a live Home Assistant.
+  - The solar calibration has only been tested with generated history.
+
 If you install it, your battery behaves exactly as before. What you get is a log of decisions you can
 compare with what the battery actually did.
 
@@ -44,7 +54,7 @@ compare with what the battery actually did.
 | You need | Notes |
 |---|---|
 | Belgian digital meter with a P1 port | The capacity-tariff features read the meter's own demand registers |
-| SlimmeLezer P1 reader | Stock firmware does not publish the demand registers. You must reflash it (see [step 3](docs/install.md#install)) |
+| SlimmeLezer P1 reader | Stock firmware does not publish the demand registers. You must reflash it (see [step 3](docs/install.md#install-step-3)) |
 | Home Assistant with HACS and pyscript | Container installs work, no add-ons needed |
 | ENTSO-e API key | Free. Used by the Home Assistant ENTSO-e integration for dynamic prices |
 | Solar array | One roof plane. The forecast logic assumes it |
@@ -62,29 +72,38 @@ your reader only offers per-phase sensors, the capacity features will read the w
 Not supported: control of anything but the battery (EV charger, heat pump, boiler), several solar
 planes, paid forecast tiers, solar curtailment.
 
-Installing and updating have moved to [docs/install.md](docs/install.md).
+## Quick start
 
-Configuration has moved to [docs/configuration.md](docs/configuration.md).
+The full steps are in [Install](docs/install.md#install). In short:
 
-Checking that it works, and troubleshooting, have moved to [docs/troubleshooting.md](docs/troubleshooting.md).
+1. Install HACS and pyscript, then the ENTSO-e integration with your API key ([steps 1 and 2](docs/install.md#install-step-1)).
+2. Reflash the SlimmeLezer so it publishes the demand registers ([step 3](docs/install.md#install-step-3)).
+3. Copy `pyscript/` and `configuration.yaml` to your Home Assistant config folder ([step 4](docs/install.md#install-step-4)).
+4. Create `secrets.yaml` from `secrets.example.yaml` ([step 5](docs/install.md#install-step-5)).
+5. Create `user_config.yaml` and set `battery.capacity_kwh` and `alerts.address` ([step 6](docs/install.md#install-step-6), [Configure](docs/configuration.md#configure)).
+6. Restart Home Assistant and test the notifier ([steps 7 and 8](docs/install.md#install-step-7)).
+7. Look for the first decision record in the log ([Check that it works](docs/troubleshooting.md#check-that-it-works)).
 
-How the planner decides, the peak guard and what a restart does have moved to [docs/how-it-works.md](docs/how-it-works.md).
+## Documentation
 
-The alert e-mails and the Home Assistant sensors have moved to [docs/alerts-and-sensors.md](docs/alerts-and-sensors.md).
-
-Energy history, solar calibration, the daily report and the daily cleanup have moved to [docs/history-and-reports.md](docs/history-and-reports.md).
-
-Adding an inverter driver has moved to [docs/inverter-drivers.md](docs/inverter-drivers.md).
-
-The read-only AlphaESS example has moved to [docs/alphaess.md](docs/alphaess.md).
-
-The known gaps have moved to [docs/known-gaps.md](docs/known-gaps.md).
+- [Install and update](docs/install.md): how to install the planner in Home Assistant and how to update it.
+- [Configure](docs/configuration.md): every setting in `user_config.yaml`, rounding guidance, and notes on prices, the meter and the peak guard.
+- [What the planner does](docs/how-it-works.md): how the planner chooses an action, what the peak guard does and what survives a restart.
+- [Alert e-mails and sensors](docs/alerts-and-sensors.md): the e-mails the planner sends and the Home Assistant entities it publishes.
+- [Energy history, reports and cleanup](docs/history-and-reports.md): energy history, solar calibration, the daily report and the daily cleanup.
+- [Check that it works and troubleshooting](docs/troubleshooting.md): how to see that the planner is running, read a decision record and fix common problems.
+- [Decision log format](docs/decision-log.md): the fields of a log line and the labels for rules and actions.
+- [Adding an inverter driver](docs/inverter-drivers.md): how to add a driver so the decisions reach your inverter.
+- [Inverter boundary](docs/inverter-boundary.md): the exact interface and rules between the planner and a driver.
+- [AlphaESS, read-only](docs/alphaess.md): reading an AlphaESS inverter through Home Assistant's modbus integration.
+- [Cache files](docs/cache-files.md): the cached series and when they are rebuilt.
+- [Known gaps](docs/known-gaps.md): what the planner does not do yet, and what has not been tested.
 
 ## Credits and related projects
 
 - [ramonvanraaij/ha-alphaess-modbus](https://github.com/ramonvanraaij/ha-alphaess-modbus): a Home
   Assistant Modbus integration for AlphaESS inverters by Rámon van Raaij (BSD 3-Clause for his own
-  contributions, see its LICENSE.md). The sensor definitions in the read-only example above follow its
+  contributions, see its LICENSE.md). The sensor definitions in the [read-only AlphaESS example](docs/alphaess.md) follow its
   register definitions. Controlling the inverter is not implemented here; it is planned through that
   project's helper entities.
 - [Projects @ Hillview Lodge](https://projects.hillviewlodge.ie/alphaess/): Axel Koegler's AlphaESS

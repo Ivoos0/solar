@@ -7,7 +7,7 @@ How to add an inverter driver so the planner's decisions reach your inverter. Ba
 - [Drivers that switch Home Assistant helpers (plan-style)](#drivers-that-switch-home-assistant-helpers-plan-style)
 
 A driver is one file, `pyscript/modules/inverter_<name>.py`, selected with `inverter.type: <name>`
-(lowercase letters, digits, underscore). The exact interface and rules are in [docs/inverter-boundary.md](inverter-boundary.md). Copy `inverter_logging.py` and replace the bodies. Skeleton
+(lowercase letters, digits, underscore). The exact interface and rules are in [inverter-boundary.md](inverter-boundary.md). Copy `inverter_logging.py` and replace the bodies. Skeleton
 for a hypothetical `alphaess`:
 
 ```python

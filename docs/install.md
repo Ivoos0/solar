@@ -11,10 +11,10 @@ How to install the planner in Home Assistant and how to update it. Back to the [
 
 Do these in order.
 
-1. Install HACS, then install pyscript through HACS (Integrations). Restart Home Assistant.
-2. Install the ENTSO-e integration and enter your API key. Day-ahead prices are published around
+1. <a id="install-step-1"></a>Install HACS, then install pyscript through HACS (Integrations). Restart Home Assistant.
+2. <a id="install-step-2"></a>Install the ENTSO-e integration and enter your API key. Day-ahead prices are published around
    13:00 local time.
-3. Reflash the SlimmeLezer with the demand registers. In its ESPHome configuration, add this to the
+3. <a id="install-step-3"></a>Reflash the SlimmeLezer with the demand registers. In its ESPHome configuration, add this to the
    `dsmr` sensor block, then flash it (see the SlimmeLezer documentation):
 
    ```yaml
@@ -39,7 +39,7 @@ Do these in order.
    If your reader names these differently, set `capacity_tariff.offtake_sensor`,
    `capacity_tariff.quarter_hour_average_sensor` and `capacity_tariff.month_peak_sensor` in
    `user_config.yaml` (step 6).
-4. Copy the `pyscript/` folder from this repository to `<ha-config>/pyscript/`. Copy
+4. <a id="install-step-4"></a>Copy the `pyscript/` folder from this repository to `<ha-config>/pyscript/`. Copy
    `configuration.yaml` to `<ha-config>/configuration.yaml`. If you already have a
    `configuration.yaml`, merge the `pyscript:`, `rest:` and `notify:` blocks into it once, by hand or
    with `!include`. The shipped file also
@@ -47,7 +47,7 @@ Do these in order.
    exist. You never edit the blocks afterwards: personal values come from `secrets.yaml` and
    `user_config.yaml`. Loading the blocks as a Home Assistant package or from split `!include` files
    is untested.
-5. Create `<ha-config>/secrets.yaml` from `secrets.example.yaml` (or add the keys to your existing
+5. <a id="install-step-5"></a>Create `<ha-config>/secrets.yaml` from `secrets.example.yaml` (or add the keys to your existing
    one):
    - `forecast_solar_url`: `https://api.forecast.solar/estimate/<lat>/<lon>/<declination>/<azimuth>/<kwp>`.
      Azimuth 0 is south and negative is east, so `-10` is ten degrees east of south. This is the
@@ -64,7 +64,7 @@ Do these in order.
      Yahoo and iCloud are from the providers' public documentation and are not tested against live
      accounts. Outlook may not work at all, because many Microsoft accounts have basic-auth SMTP
      disabled.
-6. Create the planner config:
+6. <a id="install-step-6"></a>Create the planner config:
 
    ```bash
    mkdir -p <ha-config>/battery_planner
@@ -72,9 +72,9 @@ Do these in order.
    ```
 
    Edit it (see [Configure](configuration.md#configure)). At minimum set `battery.capacity_kwh` and `alerts.address`.
-7. Restart Home Assistant. Core modules under `pyscript/modules/` are loaded natively and are not
+7. <a id="install-step-7"></a>Restart Home Assistant. Core modules under `pyscript/modules/` are loaded natively and are not
    hot-reloaded, so any change to them needs a restart. A notifier is also only created at startup.
-8. Test the notifier: Developer Tools -> Actions, choose `notify.battery_alert`, give it a message
+8. <a id="install-step-8"></a>Test the notifier: Developer Tools -> Actions, choose `notify.battery_alert`, give it a message
    and run it. The mail should arrive within a minute. If Home Assistant reports the SMTP YAML
    platform as unsupported in your version (it may have moved to the UI), create the notifier in the
    UI and set its service name in `alerts.notify_service`.

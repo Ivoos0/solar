@@ -10,8 +10,9 @@ How the planner chooses an action, what the peak guard does and what survives a 
 The planner builds a projection of the battery over the coming hours (as far as the price list
 reaches) from the price list, the solar forecast and your usage profile. Then it checks a few
 rules that forbid certain actions, and tries the possible actions in a fixed order. The first action
-that none of the rules forbids is the decision. The log records the reason in words (`why`). The short labels it also prints for the rules and
-actions are explained in [Labels in the decision log](decision-log.md#labels-in-the-decision-log).
+that none of the rules forbids is the decision. The log records the reason in words (`why`). The
+short labels it also prints for the rules and actions are explained in
+[Labels in the decision log](decision-log.md#labels-in-the-decision-log).
 
 The reserve (`battery.reserve_percent`) limits exporting to the grid. It never makes the planner buy
 power to keep the battery up: when the battery reaches the reserve the house simply imports at that
@@ -19,7 +20,8 @@ time. Peak shaving may use charge below the reserve, and the inverter's own mini
 applies.
 
 Idle is a command, not silence: it cancels every forced mode the planner or the guard set (forced
-grid charge, forced export, forced discharge) and returns the inverter to that default. It is sent
+grid charge, forced export, forced discharge) and returns the inverter to its default behaviour (see
+[Labels in the decision log](decision-log.md#labels-in-the-decision-log)). It is sent
 once after a forced mode, and not repeated while the planner keeps idling.
 
 In this documentation, "charge" always means charge from the grid.
