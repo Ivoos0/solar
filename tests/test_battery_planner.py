@@ -977,10 +977,11 @@ def test_empty_history_vetoes_grid_charge_in_the_record(env):
     _negative_prices(env)
     env.run()
     keys = fields_of(env.decisions()[0])
-    # S1 grid charge is vetoed; the planner falls through to S2, which
-    # charges from SOLAR (unaffected by V4).
-    assert keys["selector"] == "S2" and keys["action"] == "charge"
+    # Without usage history the planner holds: S1 is vetoed, S2 (solar
+    # storage) too, and the record is an idle one that says why.
+    assert keys["selector"] == "S6" and keys["action"] == "idle"
     assert "V4(suppressed S1 charge)" in keys["vetoes"]
+    assert "no usage history: planner holds" in keys["why"]
     assert "usage_history_unavailable" in keys["degraded"]
 
 

@@ -750,12 +750,16 @@ ARB = [(0.10, 0.02), (0.10, 0.50), (0.10, 0.50)]
 # ARB: 0.50 * 0.9 = 0.45 > 0.10 -> S5 arbitrage grid charge when history is ok.
 
 
-def test_v4_default_is_the_safe_value_and_forbids_grid_charge_only(site_config):
+V4_FORBIDS = {"grid_charge", "export", "solar_charge"}
+
+
+def test_v4_default_is_the_safe_value_and_holds_price_selectors(site_config):
     forbidden, fired = _rules.establish_vetoes(
         battery.from_percent(50, site_config), price(0, 0.2, 0.05),
         site_config)                                  # kwarg omitted
     assert fired == ["V4"]
-    assert forbidden == {"grid_charge"}
+    assert forbidden == V4_FORBIDS
+    assert "discharge" not in forbidden       # S0 peak shaving must still act
 
 
 def test_v4_fires_without_capacity_logic(site_config):
@@ -763,7 +767,7 @@ def test_v4_fires_without_capacity_logic(site_config):
     forbidden, fired = _rules.establish_vetoes(
         battery.from_percent(50, cfg), price(0, 0.2, 0.05), cfg, None,
         usage_history_available=False)
-    assert fired == ["V4"] and forbidden == {"grid_charge"}
+    assert fired == ["V4"] and forbidden == V4_FORBIDS
 
 
 def test_v4_quiet_with_history(site_config):
@@ -805,18 +809,65 @@ def test_history_present_lets_s1_and_s5_grid_charge(site_config):
     assert d.vetoes_fired == []
 
 
-def test_v4_lets_solar_absorption_through(site_config):
-    # solar 1.0 kWh vs usage 0 this block, injection negative -> S2 solar.
+def test_v4_holds_solar_absorption(site_config):
+    # solar 1.0 kWh vs usage 0 (meaningless without history), injection
+    # negative -> S2 would store it; V4 forbids solar_charge.
     d = go(site_config, [(0.20, -0.05)] * 3, solar={0: 1.0}, history=False)
+    assert (d.selector, d.action, d.target_power_kw) == ("S6", "idle", 0.0)
+    assert d.vetoes_fired == ["V2", "V4"]
+    assert d.suppressed == [("S2", "charge", "V4")]
+    assert "no usage history: planner holds" in d.reasoning
+
+
+def test_history_present_lets_s2_store_solar(site_config):
+    d = go(site_config, [(0.20, -0.05)] * 3, solar={0: 1.0}, history=True)
     assert (d.selector, d.action, d.charge_source) == ("S2", "charge", "solar")
-    assert d.vetoes_fired == ["V2", "V4"]     # V2 forbids export only
-    assert d.suppressed == []
+    assert d.vetoes_fired == ["V2"] and d.suppressed == []
+
+
+def test_v4_blocks_s3_export(site_config):
+    # spill ahead and now is the best injection price: S3 exports with history.
+    plist = [(0.20, 0.30), (0.20, 0.10), (0.20, 0.10)]
+    d = go(site_config, plist, spill=1.0, sat=2, history=True)
+    assert (d.selector, d.action) == ("S3", "export")
+    d = go(site_config, plist, spill=1.0, sat=2, history=False)
+    assert (d.selector, d.action) == ("S6", "idle")
+    assert d.suppressed == [("S3", "export", "V4")]
+    assert "no usage history: planner holds" in d.reasoning
+
+
+def test_v4_blocks_s4_grid_charge(site_config):
+    plist = [(0.10, 0.02)] * 3
+    d = go(site_config, plist, breach=2, shortfall={2: 0.5}, history=True)
+    assert (d.selector, d.action) == ("S4", "charge")
+    d = go(site_config, plist, breach=2, shortfall={2: 0.5}, history=False)
+    assert (d.selector, d.action) == ("S6", "idle")
+    assert ("S4", "charge", "V4") in d.suppressed
+
+
+def test_idle_reasoning_without_history_says_so_plainly(site_config):
+    d = go(site_config, [FLAT] * 3, history=False)
+    assert (d.selector, d.action) == ("S6", "idle")
+    assert d.reasoning.startswith("hold: no usage history: planner holds")
+
+
+def test_idle_reasoning_with_history_does_not_claim_it(site_config):
+    d = go(site_config, [FLAT] * 3, history=True)
+    assert "no usage history" not in d.reasoning
 
 
 def test_v4_leaves_peak_shaving_alone(site_config):
     d = go(site_config, [FLAT] * 3, g=SHAVE, history=False)
     assert (d.selector, d.action, d.target_power_kw) == ("S0", "discharge", 1.5)
     assert d.vetoes_fired == ["V3", "V4"]
+    assert d.suppressed == []
+
+
+def test_v4_does_not_suppress_s0_but_v1_still_does(site_config):
+    # reserve veto V1 forbids the S0 discharge; V4 alone never does.
+    d = go(site_config, [FLAT] * 3, g=SHAVE, pct=5.0, history=False)
+    assert (d.selector, d.action) == ("S6", "idle")
+    assert d.suppressed == [("S0", "discharge", "V1")]
 
 
 def test_v4_renders_in_the_vetoes_field(site_config):

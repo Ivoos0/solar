@@ -65,16 +65,19 @@ vetoes=V2(suppressed S3 export) | selector=S6 |
 # several vetoes block the same proposal: joined with +
 vetoes=V1+V2(suppressed S3 export) | selector=S6 | ...
 
-# V4 (no usable usage history) forbids grid charging only: S1 wanted to
-# grid-charge, was suppressed, and nothing else applied
-vetoes=V4(suppressed S1 charge) | selector=S6 |
+# V4 (no usable usage history) forbids grid charging, solar charging and
+# export (every price-driven selector S1-S5), never peak shaving (S0): S1
+# wanted to grid-charge and S2 to store solar, both were suppressed, and
+# nothing else applied. The idle record says so plainly.
+vetoes=V4(suppressed S1 charge),V4(suppressed S2 charge) | selector=S6 |
+  why="hold: no usage history: planner holds (only peak shaving acts) - ..."
 
 # a veto fired but blocked nothing (S2 won first): rendered bare
 vetoes=V2 | selector=S2 |
   why="injection -0.0043; surplus 2.4kW, headroom 3.2kWh, charging from solar"
 ```
 
-V4 fires on every cycle while there is no usage history (until the energy history holds a known household load, see the README section "Energy history"), so it appears bare on most records, and as `V4(suppressed ...)` whenever a grid-charging selector would have acted.
+V4 fires on every cycle while there is no usage history (until the energy history holds a known household load, see the README section "Energy history"), so it appears bare on most records, and as `V4(suppressed ...)` whenever a price-driven selector (grid charge, solar charge or export) would have acted. The suppressed entries are rendered separately, one per suppressed proposal, e.g. `V4(suppressed S1 charge)` and `V4(suppressed S2 charge)` (see render_vetoes). V4 does not forbid the S0 peak-shave discharge; only V1 (reserve) does.
 
 This is the case the spec got wrong twice. A record showing a veto **must** also name the selector that finally fired (SC-010) — a veto alone is never a complete decision.
 

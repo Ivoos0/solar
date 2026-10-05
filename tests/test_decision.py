@@ -345,6 +345,30 @@ def test_real_pipeline_capped_grid_charge_reports_both_powers(site_config):
     assert kv["power"] == "0.54kW" and kv["budget"] == "0.54kW"
 
 
+def test_real_pipeline_no_history_idle_record(site_config):
+    # Same situation as the export record above, but without usage history:
+    # S3 export is held by V4 and the record is an idle one saying why.
+    cfg = site_config
+    bs = battery.from_percent(90.0, cfg, is_stubbed=True)
+    sol = [series.ForecastSlot(T0P + i * STEP, s, False, 15)
+           for i, s in enumerate((1.0, 1.0, 0.0, 0.0))]
+    use = [series.UsageSlot(T0P + i * STEP, 0.1, 7) for i in range(4)]
+    plist = [(0.2140, 0.1890), (0.30, 0.05), (0.30, 0.05), (0.30, 0.05)]
+    pm = {T0P + i * STEP: prices.PricePoint(T0P + i * STEP, 0.0, c, j, 15)
+          for i, (c, j) in enumerate(plist)}
+    traj = trajectory.project(bs, sol, use, pm, cfg, start_time=T0P)
+    now = T0P + timedelta(minutes=1)
+    d = rules.decide(traj, pm, bs, _grid(), cfg, now,
+                     usage_history_available=False)
+    r = decision.build(d, traj, bs, pm[T0P], decision.degraded_markers(bs),
+                       now=now, duration_ms=5, grid_state=_grid(), config=cfg)
+    kv = fields_of(decision.format_record(r))
+    assert (kv["action"], kv["selector"], kv["power"]) == (
+        "idle", "S6", "0.00kW")
+    assert kv["vetoes"] == "V4(suppressed S3 export)"
+    assert "no usage history: planner holds" in kv["why"]
+
+
 def test_build_capacity_off_renders_na(site_config):
     cfg = replace(site_config, capacity_enabled=False)
     bs = battery.from_percent(50.0, cfg)

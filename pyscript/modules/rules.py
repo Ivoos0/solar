@@ -22,7 +22,8 @@ Entry point
   usage_history_available
                  True only when the usage profile rests on real history
                  (the adapter sets it from sample coverage). The default is the
-                 SAFE value False: no history -> V4 forbids grid charging.
+                 SAFE value False: no history -> V4 holds every price-driven
+                 selector (S1-S5); only peak shaving (S0) still acts.
 
 Decision fields: action (charge|discharge|export|idle), target_power_kw,
 selector ("S0".."S6"), reasoning, vetoes_fired (["V1", ...]), suppressed
@@ -39,18 +40,26 @@ whose condition simply does not hold is NOT recorded. S6 (idle) is never
 forbidden, so the loop always terminates.
 
 Action classes a veto can forbid: "discharge" (serve the house from the
-battery), "export" (discharge to the grid), "grid_charge".
+battery), "export" (discharge to the grid), "grid_charge", "solar_charge"
+(store surplus solar: a charge proposal with charge_source "solar").
   V1  charge_percent <= reserve_percent  -> {"discharge", "export"}
   V2  injection_price < 0 (0.0 does not) -> {"export"} only
   V3  capacity budget_kw <= 0            -> {"grid_charge"} only
-  V4  no usable usage history            -> {"grid_charge"} only
+  V4  no usable usage history            -> {"grid_charge", "export",
+                                             "solar_charge"}
 V4 ("no usage profile"): without history the trajectory cannot know the
-household load, so a grid charge could land on top of an unseen peak and raise
-the capacity tariff. It fires whether or not capacity logic is active.
+household load. A grid charge could land on top of an unseen peak, and the
+"solar > usage now" test of S2 and the spill/saturation maths of S3 are
+meaningless at zero usage. So every price-driven selector (S1-S5) is held and
+the planner falls through to idle (S6), whose reasoning says "no usage history:
+planner holds". V4 does NOT forbid "discharge": the only discharge proposal is
+S0 peak shaving, which does not depend on usage history (it reads the live grid
+state) and protects the capacity tariff, so it still acts (V1's reserve veto
+still applies to it). V4 fires whether or not capacity logic is active.
 V3 and the grid-charge cap use the budget against stay_under_percent of the
 ceiling (capacity.charging_ceiling_kw), e.g. 80 % of 2.5 kW = 2.0 kW; S0 and
 the reported ceiling still use the real ceiling.
-Solar charging is a class no veto forbids.
+Solar charging is forbidden only by V4.
 
 Resolved ambiguities / documented readings
 ------------------------------------------
@@ -69,8 +78,8 @@ Resolved ambiguities / documented readings
   boundary is at or before the current block the window is just the current
   block (saturation/breach is imminent, so acting now is the only option).
 * S2 "solar > usage now" uses the current block's solar_kwh vs usage_kwh; the
-  charge power is min(surplus kW, max_charge_kw). It charges from solar so no
-  veto (not even V3) applies.
+  charge power is min(surplus kW, max_charge_kw). It charges from solar so V3 does not
+  apply; only V4 (no usage history, where "solar > usage" means nothing) holds it.
 * S4 shortfall = sum of grid_shortfall_kwh over the trajectory (load the grid
   must serve because the battery sits at the floor); N = max(1, ceil(shortfall
   / (max_charge_kw * block_hours))), capped at the window size. "Among the
@@ -93,12 +102,14 @@ import capacity
 FORBID_DISCHARGE = "discharge"
 FORBID_EXPORT = "export"
 FORBID_GRID_CHARGE = "grid_charge"
+FORBID_SOLAR_CHARGE = "solar_charge"
 
 VETO_FORBIDS = {
     "V1": frozenset({FORBID_DISCHARGE, FORBID_EXPORT}),
     "V2": frozenset({FORBID_EXPORT}),
     "V3": frozenset({FORBID_GRID_CHARGE}),
-    "V4": frozenset({FORBID_GRID_CHARGE}),
+    "V4": frozenset({FORBID_GRID_CHARGE, FORBID_EXPORT,
+                    FORBID_SOLAR_CHARGE}),
 }
 
 
@@ -115,13 +126,15 @@ class Proposal:
 
     @property
     def action_class(self):
-        """The class a veto can forbid, or None (solar charge / idle)."""
+        """The class a veto can forbid, or None (idle)."""
         if self.action == "export":
             return FORBID_EXPORT
         if self.action == "discharge":
             return FORBID_DISCHARGE
         if self.action == "charge" and self.charge_source == "grid":
             return FORBID_GRID_CHARGE
+        if self.action == "charge" and self.charge_source == "solar":
+            return FORBID_SOLAR_CHARGE
         return None
 
 
@@ -437,6 +450,9 @@ def _s6_reasoning(ctx, fired, suppressed):
     if suppressed:
         facts.append("suppressed: " + ", ".join(
             "%s %s blocked by %s" % s for s in suppressed))
+    if "V4" in fired:
+        return ("hold: no usage history: planner holds (only peak shaving "
+                "acts) - " + "; ".join(facts))
     return "hold: nothing applies - " + "; ".join(facts)
 
 

@@ -18,8 +18,10 @@ Source: <https://github.com/Ivoos0/solar>
   `degraded=soc_stubbed`. A driver that reads the real charge removes the marker.
 - Household usage history comes from energy counters you configure (see [Energy history](#energy-history)).
   Until a `load` counter (or `solar` plus both battery counters) is configured, records carry
-  `usage_history_unavailable` and the planner never charges from the grid. Charging from surplus
-  solar, discharging and exporting still work.
+  `usage_history_unavailable` and the planner holds: it does nothing price-driven (no charging from
+  the grid or from surplus solar, no exporting) and logs idle with the reason "no usage history:
+  planner holds". Only peak protection still acts, because it reads the live grid reading and does
+  not need history. While the planner holds, the inverter's own behaviour applies.
 
 If you install it, your battery behaves exactly as before. What you get is a log of decisions you can
 compare with what the battery actually did.
@@ -267,7 +269,7 @@ Markers you can expect in `degraded=` on a fresh install:
 | Marker | Meaning |
 |---|---|
 | `soc_stubbed` | The battery charge is the 50 % placeholder. Normal until a driver reads the real charge |
-| `usage_history_unavailable` | No household usage history yet. Normal until a load source is configured; grid charging is blocked meanwhile |
+| `usage_history_unavailable` | No household usage history yet. Normal until a load source is configured; the planner only peak-shaves and otherwise idles meanwhile |
 | `usage_samples=N` | The usage profile rests on fewer than `usage.history_weeks` x 7 days of history (N days). Disappears as history builds up |
 | `cache_age_solar=...`, `cache_age_usage=...` | A cached series was used, with its age |
 | `forecast_age=...` | The forecast was used, but the sensor last refreshed 75 minutes or more ago (a normal hourly refresh keeps it under that) |
@@ -314,7 +316,7 @@ Vetoes:
 | V1 | discharge, export | Charge is at or below `battery.reserve_percent` |
 | V2 | export | The injection price is negative |
 | V3 | grid charging | No capacity budget is left in this quarter-hour |
-| V4 | grid charging | There is no usable usage history |
+| V4 | grid charging, solar charging, export | There is no usable usage history. Peak shaving (S0) is not affected |
 
 Selectors, in the order they are tried:
 
@@ -398,7 +400,7 @@ one quantity are summed (tariff 1 plus tariff 2). The planner reads them at each
 records the difference. Defaults: `import` and `export` use the four SlimmeLezer tariff counters;
 `solar`, `battery_charge`, `battery_discharge` and `load` are empty.
 
-To get usage history, and with it grid charging, configure either a `load` counter, or `solar` together
+To get usage history, and with it the price-driven actions, configure either a `load` counter, or `solar` together
 with `battery_charge` and `battery_discharge`. Solar alone is not enough while a battery is installed.
 With only the default counters, import and export are recorded but `load_kwh` stays `null`.
 
@@ -523,7 +525,9 @@ If you fork, do not publish `secrets.yaml` or `battery_planner/user_config.yaml`
 
 - No inverter driver is shipped except `logging`, so nothing controls a battery.
 - Battery charge is a fixed 50 % until a driver reads the real value.
-- Grid charging stays off until a household load source is configured.
+- Until a household load source is configured (usage history exists), the planner only peak-shaves
+  and otherwise idles: no grid charging, no solar storage, no exporting. The inverter's own behaviour
+  applies meanwhile.
 - Peak protection is reactive. The projection covers battery charge, not grid offtake, so the planner
   does not hold charge back for a foreseeable evening peak.
 - The peak guard does not add its own commanded discharge back to the offtake reading (see the driver
