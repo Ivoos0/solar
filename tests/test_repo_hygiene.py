@@ -80,7 +80,7 @@ def test_configuration_yaml_parses_with_expected_top_level_keys():
 
 def test_cost_simulation_example_parses():
     assert set(_load_yaml("examples/cost_simulation.yaml")) == {
-        "input_number", "template", "utility_meter"}
+        "template", "utility_meter"}
 
 
 SECRETS_EXAMPLE = (ROOT / "secrets.example.yaml").read_text(encoding="utf-8")
