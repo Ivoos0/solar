@@ -156,6 +156,77 @@ def test_block_context_comes_from_the_start_snapshot():
             r["injection_price"], r["soc_percent"]) == (0.4, 0.21, 0.03, 55.0)
 
 
+# ---- charge at the end of the block -------------------------------------------
+
+def test_end_charge_comes_from_the_closing_snapshot():
+    a = snap(B0, readings={"import": [1.0]}, soc_percent=40.0)
+    b = snap(B0 + STEP, late=1, readings={"import": [2.0]}, soc_percent=55.5)
+    r = rec(a, b)
+    assert r["soc_percent"] == 40.0 and r["soc_end_percent"] == 55.5
+
+
+def test_consecutive_blocks_chain_end_to_start():
+    s0 = snap(B0, readings={"import": [1.0]}, soc_percent=40.0)
+    s1 = snap(B0 + STEP, readings={"import": [2.0]}, soc_percent=55.0)
+    s2 = snap(B0 + 2 * STEP, readings={"import": [3.0]}, soc_percent=61.0)
+    r1, r2 = rec(s0, s1), rec(s1, s2)
+    assert (r1["soc_percent"], r1["soc_end_percent"]) == (40.0, 55.0)
+    assert (r2["soc_percent"], r2["soc_end_percent"]) == (55.0, 61.0)
+
+
+def test_end_charge_is_null_when_the_closing_reading_is_unavailable():
+    a = snap(B0, readings={"import": [1.0]}, soc_percent=40.0)
+    b = snap(B0 + STEP, readings={"import": [2.0]}, soc_percent=None)
+    r = rec(a, b)
+    assert r["soc_percent"] == 40.0 and r["soc_end_percent"] is None
+
+
+def test_start_charge_null_does_not_hide_the_end_charge():
+    a = snap(B0, readings={"import": [1.0]}, soc_percent=None)
+    b = snap(B0 + STEP, readings={"import": [2.0]}, soc_percent=7.0)
+    r = rec(a, b)
+    assert r["soc_percent"] is None and r["soc_end_percent"] == 7.0
+
+
+def test_gap_records_have_null_charges_and_the_field():
+    a = snap(B0, readings={"import": [1.0]}, soc_percent=40.0)
+    b = snap(B0 + 3 * STEP, readings={"import": [9.0]}, soc_percent=50.0)
+    out = h.records_between(a, b, 15, BR)
+    assert len(out) == 3
+    assert all("soc_end_percent" in r and r["soc_end_percent"] is None
+               and r["soc_percent"] is None for r in out)
+
+
+def test_every_record_has_the_field_and_the_schema_is_unchanged():
+    assert "soc_end_percent" in h.RECORD_FIELDS and h.SCHEMA == 1
+    r = rec(snap(B0, readings={"import": [1.0]}),
+            snap(B0 + STEP, readings={"import": [2.0]}))
+    assert set(r) == set(h.RECORD_FIELDS)
+
+
+def test_end_charge_survives_the_snapshot_file_round_trip():
+    s0 = snap(B0, readings={"import": [1.0]}, soc_percent=40.0)
+    s1 = snap(B0 + STEP, readings={"import": [2.0]}, soc_percent=55.0)
+    restored = h.snapshot_from_dict(json.loads(json.dumps(h.snapshot_to_dict(s1))))
+    assert rec(s0, restored)["soc_end_percent"] == 55.0
+
+
+def test_jsonl_round_trip_and_old_records_without_the_field():
+    r = rec(snap(B0, readings={"import": [1.0]}, soc_percent=40.0),
+            snap(B0 + STEP, readings={"import": [2.0]}, soc_percent=55.0))
+    old = {k: v for k, v in r.items() if k != "soc_end_percent"}
+    old["load_kwh"] = 0.5
+    text = h.to_line(r) + chr(10) + json.dumps(old) + chr(10)
+    out, bad = h.parse_lines(text)
+    assert bad == 0 and out[0]["soc_end_percent"] == 55.0
+    assert "soc_end_percent" not in out[1]
+    r["load_kwh"] = 0.25
+    got = h.usage_series(out + [{**r, "block_start": (B0 + STEP).isoformat()}])
+    assert [v for _, v in got] == [0.5, 0.25]
+    cal = h.solar_calibration(out, B0, 4, 0.8, BR, 15)     # tolerates old rows
+    assert cal["ratios"] == {}
+
+
 # ---- load derivation -------------------------------------------------------------
 
 def test_derived_load_formula():

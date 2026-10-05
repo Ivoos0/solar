@@ -238,7 +238,8 @@ def _report_day(cfg, tz, day, now):
     history_text = _read_text(HISTORY_DIR + report.history_name(day))
     text = report.build_report(
         day, decisions_text, history_text, tz=tz,
-        block_minutes=cfg.block_minutes, now=now)
+        block_minutes=cfg.block_minutes, now=now,
+        capacity_kwh=cfg.capacity_kwh)
     if text is None:
         return False
     err = _write_text_new(HISTORY_DIR + report.report_name(day), text)

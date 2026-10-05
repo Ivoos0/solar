@@ -572,7 +572,8 @@ Fields per block (energy in kWh; any field is `null` when unknown):
 | `forecast_solar_kwh` | The forecast for the block when it started, before any [solar calibration](#solar-calibration); `null` if the forecast was missing |
 | `solar_ratio` | `solar_kwh` divided by `forecast_solar_kwh`. `null` unless both are known and the forecast was at least 0.05 kWh (below that the ratio is noise). Not capped; the cap applies only when the ratio is used |
 | `consumption_price`, `injection_price` | Prices of the block, as known when it started |
-| `soc_percent` | Charge at the start; `null` while the charge is a stub |
+| `soc_percent` | Battery charge (%) at the start of the block; `null` while the charge is a stub or unreadable |
+| `soc_end_percent` | Battery charge (%) at the end of the block, read with the snapshot that closes it (the next block's start). `null` when that reading is a stub or unreadable, and in the `null` records of a gap. Records written before this field existed do not have it |
 | `complete` | `true` only if every configured counter was readable at both readings and gave a valid difference |
 | `start_read_at`, `snapshot_read_at` | When the counters were actually read |
 
@@ -658,6 +659,15 @@ What it contains:
 - **Energy**: grid import and export, solar produced against what was forecast (as a percentage; 100%
   means the forecast was right), battery charge and discharge, and household load when it is known.
   Totals only add up the blocks that have a value, and the table shows how many that was.
+- **Battery charge**: only when the history has charge readings and `battery.capacity_kwh` is set. It
+  gives the first, last, lowest and highest charge of the day, then compares the battery counters with
+  the change in charge over the blocks that have both a start and an end charge. The counters give
+  the energy stored (charged minus discharged); the charge gives the same figure as the change in
+  percentage times `battery.capacity_kwh`. Both are shown in kWh, with the difference as a percentage
+  of the energy that moved (charged plus discharged). A small difference is normal, because the
+  battery loses some energy when charging and discharging. When the difference is more than 25 % of the
+  energy that moved (and at least 1 kWh moved), the Data quality section says so. That usually means
+  `battery.capacity_kwh` is wrong, or a battery counter is wrong or was reset.
 - **Blocks recorded**: how many of the expected blocks for that day exist. A normal day has 96; the
   day the clocks go forward has 92 and the day they go back has 100.
 - **Data quality**: only present when something is off, for example a missing file, lines that could

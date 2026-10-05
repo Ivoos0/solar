@@ -95,6 +95,15 @@ def block_line(start_local, imp=0.5):
     return history.to_line(rec)
 
 
+def charge_block_line(start_local, soc, soc_end):
+    rec = dict.fromkeys(history.RECORD_FIELDS)
+    rec.update(schema=1, block_start=start_local.astimezone(UTC).isoformat(),
+               local_date=start_local.date().isoformat(), block_minutes=15,
+               battery_charge_kwh=2.0, battery_discharge_kwh=0.5,
+               soc_percent=soc, soc_end_percent=soc_end, complete=True)
+    return history.to_line(rec)
+
+
 def day_files(env, day, imp=0.5):
     at = datetime(day.year, day.month, day.day, 12, tzinfo=BRU)
     env.decisions(day, decision_line(at) + "\n")
@@ -571,3 +580,25 @@ def test_both_triggers_are_registered_cleanup_after_report(env):
                     crons[node.name] = dec.args[0].value
     assert crons == {"housekeeping_report": "cron(10 0 * * *)",
                      "housekeeping_cleanup": "cron(30 3 * * *)"}
+
+
+def test_report_gets_the_battery_capacity_from_the_config(env):
+    at = datetime(2026, 9, 29, 12, tzinfo=BRU)
+    env.blocks(YESTERDAY, charge_block_line(at, 40.0, 55.0) + "\n")
+    env.mod.run_report(NOW)                                # capacity_kwh: 10.0
+    text = env.report(YESTERDAY).read_text(encoding="utf-8")
+    assert "## Battery charge" in text
+    assert "+1.50 kWh" in text and "Difference: +0.00 kWh, 0%" in text
+    assert "differ by" not in text
+
+
+def test_report_flags_a_wrong_capacity_from_the_config(env):
+    at = datetime(2026, 9, 29, 12, tzinfo=BRU)
+    env.blocks(YESTERDAY, charge_block_line(at, 40.0, 55.0) + "\n")
+    env.config_path.write_text(
+        env.config_path.read_text(encoding="utf-8").replace(
+            "capacity_kwh: 10.0", "capacity_kwh: 20.0"), encoding="utf-8")
+    env.mod.run_report(NOW)
+    text = env.report(YESTERDAY).read_text(encoding="utf-8")
+    assert "Change in charge (percentage times battery capacity): +3.00 kWh" in text
+    assert "differ by 60%" in text

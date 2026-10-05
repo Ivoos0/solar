@@ -61,8 +61,8 @@ RECORD_FIELDS = (
     "battery_discharge_kwh", "load_kwh", "load_source", "from_net_kwh",
     "load_from_solar_kwh", "load_from_battery_kwh", "load_from_net_kwh",
     "split_method", "forecast_solar_kwh", "solar_ratio", "consumption_price",
-    "injection_price", "soc_percent", "complete", "start_read_at",
-    "snapshot_read_at",
+    "injection_price", "soc_percent", "soc_end_percent", "complete",
+    "start_read_at", "snapshot_read_at",
 )
 
 
@@ -87,7 +87,8 @@ class Snapshot:
     totals: {quantity: kWh or None}; None = not configured OR unreadable.
     failed: quantities that are configured but unreadable (marks incomplete).
     The forecast, prices and SOC are what applied to the block STARTING at
-    `boundary` (they become part of that block's record).
+    `boundary` (they become part of that block's record). The SOC is also the
+    END charge of the block before (soc_end_percent of its record).
     """
     boundary: datetime
     read_at: datetime
@@ -220,6 +221,7 @@ def block_record(start, end, block_minutes, tz):
     rec["consumption_price"] = start.consumption_price
     rec["injection_price"] = start.injection_price
     rec["soc_percent"] = start.soc_percent
+    rec["soc_end_percent"] = end.soc_percent      # the closing snapshot
     configured = [q for q in QUANTITIES
                   if start.totals.get(q) is not None
                   or end.totals.get(q) is not None

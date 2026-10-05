@@ -92,6 +92,86 @@ def test_boundary_crossing_writes_one_record_with_all_fields(env):
     assert env.decisions()                                # decisions unaffected
 
 
+SOC = "sensor.alphaess_soc_battery"
+
+
+def soc_config(env):
+    env.write_config(FULL)
+    nl = chr(10)
+    text = env.config_path.read_text(encoding="utf-8").replace(
+        "battery:" + nl, "battery:" + nl + "  soc_sensor: %s" % SOC + nl, 1)
+    env.config_path.write_text(text, encoding="utf-8")
+
+
+def set_soc(env, value):
+    env.state.set(SOC, value, {"unit_of_measurement": "%"})
+
+
+def test_end_charge_is_the_reading_of_the_closing_snapshot(env):
+    soc_config(env)
+    set_all(env, 0)
+    set_soc(env, "40.0")
+    env.run(T0)
+    set_all(env, 1)
+    set_soc(env, "55.0")
+    env.run(T0 + QUARTER)
+    set_all(env, 2)
+    set_soc(env, "61.0")
+    env.run(T0 + 2 * QUARTER)
+    r1, r2 = records(env)
+    assert (r1["soc_percent"], r1["soc_end_percent"]) == (40.0, 55.0)
+    assert (r2["soc_percent"], r2["soc_end_percent"]) == (55.0, 61.0)
+
+
+def test_end_charge_null_when_the_sensor_is_unavailable_at_the_end(env):
+    soc_config(env)
+    set_all(env, 0)
+    set_soc(env, "40.0")
+    env.run(T0)
+    set_all(env, 1)
+    set_soc(env, "unavailable")
+    env.run(T0 + QUARTER)
+    (r,) = records(env)
+    assert r["soc_percent"] == 40.0 and r["soc_end_percent"] is None
+
+
+def test_end_charge_null_without_a_charge_sensor(env):
+    env.write_config(FULL)
+    cycles(env, 2)
+    (r,) = records(env)
+    assert r["soc_percent"] is None and r["soc_end_percent"] is None
+
+
+def test_end_charge_survives_a_restart(env):
+    soc_config(env)
+    set_all(env, 0)
+    set_soc(env, "40.0")
+    env.run(T0)
+    assert json.loads((hist_dir(env) / "last_snapshot.json").read_text()
+                      )["soc_percent"] == 40.0
+    restart(env)
+    set_all(env, 1)
+    set_soc(env, "52.5")
+    env.run(T0 + QUARTER)
+    (r,) = records(env)
+    assert r["soc_percent"] == 40.0 and r["soc_end_percent"] == 52.5
+
+
+def test_restart_gap_gives_null_charges(env):
+    soc_config(env)
+    set_all(env, 0)
+    set_soc(env, "40.0")
+    env.run(T0)
+    restart(env)
+    set_all(env, 5)
+    set_soc(env, "70.0")
+    env.run(T0 + 3 * QUARTER)
+    out = records(env)
+    assert len(out) == 3
+    assert all(r["soc_percent"] is None and r["soc_end_percent"] is None
+               for r in out)
+
+
 def test_no_duplicate_record_on_repeated_cycles_in_a_block(env):
     env.write_config(FULL)
     set_all(env, 0)
