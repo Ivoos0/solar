@@ -395,6 +395,39 @@ def _sensor_kw(entity):
     return number / 1000.0 if unit == "W" else number
 
 
+def _power_kw(entity):
+    """Signed power sensor as kW: W is converted, kW kept, any other unit (or
+    none) is unreadable. None when unreadable."""
+    value = _state_value(entity)
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or abs(number) == float("inf"):
+        return None
+    unit = _state_attr(entity, "unit_of_measurement")
+    if isinstance(unit, str):
+        unit = unit.strip()
+    if unit == "W":
+        return number / 1000.0
+    if unit == "kW":
+        return number
+    return None
+
+
+def _battery_discharge_kw(cfg):
+    """Battery power from battery.power_sensor, discharge positive; None when
+    no sensor is configured or it cannot be read."""
+    if cfg.power_sensor is None:
+        return None
+    power = _power_kw(cfg.power_sensor)
+    if power is None:
+        return None
+    return capacity.battery_discharge_from_power(power, cfg.power_positive)
+
+
 def _read_soc(entity):
     """Battery charge in percent from a sensor; None when unreadable.
 
@@ -1013,8 +1046,12 @@ def _save_mode_samples():
         _mode_saved = data
 
 
-def _grid_state(cfg, local):
-    """capacity.GridState, or None (capacity off, or a sensor is unreadable)."""
+def _grid_state(cfg, local, battery_discharge_kw=None):
+    """capacity.GridState, or None (capacity off, or a sensor is unreadable).
+
+    battery_discharge_kw: battery power (kW, discharge positive) from
+    battery.power_sensor, or None to estimate the household draw instead.
+    """
     global _mode_samples
     if not cfg.capacity_enabled:
         return None
@@ -1033,7 +1070,8 @@ def _grid_state(cfg, local):
     return capacity.build_state(
         offtake, 0.0, local, peak, cfg, reported_average_kw=reported,
         average_mode=verdict.mode, mode_confidence=verdict.confidence,
-        own_grid_charge_kw=_own_grid_charge_kw(cfg, local))
+        own_grid_charge_kw=_own_grid_charge_kw(cfg, local),
+        battery_discharge_kw=battery_discharge_kw)
 
 
 def _guard_is_shaving(cfg, local):
@@ -1232,7 +1270,10 @@ def _cycle(now):
         second=0, microsecond=0)
     traj = trajectory.project(bat, solar, usage, price_map, cfg,
                               start_time=block_start)
-    grid = _grid_state(cfg, local)
+    battery_kw = _battery_discharge_kw(cfg)
+    if cfg.power_sensor is not None and battery_kw is None:
+        markers.append("battery_power_unavailable")
+    grid = _grid_state(cfg, local, battery_kw)
     d = rules.decide(traj, price_map, bat, grid, cfg, local,
                      usage_history_available=history_days > 0,
                      forecast_available=not zero_fallback,

@@ -38,6 +38,18 @@ class GridState:
     # (non-logging) driver transmits it and it is still in effect; else 0.0.
     # offtake_kw includes it, so budget_kw subtracts it to find household draw.
     own_grid_charge_kw: float = 0.0
+    # Battery power measured by a sensor (kW, discharge positive, charge
+    # negative), or None when there is no usable sensor. See household_draw_kw.
+    battery_discharge_kw: object = None
+
+
+def battery_discharge_from_power(power_kw, power_positive):
+    """Sensor reading (kW) -> discharge-positive battery power.
+
+    power_positive is "discharge" (the reading is positive while discharging:
+    kept) or "charge" (positive while charging: sign flipped).
+    """
+    return power_kw if power_positive == "discharge" else -power_kw
 
 
 def window_start_of(now):
@@ -57,7 +69,7 @@ def normalise_average(reported_kw, elapsed_minutes, mode):
 def build_state(offtake_kw, window_energy_kwh, now, month_peak_kw, config,
                 is_restored=False, reported_average_kw=None,
                 average_mode=None, mode_confidence=None,
-                own_grid_charge_kw=0.0):
+                own_grid_charge_kw=0.0, battery_discharge_kw=None):
     """Build a GridState.
 
     If reported_average_kw (the meter 1-0:1.4.0 figure) is given it is
@@ -80,7 +92,7 @@ def build_state(offtake_kw, window_energy_kwh, now, month_peak_kw, config,
         running = energy / (eff / 60.0)
     return GridState(offtake_kw, start, energy, elapsed, running,
                      month_peak_kw, is_restored, mode, conf,
-                     own_grid_charge_kw)
+                     own_grid_charge_kw, battery_discharge_kw)
 
 
 def ceiling_kw(state, config):
@@ -116,9 +128,24 @@ def no_budget_minutes(config):
 
 
 def household_draw_kw(state):
-    """Estimated household draw: metered offtake minus the planner's own grid
-    charge, never below 0 (offtake_kw is metered at the connection point and
-    so includes whatever the planner is charging from the grid)."""
+    """The grid draw the household would have WITHOUT the battery helping
+    (kW), never below 0. This is what a grid charge adds to.
+
+    With a battery power sensor (state.battery_discharge_kw is not None):
+        offtake = household - PV - battery_discharge
+        =>  household - PV = offtake + battery_discharge
+    so the draw is max(0, offtake_kw + battery_discharge_kw). Discharge is
+    positive: a battery covering the house (meter 0 kW, battery +3 kW) gives
+    3 kW, and a battery charging from the grid (offtake 5.14 kW, battery
+    -2.14 kW) gives 3.0 kW. The planner's own grid charge is already inside
+    both terms, so it needs no bookkeeping and the budget cannot flip between
+    cycles.
+
+    Without a sensor: offtake_kw minus the planner's own grid charge
+    (own_grid_charge_kw, set only for a real driver), a fallback that cannot
+    see the battery covering the house."""
+    if state.battery_discharge_kw is not None:
+        return max(0.0, state.offtake_kw + state.battery_discharge_kw)
     return max(0.0, state.offtake_kw - state.own_grid_charge_kw)
 
 

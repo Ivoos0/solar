@@ -177,6 +177,8 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `battery.capacity_kwh` | **required** | kWh | Battery size the planner uses |
 | `battery.reserve_percent` | `10.0` | % | Charge level the planner will not export to the grid below. It is a limit on exporting, not a target: the planner never buys power to keep the battery up to it, and peak shaving may use charge below it. The inverter's own minimum charge still applies |
 | `battery.soc_sensor` | none | entity id | Sensor with the battery charge in percent (0 to 100). When set, the planner and the peak guard read the charge from it instead of the driver's placeholder. `unavailable`, `unknown`, a non-number or a value outside 0 to 100 counts as unreadable: the planner holds and marks `soc_unavailable` |
+| `battery.power_sensor` | none | entity id | Sensor with the battery power, in W or kW (the unit attribute is read; any other unit counts as unreadable). Lets the planner measure the household draw (see [What the planner does](#what-the-planner-does)). Unreadable: the older estimate is used and records carry `battery_power_unavailable` |
+| `battery.power_positive` | `discharge` | `discharge` or `charge` | Which direction is positive in `battery.power_sensor`. `discharge`: positive while the battery gives power (AlphaESS). `charge`: positive while it takes power |
 | `battery.max_charge_kw` | `5.0` | kW | Highest charge power the planner proposes |
 | `battery.max_discharge_kw` | `5.0` | kW | Power used when exporting |
 | `battery.round_trip_efficiency` | `0.90` | 0 to 1 | Share of stored energy you get back. A later price only counts at this fraction |
@@ -293,6 +295,7 @@ Markers you can expect in `degraded=` on a fresh install:
 | Marker | Meaning |
 |---|---|
 | `soc_stubbed` | The battery charge is the 50 % placeholder. Normal until a driver or `battery.soc_sensor` supplies the real charge |
+| `battery_power_unavailable` | `battery.power_sensor` is set but cannot be read (or its unit is not W or kW). The household draw is estimated from the meter alone, which can undercount while the battery covers the house |
 | `soc_unavailable` | `battery.soc_sensor` is set but cannot be read. The planner holds: no charging from the grid and no exporting until the sensor is back. Peak shaving is not affected |
 | `usage_history_unavailable` | No household usage history yet. Normal until a load source is configured; the planner only peak-shaves and otherwise idles meanwhile |
 | `usage_samples=N` | The usage profile rests on fewer than `usage.history_weeks` x 7 days of history (N days). Disappears as history builds up |
@@ -376,7 +379,12 @@ once after a forced mode, and not repeated while the planner keeps idling.
 In this README, "charge" always means charge from the grid.
 
 Grid charging never exceeds the budget: the charging level (`stay_under_percent` of the ceiling) minus
-what the house is drawing. Grid charging stops one evaluation interval before the quarter-hour ends:
+what the house is drawing. What the house draws is the grid power it would take without the battery
+helping. With `battery.power_sensor` set, the planner measures it: the meter reading plus the power
+the battery is delivering. A battery that covers a 3 kW house while the meter shows 0 kW still counts
+as 3 kW, and the figure does not move when the planner starts charging from the grid. Without that
+sensor the planner uses the meter reading minus its own grid charge, which cannot see a battery
+that is covering the house. Grid charging stops one evaluation interval before the quarter-hour ends:
 in the last `timing.evaluation_interval_minutes` (5 by default, never less than 1) the budget is 0,
 so a charge sized for one quarter-hour does not run on into the next while the planner waits for its
 next decision. The peak guard and the peak warning are not affected; they re-check every 30 seconds.

@@ -562,12 +562,25 @@ def _commanded_discharge_kw(cfg, at):
     return max(0.0, min(_flags["shave_kw"], cfg.max_discharge_kw))
 
 
+def _battery_discharge_kw(cfg):
+    """Battery power from battery.power_sensor (kW, discharge positive), or
+    None: no sensor configured, or it cannot be read (the household draw is
+    then estimated from the offtake alone)."""
+    if cfg.power_sensor is None:
+        return None
+    power, _, problem = _read_sensor(cfg.power_sensor)
+    if problem:
+        return None
+    return capacity.battery_discharge_from_power(power, cfg.power_positive)
+
+
 def _grid_state(offtake_kw, now, month_peak, cfg, is_restored, reported,
-                verdict):
+                verdict, battery_discharge_kw=None):
     return capacity.build_state(
         offtake_kw, 0.0, now, month_peak, cfg, is_restored=is_restored,
         reported_average_kw=reported, average_mode=verdict.mode,
-        mode_confidence=verdict.confidence)
+        mode_confidence=verdict.confidence,
+        battery_discharge_kw=battery_discharge_kw)
 
 
 # ---- average-mode detection buffer -----------------------------------------
@@ -804,11 +817,16 @@ def _evaluate(trigger_type, started):
     verdict = _feed_detector(cfg, now, reported, offtake)
     # the meter shows offtake AFTER our own discharge: add it back (docstring)
     addback = _commanded_discharge_kw(cfg, started)
+    # The sensor reading already includes the commanded discharge. The state
+    # with the add-back has offtake + addback, so it takes the add-back out of
+    # the sensor figure once: the household draw (offtake + battery) is the
+    # same in both and nothing is counted twice.
+    sensor_kw = _battery_discharge_kw(cfg)
     metered = _grid_state(offtake, now, month_peak, cfg, is_restored,
-                          reported, verdict)
+                          reported, verdict, sensor_kw)
     grid = metered if addback <= 0 else _grid_state(
         offtake + addback, now, month_peak, cfg, is_restored, reported,
-        verdict)
+        verdict, None if sensor_kw is None else sensor_kw - addback)
     if addback > 0:
         offtake_text = ("offtake %.2f kW (metered %.2f kW + %.2f kW commanded "
                         "discharge)" % (grid.offtake_kw, offtake, addback))

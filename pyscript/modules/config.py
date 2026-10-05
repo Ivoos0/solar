@@ -21,6 +21,8 @@ _MAP = [
     ("battery", "max_discharge_kw", "max_discharge_kw"),
     ("battery", "round_trip_efficiency", "round_trip_efficiency"),
     ("battery", "soc_sensor", "soc_sensor"),
+    ("battery", "power_sensor", "power_sensor"),
+    ("battery", "power_positive", "power_positive"),
     ("solar", "forecast_entity", "forecast_entity"),
     ("solar", "forecast_attribute", "forecast_attribute"),
     ("solar", "calibration_default", "solar_calibration_default"),
@@ -80,12 +82,15 @@ _NON_NUMERIC = (
     "quarter_hour_average_sensor", "month_peak_sensor", "history_enabled",
     "peak_alert_enabled", "peak_warning_enabled", "report_enabled",
     "sensors_enabled", "inverter_dry_run", "soc_sensor",
+    "power_sensor", "power_positive",
 ) + _HISTORY_SENSOR_ATTRS
 
 # Optional entity-name fields: None = not configured, else domain.object_id.
 _OPTIONAL_ENTITY_FIELDS = (
     ("soc_sensor", "battery.soc_sensor"),
+    ("power_sensor", "battery.power_sensor"),
 )
+_POWER_POSITIVE = ("discharge", "charge")
 
 # Entity-name fields (checked as domain.object_id) and attribute-name fields
 # (checked as non-empty strings), with the config key shown in errors.
@@ -157,6 +162,12 @@ class SiteConfig:
     # the charge is the inverter driver's value (a placeholder while the
     # driver is "logging"). Not in fingerprint(): it names where data is read.
     soc_sensor: object = None
+    # Optional sensor with the battery power (W or kW, signed). power_positive
+    # says which direction is positive: "discharge" (default) or "charge".
+    # With it the household draw is measured, not estimated (see
+    # capacity.household_draw_kw). Not in fingerprint().
+    power_sensor: object = None
+    power_positive: str = "discharge"
     # Home Assistant entities. Deliberately NOT in fingerprint(): they name
     # where data is read from, not what a block means.
     price_entity: str = "sensor.entso_prices_average_electricity_price"
@@ -253,6 +264,9 @@ def _errors(cfg):
                 r"[a-z0-9_]+\.[a-z0-9_]+", v)):
             bad(label, v, "must be an entity id like domain.object_id: "
                 "lowercase letters, digits, underscore, exactly one dot")
+    if cfg.power_positive not in _POWER_POSITIVE:
+        bad("battery.power_positive", cfg.power_positive,
+            "must be one of %s" % ", ".join(_POWER_POSITIVE))
     for attr, label in _ATTRIBUTE_FIELDS:
         v = getattr(cfg, attr)
         if not isinstance(v, str) or not v.strip():

@@ -55,6 +55,14 @@ battery:
                                 # driver). Set but unreadable: the planner holds
                                 # (no grid charging, no export). See the README,
                                 # section "AlphaESS inverter, read-only".
+  # power_sensor: sensor.alphaess_power_battery
+                                # OPTIONAL. Battery power, in W or kW (the unit
+                                # attribute is read). With it the grid charge
+                                # budget counts the house load the battery is
+                                # covering. Unreadable: the older estimate is used.
+  # power_positive: discharge   # which sign means what in power_sensor:
+                                # discharge (positive = battery gives power, the
+                                # AlphaESS case) or charge
   max_charge_kw: 5.0            # binds PER BLOCK, independent of capacity
   max_discharge_kw: 5.0
   round_trip_efficiency: 0.90   # gates arbitrage and the solar-hold decision
