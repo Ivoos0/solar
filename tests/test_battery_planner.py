@@ -410,7 +410,7 @@ def test_forecast_down_with_fresh_solar_cache_states_its_age(env):
     env.state.set(FORECAST_ENTITY, "unavailable", {})
     env.run(T0 + STEP)
     degraded = fields_of(env.decisions()[-1])["degraded"]
-    assert "cache_age_solar=5m" in degraded               # FR-027 / SC-014
+    assert "cache_age_solar=5m" in degraded            
     assert "solar_zero_fallback" not in degraded
 
 
@@ -469,7 +469,7 @@ def test_solar_cache_miss_rebuilds_then_hits_and_survives_deletion(env, monkeypa
     assert len(calls) == 2                                 # miss rebuilt
     after = fields_of(env.decisions()[-1])
     for key in ("action", "power", "selector", "solar_rem"):
-        assert before[key] == after[key]                   # SC-013
+        assert before[key] == after[key]                 
 
 
 def test_new_forecast_rebuilds_solar(env, monkeypatch):

@@ -180,8 +180,8 @@ def evaluate(data, kind, now, config):
     the time left in that day.
 
     Returns (status, series, detail), status one of:
-      "fresh"   - use as is; detail is the age marker (SC-014 wants the age
-                  of every cached series a decision used)
+      "fresh"   - use as is; detail is the age marker (every cached series a
+                  decision used has its age recorded)
       "stale"   - valid but past its bound: refresh; if impossible, use it
                   and record detail (the degraded note)
       "invalid" - discard and rebuild; detail is the reason (a miss, not a

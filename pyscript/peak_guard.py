@@ -1,7 +1,7 @@
 """Peak guard: evaluate the capacity-tariff shave (S0) every ~30 s.
 
-A pyscript top-level SCRIPT. It is deliberately narrow (FR-051, NFR-010,
-NFR-011): three meter numbers, WP11 arithmetic, the V5 empty-battery veto and the
+A pyscript top-level SCRIPT. It is deliberately narrow: three meter
+numbers, the capacity arithmetic from capacity.py, the V5 empty-battery veto and the
 inverter boundary. No trajectory, no prices, no series, no cache, no forecast.
 
 THE TWO LOOPS AND WHICH WINS (read before changing either)
@@ -15,7 +15,7 @@ one Home Assistant state entity:
                                      shave_kw, since, last_beat.
 
 THE GUARD WINS. While the entity is "on" the planner must treat any grid-charge
-proposal as vetoed (FR-050 expressed across two processes). Scenario: a cheap
+proposal as vetoed (the rule holds across both processes). Scenario: a cheap
 hour makes the planner want a grid charge, the household load steps up and a
 peak starts forming. Guard: shave_kw > 0, entity goes "on", discharge recorded.
 Planner (next cycle): sees "on", suppresses grid charging. Shave ends (the
@@ -58,7 +58,7 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
 -------------------------------------------------
 * Sensor: offtake is the meter NETTED total (config.offtake_sensor, default
   sensor.slimmelezer_power_consumed). Per-phase sensors are never read or
-  summed (C-012: a real sample had per-phase imports summing to 0.937 kW where
+  summed (a real sample had per-phase imports summing to 0.937 kW where
   the meter said 0.003 kW).
 * Units: the unit_of_measurement attribute of all three sensors is read. "kW"
   is used as is, "W" is divided by 1000, anything else (or no attribute) makes
@@ -121,7 +121,7 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   with no blocks), cons/inj render n/a (no prices). why says "no trajectory".
   avg/ceiling/budget are real (capacity.*). degraded carries soc_stubbed and,
   when relevant, avg_mode_assumed / meter_restored. The detected average mode
-  and its confidence are stated in why (FR-058).
+  and its confidence are stated in why.
 * Vetoes: only vetoes that forbid "discharge" BLOCK a shave, i.e. V5 (battery
   empty: charge 0 %). The reserve (V1) forbids EXPORT only, so the guard shaves
   below the reserve; the planner cannot know the inverter's own minimum charge,
@@ -152,7 +152,7 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   at every window boundary as required; before it is, its (at most two)
   detector-relevant samples are archived to a bounded history so the detector
   can accumulate its DETECT_MIN_LEAD votes. Nothing else crosses a boundary.
-* NATIVE CORE LOADER (same pattern as battery_planner.py, WP10). Files under
+* NATIVE CORE LOADER (same pattern as battery_planner.py). Files under
   pyscript/modules/ are *pyscript* modules, run by pyscript's AST interpreter,
   which lacks generator expressions, @property, native callbacks to pyscript
   functions and validating __post_init__; the core uses all of them, so it must
@@ -172,7 +172,7 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   load undoes its aliases. Natively loaded modules are NOT hot-reloaded: a
   change to a core file needs a Home Assistant restart. Only this file and
   pyscript/modules/inverter.py are interpreted; a test lints this file.
-* Config is loaded with a ~20-line copy of the planner adapter loader (WP10).
+* Config is loaded with a ~20-line copy of the planner adapter loader.
   Duplication is accepted for now; keep the two in step.
 * Predictive warning (alerts.peak_warning_enabled): after the shave decision
   each evaluation calls _predictive_warning, which asks capacity.peak_warning_due
@@ -183,7 +183,7 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   pyscript script cannot import the planner's; native code cannot reach
   `service`); the rules and wording are shared in capacity.py. It never changes
   the shave decision and never raises.
-* All file I/O goes through @pyscript_executor helpers (research.md R-02).
+* All file I/O goes through @pyscript_executor helpers.
 """
 import math
 import time
@@ -205,7 +205,7 @@ STATE_DIR = "/config/battery_planner/state/"
 MODE_STATE_PATH = "/config/battery_planner/state/average_mode_guard.json"
 WARN_STATE_PATH = "/config/battery_planner/state/peak_warning.json"
 # Dependency order (rules needs capacity). Deliberately narrow: never
-# trajectory, prices, series or cache (FR-051). inverter is NOT in this list.
+# trajectory, prices, series or cache. inverter is NOT in this list.
 CORE_MODULES = ("config", "capacity", "battery", "rules", "decision")
 SHAVING_ENTITY = "pyscript.peak_guard_shaving"
 
@@ -259,7 +259,7 @@ _flags = {
 
 # ---- I/O helpers: the ONLY places that touch files -------------------------
 # @pyscript_executor (not merely @pyscript_compile) so the blocking work runs
-# in a worker thread, off the HA event loop (research.md R-02).
+# in a worker thread, off the HA event loop.
 
 @pyscript_executor  # noqa: F821
 def _load_core(core_dir, names):

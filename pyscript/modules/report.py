@@ -6,7 +6,7 @@ imports. The housekeeping script reads the two input files, calls
 
 Inputs (both optional, either may be missing or partly broken)
 -----------------------------------------------------------------
-* the day's decision log, one line per decision in the contract field order
+* the day's decision log, one line per decision in the fixed field order
   (see decision.format_record), plus HALT / RECOVERED / SKIP lines
 * the day's energy history, one JSON object per block (see history.py)
 

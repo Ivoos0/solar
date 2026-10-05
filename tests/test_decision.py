@@ -17,7 +17,7 @@ TZ = ZoneInfo("Europe/Brussels")
 T0 = datetime(2026, 9, 29, 14, 35, tzinfo=TZ)
 SAT = datetime(2026, 9, 29, 12, 45, tzinfo=TZ)
 
-# Every key the contract requires in every record (timestamp is positional).
+# Every key every record must carry (timestamp is positional).
 CONTRACT_FIELDS = [
     "action", "power", "soc", "cons", "inj", "solar_rem", "usage_rem",
     "saturation", "spill", "breach", "end_soc", "took", "avg", "ceiling",

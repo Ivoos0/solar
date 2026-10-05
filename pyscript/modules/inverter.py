@@ -1,6 +1,6 @@
 """Inverter boundary: always records intent, then hands it to the configured driver.
 
-Public surface (contracts/inverter-boundary.md):
+Public surface (documented in docs/inverter-boundary.md):
     apply(action, target_power_kw, record, log_path=None,
           inverter_type="logging", driver_dir=None,
           log_dir=DEFAULT_LOG_DIR,
@@ -96,7 +96,7 @@ _last_sent = {}
 # helper to native Python, which pyscript's interpreter needs before anything
 # can run it outside itself. (2) It runs the compiled helper in an executor
 # thread, and THAT is what keeps the blocking open()/write()/fsync() off Home
-# Assistant's event loop (research.md R-02). @pyscript_compile alone only does
+# Assistant's event loop. @pyscript_compile alone only does
 # (1): the interpreted caller would still run the I/O on the loop and Home
 # Assistant would log a blocking-call warning and stall every cycle. Do not
 # downgrade the decorator or call this from a plain function. The same holds

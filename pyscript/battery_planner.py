@@ -1,7 +1,7 @@
 """Battery planner: the pyscript adapter. The ONLY code that touches Home
 Assistant state, files and the clock. Every decision lives in pyscript/modules/.
 
-Cycle (FR-021..024, FR-034, NFR-006, NFR-009), fired every minute and gated on
+Cycle, fired every minute and gated on
 config.evaluation_interval_minutes so that value is really configurable:
 
   config -> prices (missing/stale: HALT) -> forecast (missing: zero solar +
@@ -11,7 +11,7 @@ config.evaluation_interval_minutes so that value is really configurable:
 Documented readings and guesses (this file cannot be run outside Home Assistant)
 --------------------------------------------------------------------------------
 * I/O: every open()/os call is inside a @pyscript_executor helper (native code
-  in an executor thread). Never merely @pyscript_compile (R-02 correction).
+  in an executor thread). Never merely @pyscript_compile, which does not leave the event loop.
 * NATIVE CORE LOADER. Files under pyscript/modules/ are *pyscript* modules:
   pyscript runs them in its own AST interpreter, which lacks generator
   expressions, @property, native callbacks to pyscript functions (key=fn) and
@@ -38,7 +38,7 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
   in `finally`. A DUE cycle that finds it set logs a warning and writes a SKIP
   line to the day's decision log; a marker older than 2 intervals (a hung cycle, e.g. an
   executor blocked on NAS I/O) is logged as an error. Not @task_unique: its
-  kill_me kills the NEW call before it can log (NFR-001).
+  kill_me kills the NEW call before it can log.
 * Gate: cron fires at :00 of each minute, so elapsed time is compared with a
   GATE_TOLERANCE_SECONDS allowance, else jitter would halve the rate.
 * took= covers config to just before the record is built; the final append
@@ -65,7 +65,7 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
   affects a decision.
   Mail account settings live in HA's own configuration; none appear here.
 * Cache: verdicts come from cache.evaluate; every series taken FROM the cache,
-  fresh or stale, adds a cache_age_<kind> marker (FR-027/SC-014); a series just
+  fresh or stale, adds a cache_age_<kind> marker; a series just
   rebuilt adds none. Solar is
   rebuilt when the forecast signature changes, usage once per local day.
   Extra keys (forecast_signature, history_days) ride along in the JSON; the
@@ -155,7 +155,7 @@ CORE_MODULES = ("config", "prices", "series", "battery", "trajectory",
 # names the configured entity and attribute.
 # The netted offtake sensor id also comes from config
 # (capacity_tariff.offtake_sensor, default sensor.slimmelezer_power_consumed).
-GUARD_FLAG_ENTITY = "pyscript.peak_guard_shaving"   # set by the peak guard (WP12)
+GUARD_FLAG_ENTITY = "pyscript.peak_guard_shaving"   # set by the peak guard
 # The flag only counts while the guard keeps it fresh: its last_beat attribute
 # must be at most this many guard intervals old, else the flag is ignored (a
 # dead guard cannot clear a stuck "on").
@@ -172,10 +172,10 @@ UNKNOWN = "unknown"
 GATE_TOLERANCE_SECONDS = 30
 CONFIG_RETRY_MINUTES = 5              # cadence while the config is unusable
 SERIES_SPAN_HOURS = 72
-MAX_FETCHES_PER_HOUR = 12             # NFR-002, shared with the hourly poll
+MAX_FETCHES_PER_HOUR = 12             # shared with the hourly poll
 FORECAST_FAILURES_BEFORE_RETRY = 2
 FORECAST_AGE_MARKER_MINUTES = 75      # older than a normal hourly refresh: mark it
-SLOW_CYCLE_MS = 5000                  # NFR-001
+SLOW_CYCLE_MS = 5000                  # a cycle slower than this is logged
 MAX_MODE_SAMPLES = 400
 HISTORY_WARN_MINUTES = 60             # per warning kind, energy history
 
@@ -725,7 +725,7 @@ def _solar(cfg, local, span_start, span_end, payload, markers):
             usable = None
     if usable is not None and verdict == "fresh" and (
             sig is None or data.get("forecast_signature") == sig):
-        markers.append(cache.age_marker(cached, local))     # SC-014
+        markers.append(cache.age_marker(cached, local))
         return usable, False
     if payload:
         built = series.solar_series(payload, cfg, span_start, span_end)
@@ -931,7 +931,7 @@ def _usage(cfg, local, span_start, span_end, markers):
         except (KeyError, TypeError, ValueError):
             usable = None
     if usable is not None and verdict == "fresh":
-        markers.append(cache.age_marker(cached, local))     # SC-014
+        markers.append(cache.age_marker(cached, local))
         return usable, days
     samples = read_usage_history(cfg, local)
     if samples:
@@ -1251,7 +1251,7 @@ def _due(now):
 
 
 def _skip(now, started):
-    """A due cycle found the previous one still running: say so (NFR-001)."""
+    """A due cycle found the previous one still running: say so."""
     interval = _config.evaluation_interval_minutes if _config else CONFIG_RETRY_MINUTES
     busy = int((now - started).total_seconds())
     msg = "battery_planner: cycle skipped, previous cycle running for %ds" % busy

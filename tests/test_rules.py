@@ -362,7 +362,7 @@ def test_s2_stands_aside_when_now_is_best_price_and_s3_takes_it(site_config):
     assert d.target_power_kw == 5.0
 
 
-# ---- S2 with negative injection (FR-013 amended) ---------------------------
+# ---- S2 with negative injection ---------------------------
 # Common numbers: default site, 50 % = 5.0 kWh (headroom 5.0); block 0 solar
 # 1.0, usage 0.4 -> surplus 0.6 kWh = 2.4 kW (<= 5 kW inverter); spill 2.0.
 

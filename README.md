@@ -137,7 +137,7 @@ Files on the Home Assistant side:
   battery_planner/
     user_config.yaml            yours, created in step 6
     decisions-YYYY-MM-DD.log    generated, one file per local day
-    cache/                      generated
+    cache/                      generated, see docs/cache-files.md
     state/                      generated, survives restarts (see "What a restart does")
       peak_alert.json           last month-peak e-mail sent
       halt.json                 price-outage state while prices are missing
@@ -329,7 +329,7 @@ applies.
 ### Labels in the decision log
 
 The decision log prints short labels for the rules and actions. These are the labels the log prints,
-and nothing else in this README uses them. A rule that forbids an action is called a veto and shows
+and nothing else in this README uses them. The full field-by-field format of a log line, including every `degraded=` marker, is in [docs/decision-log.md](docs/decision-log.md). A rule that forbids an action is called a veto and shows
 under `vetoes=`; an action the planner can pick is called a selector and shows under `selector=`.
 
 Vetoes:
@@ -662,7 +662,7 @@ Upgrade note: older versions named the notifier `gmail_alert`. If you set
 ## Adding an inverter driver
 
 A driver is one file, `pyscript/modules/inverter_<name>.py`, selected with `inverter.type: <name>`
-(lowercase letters, digits, underscore). Copy `inverter_logging.py` and replace the bodies. Skeleton
+(lowercase letters, digits, underscore). The exact interface and rules are in [docs/inverter-boundary.md](docs/inverter-boundary.md). Copy `inverter_logging.py` and replace the bodies. Skeleton
 for a hypothetical `alphaess`:
 
 ```python

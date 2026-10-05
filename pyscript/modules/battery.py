@@ -8,11 +8,11 @@ class BatteryState:
     stored_kwh: float
     usable_kwh: float      # stored above the reserve floor, never negative
     headroom_kwh: float    # room left before the battery is full
-    is_stubbed: bool = True  # C-003: the charge reading is a stub this mission
+    is_stubbed: bool = True  # True while the charge reading is a placeholder
 
 
 def from_percent(charge_percent, config, is_stubbed=True):
-    """Build a BatteryState from a state-of-charge percentage (FR-006).
+    """Build a BatteryState from a state-of-charge percentage.
 
     stored   = capacity * percent / 100
     usable   = max(0, stored - capacity * reserve_percent / 100)

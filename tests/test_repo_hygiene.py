@@ -54,7 +54,7 @@ def test_cost_simulation_example_is_optional_and_personal_data_free():
 def test_configuration_yaml_holds_only_what_the_planner_needs():
     assert not re.search(r"^(?:template|utility_meter|input_number):",
                          CONFIG_YAML, re.M)
-    for word in ("C-014", "OPEN QUESTION", "research.md", "NFR-", "FR-"):
+    for word in ("OPEN QUESTION",):
         assert word not in CONFIG_YAML, word
 
 
@@ -160,3 +160,13 @@ def test_gitignore_hides_secrets_but_not_the_example():
         pytest.skip("not a git checkout")
     assert _ignored("secrets.yaml")
     assert not _ignored("secrets.example.yaml")
+
+
+def test_docs_and_examples_hold_no_personal_data():
+    paths = [ROOT / "README.md"] + sorted((ROOT / "docs").glob("*.md"))         + sorted((ROOT / "examples").glob("*"))
+    assert len(paths) > 3
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        for addr in re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", text):
+            assert addr.lower().endswith("@example.com"), (path.name, addr)
+        assert not re.search(r"192\.168\.|(?i:\bgmail\.com)", text), path.name

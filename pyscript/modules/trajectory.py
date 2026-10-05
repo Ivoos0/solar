@@ -2,7 +2,7 @@
 
 Projects what happens if the planner does NOTHING (the baseline the selectors
 reason against). Recomputed every cycle from live charge; never cached or
-stored (FR-034).
+stored.
 
 Definitions (per block, all kWh):
   usage_covered_kwh   solar consumed directly by the household:
@@ -113,7 +113,7 @@ def project(battery_state, solar_series, usage_series, price_map, config,
     projection window whose start is not on the block grid (misaligned, e.g. a
     :07 start) raises rather than being silently dropped; entries outside the
     window (before start_time, at or beyond horizon_end) are ignored. A block absent from price_map
-    is still projected with has_price False (FR-040).
+    is still projected with has_price False.
     TrajectoryBlock.block_start is an aware local datetime derived from the
     UTC instant.
     """

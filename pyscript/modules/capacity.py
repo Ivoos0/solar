@@ -321,7 +321,7 @@ def arbitrage_value_eur(kwh, price_spread):
     return kwh * price_spread
 
 
-# ---- quarter-hour average semantics detection (FR-055, FR-058) ----------
+# ---- quarter-hour average semantics detection ----------
 
 @dataclass(frozen=True)
 class Sample:

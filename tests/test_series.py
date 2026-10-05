@@ -150,7 +150,7 @@ def test_usage_spans_horizon_when_history_is_short(site_config):
     assert u[-1].block_start == _end(35) - timedelta(minutes=15)
 
 
-# --- FR-059: configurable window and grouping --------------------------------
+# --- configurable window and grouping --------------------------------
 # START is Tuesday 2026-06-02 10:00, so with the default 4-week window the
 # cutoff is Tuesday 2026-05-05 10:00. One reading per date, at 18:00 local.
 

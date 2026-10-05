@@ -79,7 +79,7 @@ Resolved ambiguities / documented readings
   now (-0.02 * 0.9 = -0.018 > -0.02); dividing would invert that.
 * S2 condition (c) is EITHER injection_price_now < 0 (storing beats paying to
   export, whatever later prices are, including the last horizon block) OR the
-  best later injection price after losses beats the price now (FR-013).
+  best later injection price after losses beats the price now.
 * "Best remaining" injection price (S2, S5) = priced blocks strictly AFTER the
   current block, to the horizon end. S3 compares against the window
   [current block, saturation_block) which includes now.
@@ -107,8 +107,8 @@ Resolved ambiguities / documented readings
   loop falls through.
 * Every grid-charging selector (S1, S4, S5) clamps to budget_kw
   (capacity.budget_kw: charge power left after the household draw, capped there
-  at max_charge_kw) and says so when the cap bit. budget_kw is 0.0 in the last minute of a window (WP11), so V3 then
-  forbids grid charging; that is WP11 semantics, not re-derived here.
+  at max_charge_kw) and says so when the cap bit. budget_kw is 0.0 in the last minute of a window, so V3 then
+  forbids grid charging; that is capacity.budget_kw semantics, not re-derived here.
 * If the current block has no published price, every price selector (S1-S5)
   is skipped and V2 cannot fire; S0 and S6 still work.
 * A veto naming several causes is reported joined, e.g. "V1+V2" for export.
@@ -275,7 +275,7 @@ def _window(ctx, boundary_instant):
 
 
 def _priced(ctx, indices):
-    """[(i, PricePoint)] skipping unpriced blocks (FR-040)."""
+    """[(i, PricePoint)] skipping unpriced blocks."""
     return [(i, ctx.prices[i]) for i in indices if ctx.prices[i] is not None]
 
 

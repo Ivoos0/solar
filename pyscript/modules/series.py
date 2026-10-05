@@ -59,7 +59,7 @@ def _grid(config, start_time, horizon_end):
 
 
 def zero_solar_series(config, start_time, horizon_end):
-    """All-zero forecast across the horizon, flagged on every block (FR-023)."""
+    """All-zero forecast across the horizon, flagged on every block."""
     return [
         ForecastSlot(t, 0.0, True, config.block_minutes)
         for t in _grid(config, start_time, horizon_end)
@@ -173,7 +173,7 @@ def _bucket(ts, config):
     """Bucket key: (day group, block-of-day).
 
     same_weekday: group is the weekday (0-6). day_type: 0 for Monday-Friday,
-    1 for Saturday/Sunday, so weekends pool only with weekends (FR-059).
+    1 for Saturday/Sunday, so weekends pool only with weekends.
     """
     block_of_day = (ts.hour * 60 + ts.minute) // config.block_minutes
     if config.usage_grouping == "day_type":
