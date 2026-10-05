@@ -51,8 +51,15 @@ class StateVal(str):
 class FakeState:
     def __init__(self):
         self.data = {}
+        self.published = []             # (entity, value, attrs) of planner state.set calls
+        self.fail_publish = False       # make planner state.set calls raise
 
-    def set(self, entity, value=None, attrs=None, **stamps):
+    def set(self, entity, value=None, attrs=None, new_attributes=None, **stamps):
+        if new_attributes is not None:  # the planner publishing, like pyscript's state.set
+            if self.fail_publish:
+                raise RuntimeError("state.set down")
+            self.published.append((entity, value, dict(new_attributes)))
+            attrs = new_attributes
         if stamps:
             value = StateVal(value)
             for k, v in stamps.items():
@@ -193,6 +200,7 @@ def env(tmp_path):
     builtins.service = FakeService()
     builtins.log = FakeLog()
     builtins.task = object()
+    restore_decide = None
     try:
         spec = importlib.util.spec_from_file_location(
             "battery_planner_under_test", SRC)
@@ -201,6 +209,7 @@ def env(tmp_path):
         e = Env(mod, tmp_path)
         mod.CORE_DIR = str(MODULES)
         mod._ensure_core()
+        restore_decide = (mod.rules, mod.rules.decide)  # a test may wrap it
         mod.CONFIG_PATH = str(e.config_path)
         mod.CACHE_DIR = str(e.cache_dir) + "/"
         mod.DECISIONS_LOG_DIR = str(e.log_dir)
@@ -221,6 +230,8 @@ def env(tmp_path):
         st.set(MONTH_PEAK_ENTITY, "3.0", {"unit_of_measurement": "kW"})
         yield e
     finally:
+        if restore_decide is not None:      # the core module outlives the test
+            restore_decide[0].decide = restore_decide[1]
         for n in _INJECTED:
             if n in saved:
                 setattr(builtins, n, saved[n])

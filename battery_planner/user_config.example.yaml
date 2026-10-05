@@ -136,6 +136,13 @@ history:
 report:
   enabled: true
 
+# Sensors: once per planner cycle the planner publishes sensor.battery_planner_action,
+# sensor.battery_planner_budget and binary_sensor.battery_planner_halted in Home
+# Assistant. They are created by pyscript at run time (gone after a restart until the
+# next cycle, no unique id so not editable in the UI). See the README, section "Sensors".
+sensors:
+  enabled: true
+
 # Retention: every night at 03:30 (local time) the planner deletes old files
 # from battery_planner/: decision logs (decisions-YYYY-MM-DD.log) and, in
 # battery_planner/history/, the energy history (blocks-YYYY-MM-DD.jsonl) and

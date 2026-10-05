@@ -53,6 +53,7 @@ _MAP = [
     ("history", "enabled", "history_enabled"),
     ("report", "enabled", "report_enabled"),
     ("retention", "keep_days", "retention_keep_days"),
+    ("sensors", "enabled", "sensors_enabled"),
 ]
 
 # history.sensors: quantity -> attribute holding a tuple of entity ids. An
@@ -74,6 +75,7 @@ _NON_NUMERIC = (
     "price_attribute", "forecast_entity", "forecast_attribute",
     "quarter_hour_average_sensor", "month_peak_sensor", "history_enabled",
     "peak_alert_enabled", "peak_warning_enabled", "report_enabled",
+    "sensors_enabled",
 ) + _HISTORY_SENSOR_ATTRS
 
 # Entity-name fields (checked as domain.object_id) and attribute-name fields
@@ -160,6 +162,9 @@ class SiteConfig:
     # Retention: the daily cleanup deletes log, history and report files whose
     # DATE IN THE NAME is older than this many days. Not in fingerprint().
     retention_keep_days: int = 90
+    # Publish the planner state as Home Assistant sensors (battery_planner_*).
+    # Not in fingerprint(): it changes no block.
+    sensors_enabled: bool = True
 
     def history_sensors(self):
         """{quantity: tuple of entity ids} (empty tuple = not available)."""
@@ -243,6 +248,8 @@ def _errors(cfg):
         bad("history.enabled", cfg.history_enabled, "must be true or false")
     if not isinstance(cfg.report_enabled, bool):
         bad("report.enabled", cfg.report_enabled, "must be true or false")
+    if not isinstance(cfg.sensors_enabled, bool):
+        bad("sensors.enabled", cfg.sensors_enabled, "must be true or false")
     for q, attr in _HISTORY_SENSORS:
         v = getattr(cfg, attr)
         label = "history.sensors.%s" % q

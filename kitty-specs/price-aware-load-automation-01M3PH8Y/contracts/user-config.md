@@ -129,6 +129,11 @@ history:
 report:
   enabled: true                 # write battery_planner/history/report-YYYY-MM-DD.md after midnight
 
+# Sensors (see the README, section "Sensors")
+sensors:
+  enabled: true                 # publish sensor.battery_planner_action, sensor.battery_planner_budget and
+                                # binary_sensor.battery_planner_halted once per planner cycle (state.set)
+
 # Retention (see the README, section "Daily cleanup")
 retention:
   keep_days: 90                 # delete logs, history and reports whose file-name date is older; >= 7 * usage.history_weeks
@@ -176,6 +181,7 @@ Checked at load. A failure is a **startup error, not a degraded cycle** — bad 
 | `max_charge_kw > 0`, `max_discharge_kw > 0` | Zero would make the trajectory meaningless |
 | `history.enabled` is a boolean; each `history.sensors.<quantity>` is a list of entity ids (`domain.object_id`) without duplicates; only the quantities `import`, `export`, `solar`, `battery_charge`, `battery_discharge`, `load` are accepted | A typo must not silently disable a counter. The `history` section does not join the cache fingerprint (it names where data is read from) |
 | `report.enabled` is a boolean; default true | A typo must not silently turn the report off. It does not join the cache fingerprint |
+| `sensors.enabled` is a boolean; default true | A typo must not silently turn the sensors off. It does not join the cache fingerprint. The published entities are: `sensor.battery_planner_action` (state = last action, or `unknown`; attributes `power_kw`, `selector`, `vetoes`, `why`, `degraded` as strings, `soc_percent`, `decided_at`, `source`), `sensor.battery_planner_budget` (state = grid charge budget in kW or `unknown`; attributes `ceiling_kw`, `average_kw`, `month_peak_kw`) and `binary_sensor.battery_planner_halted` (`on`/`off`; attributes `cause`, `since`) |
 | `retention.keep_days` is an integer `>= 1` (no booleans, no floats); default 90. It must also be `>= 7 * usage.history_weeks`, else the error names both keys | The daily cleanup deletes files older than this, and the usage profile needs `usage.history_weeks` weeks of energy history, so keeping less would delete data the planner reads. It does not join the cache fingerprint |
 
 ## Cache invalidation

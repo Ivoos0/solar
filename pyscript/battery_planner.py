@@ -95,6 +95,13 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
   applied (marker NOGRID) when capacity is enabled but the grid sensors are
   unreadable, because rules.decide with no grid state would grid-charge with no
   budget cap.
+* Sensors (sensors.enabled): once per cycle, after the decision or the halt is
+  known, state.set() publishes sensor.battery_planner_action / _budget and
+  binary_sensor.battery_planner_halted. Missing data is "unknown" (state) or
+  null (attribute), never a figure of an earlier cycle; during a halt the action
+  and budget are unknown. Publishing is wrapped: a failure is logged (rate-limited)
+  and never touches a decision. The entities live only in Home Assistant's
+  state machine (no unique id), so they vanish on a restart until the next cycle.
 * State that survives a restart (all under <config>/battery_planner/state/,
   written atomically, read once per process in @pyscript_executor helpers; a
   missing or corrupt file means a fresh start, never an error):
@@ -145,6 +152,11 @@ GUARD_FLAG_ENTITY = "pyscript.peak_guard_shaving"   # set by the peak guard (WP1
 # dead guard cannot clear a stuck "on").
 GUARD_BEAT_FACTOR = 3
 _BAD_STATES = (None, "", "unknown", "unavailable", "none", "None")
+# Entities the planner creates (state.set) once per cycle; see README, "Sensors".
+SENSOR_ACTION = "sensor.battery_planner_action"
+SENSOR_BUDGET = "sensor.battery_planner_budget"
+SENSOR_HALTED = "binary_sensor.battery_planner_halted"
+UNKNOWN = "unknown"
 
 # ---- tuning that is not user config ----------------------------------------
 GATE_TOLERANCE_SECONDS = 30
@@ -977,6 +989,93 @@ def _suppress_grid_charge(d, veto, why):
         None, d.block_start)
 
 
+# ---- Home Assistant sensors ----------------------------------------------------
+
+def _publish(entity, value, attrs, now):
+    """state.set one entity; a failure is logged (rate-limited), never raised."""
+    try:
+        state.set(entity, value, new_attributes=attrs)  # noqa: F821
+    except Exception as exc:
+        _warn_hourly("sensor_publish", "cannot publish %s: %r" % (entity, exc), now)
+
+
+def _rounded(value, digits):
+    """value rounded, or None when it is missing."""
+    return None if value is None else round(float(value), digits)
+
+
+def _publish_halted(on, cause, since, now):
+    _publish(SENSOR_HALTED, "on" if on else "off", {
+        "friendly_name": "Battery planner halted",
+        "icon": "mdi:alert-octagon" if on else "mdi:check-circle-outline",
+        "device_class": "problem",
+        "cause": cause, "since": since}, now)
+
+
+def _publish_sensors(cfg, local, record, grid, stubbed):
+    """Publish this cycle's decision. NEVER raises, never touches a decision.
+
+    Missing data is published as "unknown" (state) or null (attribute), never
+    as the figure of an earlier cycle.
+    """
+    try:
+        if not cfg.sensors_enabled:
+            return
+        soc = None if stubbed else _rounded(record.charge_percent, 1)
+        _publish(SENSOR_ACTION, record.action, {
+            "friendly_name": "Battery planner action",
+            "icon": "mdi:battery-sync",
+            "power_kw": _rounded(record.target_power_kw, 2),
+            "selector": record.selector,
+            "vetoes": ", ".join(record.vetoes_applied) or "none",
+            "why": decision.one_line(record.reasoning),
+            "degraded": ", ".join(record.degraded_inputs) or "none",
+            "soc_percent": soc,
+            "decided_at": record.timestamp.isoformat(timespec="seconds"),
+            "source": record.source}, local)
+        budget = _rounded(record.budget_kw, 2)
+        _publish(SENSOR_BUDGET, UNKNOWN if budget is None else budget, {
+            "friendly_name": "Battery planner grid charge budget",
+            "icon": "mdi:transmission-tower",
+            "unit_of_measurement": "kW", "device_class": "power",
+            "state_class": "measurement",
+            "ceiling_kw": _rounded(record.ceiling_kw, 2),
+            "average_kw": _rounded(record.running_average_kw, 2),
+            "month_peak_kw": _rounded(
+                None if grid is None else grid.month_peak_kw, 2)}, local)
+        _publish_halted(False, None, None, local)
+    except Exception as exc:
+        _warn_hourly("sensor_publish", "publishing failed: %r" % (exc,), local)
+
+
+def _publish_halt_sensors(cfg, local):
+    """Price outage: halted on; the action and budget are unknown, not stale."""
+    try:
+        if not cfg.sensors_enabled:
+            return
+        since = (_halt_state.entered_at.isoformat(timespec="seconds")
+                 if _halt_state is not None else None)
+        cause = _halt_state.cause if _halt_state is not None else None
+        _publish_halted(True, cause, since, local)
+        _publish(SENSOR_ACTION, UNKNOWN, {
+            "friendly_name": "Battery planner action",
+            "icon": "mdi:battery-sync",
+            "power_kw": None, "selector": None, "vetoes": "none",
+            "why": "halted: %s" % cause, "degraded": "none",
+            "soc_percent": None,
+            "decided_at": local.isoformat(timespec="seconds"),
+            "source": "planner"}, local)
+        _publish(SENSOR_BUDGET, UNKNOWN, {
+            "friendly_name": "Battery planner grid charge budget",
+            "icon": "mdi:transmission-tower",
+            "unit_of_measurement": "kW", "device_class": "power",
+            "state_class": "measurement",
+            "ceiling_kw": None, "average_kw": None,
+            "month_peak_kw": None}, local)
+    except Exception as exc:
+        _warn_hourly("sensor_publish", "publishing failed: %r" % (exc,), local)
+
+
 # ---- the cycle -----------------------------------------------------------------
 
 def _cycle(now):
@@ -989,6 +1088,7 @@ def _cycle(now):
     price_map, cause = _read_prices(cfg, local)
     if cause is not None:
         _halt(cfg, local, cause)
+        _publish_halt_sensors(cfg, local)
         _record_history(cfg, now)        # counters keep counting during a halt
         return
     _recover(local)
@@ -1049,6 +1149,7 @@ def _cycle(now):
         log.error("battery_planner: decision could not be recorded")  # noqa: F821
     else:
         _remember_grid_charge(d, local)
+    _publish_sensors(cfg, local, record, grid, bat.is_stubbed)
     if took > SLOW_CYCLE_MS:
         log.warning(f"battery_planner: slow cycle {took}ms")  # noqa: F821
     _record_history(cfg, now, price_map, solar, zero_fallback,
