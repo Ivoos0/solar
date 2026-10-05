@@ -314,7 +314,7 @@ def test_ensure_core_binds_modules_and_aliases_bare_names(env):
     for n in mod.CORE_MODULES:
         sys.modules.pop(n, None)
     mod._ensure_core()
-    assert mod.CORE_MODULES == ("config", "history", "report")
+    assert mod.CORE_MODULES == ("config", "history", "report", "retention")
     assert mod.report.__name__ == "housekeeping_core_report"
     assert sys.modules["report"] is mod.report
     assert sys.modules["history"] is mod.history
@@ -337,3 +337,237 @@ def test_failed_load_undoes_the_bare_aliases(env, tmp_path, monkeypatch):
         env.mod._load_core(str(tmp_path), ("history", "config"))
     assert sys.modules.get("history") is before
     assert "housekeeping_core_config" not in sys.modules
+
+
+# ---- retention cleanup ---------------------------------------------------------
+
+NOW_CLEAN = datetime(2026, 9, 30, 3, 30, tzinfo=BRU)       # today = 2026-09-30
+
+
+def old(days):
+    return date(2026, 9, 30) - timedelta(days=days)
+
+
+def make_tree(env, days=(0, 1, 89, 90, 91, 120, 400)):
+    """decisions, blocks and report files for each age, plus bystanders."""
+    env.base.mkdir(parents=True, exist_ok=True)
+    env.hist.mkdir(parents=True, exist_ok=True)
+    for n in days:
+        d = old(n).isoformat()
+        (env.base / ("decisions-%s.log" % d)).write_text("x")
+        (env.hist / ("blocks-%s.jsonl" % d)).write_text("x")
+        (env.hist / ("report-%s.md" % d)).write_text("x")
+    for rel in ("state/halt.json", "state/last_command.json",
+                "cache/solar.json", "history/last_snapshot.json",
+                "decisions-notes.log", "decisions-2026-02-30.log",
+                "history/blocks-2025-01-01.jsonl.tmp",
+                "history/report-2025-01-01.md.bak", "README.txt"):
+        path = env.base / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("keep")
+
+
+def tree(env):
+    return sorted(str(p.relative_to(env.base))
+                  for p in env.base.rglob("*") if p.is_file() or p.is_symlink())
+
+
+BYSTANDERS = ["README.txt", "cache/solar.json", "decisions-2026-02-30.log",
+              "decisions-notes.log", "history/blocks-2025-01-01.jsonl.tmp",
+              "history/last_snapshot.json", "history/report-2025-01-01.md.bak",
+              "state/halt.json", "state/last_command.json", "user_config.yaml"]
+
+
+def test_cleanup_deletes_only_matching_files_older_than_keep_days(env):
+    make_tree(env)
+    env.mod.run_cleanup(NOW_CLEAN)
+    left = tree(env)
+    for n in (91, 120, 400):
+        d = old(n).isoformat()
+        for rel in ("decisions-%s.log", "history/blocks-%s.jsonl",
+                    "history/report-%s.md"):
+            assert rel % d not in left
+    for n in (0, 1, 89, 90):          # 90 days old: kept (boundary)
+        d = old(n).isoformat()
+        for rel in ("decisions-%s.log", "history/blocks-%s.jsonl",
+                    "history/report-%s.md"):
+            assert rel % d in left
+    for rel in BYSTANDERS:
+        assert rel in left, rel
+
+
+def test_cleanup_logs_one_info_line_with_counts(env):
+    make_tree(env)
+    env.mod.run_cleanup(NOW_CLEAN)
+    assert env.log.by_level["info"] == [
+        "housekeeping: cleanup removed 9 files older than 90 days "
+        "(3 decision logs, 3 history files, 3 reports), 0 could not be removed"]
+    assert env.log.by_level["warning"] == [] and env.log.by_level["error"] == []
+
+
+def test_cleanup_with_nothing_to_delete_still_logs_once(env):
+    make_tree(env, days=(0, 1, 90))
+    env.mod.run_cleanup(NOW_CLEAN)
+    assert len(env.log.by_level["info"]) == 1
+    assert "removed 0 files" in env.log.by_level["info"][0]
+
+
+def test_cleanup_honours_configured_keep_days(env):
+    env.write_config("retention:\n  keep_days: 28\n")
+    make_tree(env, days=(27, 28, 29, 30))
+    env.mod.run_cleanup(NOW_CLEAN)
+    left = tree(env)
+    assert "decisions-%s.log" % old(28) in left
+    assert "decisions-%s.log" % old(29) not in left
+    assert "history/report-%s.md" % old(30) not in left
+
+
+def test_cleanup_day_is_decided_in_the_configured_timezone(env):
+    # 00:30 on 2026-09-30 in Brussels is still 29 Sep 15:30 in Los Angeles,
+    # so there the cutoff is one day earlier than in Brussels.
+    env.write_config("timezone: America/Los_Angeles\n")
+    make_tree(env, days=(91, 92))
+    env.mod.run_cleanup(datetime(2026, 9, 30, 0, 30, tzinfo=BRU))
+    left = tree(env)
+    assert "decisions-%s.log" % old(91) in left       # exactly 90 days old there
+    assert "decisions-%s.log" % old(92) not in left
+
+
+def test_cleanup_never_follows_symlinks_or_removes_directories(env, tmp_path):
+    make_tree(env, days=())
+    outside = tmp_path / "precious.log"
+    outside.write_text("precious")
+    victim = env.base / ("decisions-%s.log" % old(300))
+    victim.symlink_to(outside)
+    directory = env.hist / ("blocks-%s.jsonl" % old(300))
+    directory.mkdir()
+    (directory / "inner.txt").write_text("inner")
+    env.mod.run_cleanup(NOW_CLEAN)
+    assert victim.is_symlink() and outside.read_text() == "precious"
+    assert (directory / "inner.txt").exists()
+
+
+def test_delete_helper_ignores_symlinks_dirs_and_vanished_files(env, tmp_path):
+    target = tmp_path / "t.txt"
+    target.write_text("t")
+    link = tmp_path / "l"
+    link.symlink_to(target)
+    sub = tmp_path / "d"
+    sub.mkdir()
+    real = tmp_path / "r"
+    real.write_text("r")
+    deleted, failures = env.mod._delete_files(
+        [str(link), str(sub), str(tmp_path / "missing"), str(real)])
+    assert deleted == [str(real)] and failures == []
+    assert target.exists() and link.is_symlink() and sub.is_dir()
+
+
+def test_vanished_file_between_listing_and_delete_is_ignored(env, monkeypatch):
+    make_tree(env, days=(300,))
+    real = os.remove
+
+    def racing(path):
+        real(path)
+        raise FileNotFoundError(path)
+    monkeypatch.setattr(os, "remove", racing)
+    env.mod.run_cleanup(NOW_CLEAN)
+    assert env.log.by_level["warning"] == [] and env.log.by_level["error"] == []
+
+
+def test_failures_warn_and_the_rest_is_still_deleted(env, monkeypatch):
+    make_tree(env, days=(300, 301))
+    real = os.remove
+
+    def flaky(path):
+        if "blocks-" in str(path):
+            raise PermissionError("denied")
+        real(path)
+    monkeypatch.setattr(os, "remove", flaky)
+    env.mod.run_cleanup(NOW_CLEAN)
+    left = tree(env)
+    assert "decisions-%s.log" % old(300) not in left
+    assert "history/report-%s.md" % old(301) not in left
+    assert "history/blocks-%s.jsonl" % old(300) in left
+    assert len(env.log.by_level["warning"]) == 2
+    assert all("cannot remove" in m and "denied" in m
+               for m in env.log.by_level["warning"])
+    assert "2 could not be removed" in env.log.by_level["info"][0]
+
+
+def test_failure_warnings_are_rate_limited(env, monkeypatch):
+    make_tree(env, days=tuple(range(100, 112)))             # 12 days x 3 files
+
+    def deny(path):
+        raise PermissionError("no")
+    monkeypatch.setattr(os, "remove", deny)
+    env.mod.run_cleanup(NOW_CLEAN)
+    warnings = env.log.by_level["warning"]
+    assert len(warnings) == env.mod.MAX_FAILURE_WARNINGS + 1
+    assert warnings[-1] == (
+        "housekeeping: %d more files could not be removed"
+        % (36 - env.mod.MAX_FAILURE_WARNINGS))
+    assert "36 could not be removed" in env.log.by_level["info"][0]
+
+
+def test_cleanup_with_broken_config_deletes_nothing(env):
+    make_tree(env)
+    before = tree(env)
+    env.config_path.write_text("retention: [", encoding="utf-8")
+    bump = env.config_path.stat().st_mtime + 20
+    os.utime(env.config_path, (bump, bump))
+    env.mod.run_cleanup(NOW_CLEAN)
+    assert tree(env) == before
+    assert any("config unusable" in m for m in env.log.by_level["error"])
+
+
+def test_cleanup_with_invalid_keep_days_deletes_nothing(env):
+    make_tree(env)
+    before = tree(env)
+    env.write_config("retention:\n  keep_days: 3\n")        # < 28
+    env.mod.run_cleanup(NOW_CLEAN)
+    assert tree(env) == before
+    assert any("retention.keep_days" in m for m in env.log.by_level["error"])
+
+
+def test_cleanup_runs_even_when_the_report_is_disabled(env):
+    env.write_config("report:\n  enabled: false\n")
+    make_tree(env, days=(300,))
+    env.mod.run_cleanup(NOW_CLEAN)
+    assert "decisions-%s.log" % old(300) not in tree(env)
+
+
+def test_cleanup_missing_directories_is_fine(env):
+    env.mod.run_cleanup(NOW_CLEAN)
+    assert env.log.by_level["error"] == []
+
+
+def test_cleanup_unexpected_failure_is_logged_never_raised(env, monkeypatch):
+    def boom(paths):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(env.mod, "_delete_files", boom)
+    make_tree(env, days=(300,))
+    env.mod.run_cleanup(NOW_CLEAN)
+    assert any("cleanup failed" in m for m in env.log.by_level["error"])
+
+
+def test_a_report_for_an_expired_day_is_not_regenerated(env):
+    """Cleanup (03:30) and report (00:10) cannot fight: the report only looks
+    back 7 days, and keep_days is at least 28."""
+    make_tree(env, days=(300,))
+    env.mod.run_cleanup(NOW_CLEAN)
+    env.mod.run_report(datetime(2026, 10, 1, 0, 10, tzinfo=BRU))
+    assert not any(n.startswith("history/report-") and old(300).isoformat() in n
+                   for n in tree(env))
+
+
+def test_both_triggers_are_registered_cleanup_after_report(env):
+    parsed = ast.parse(SRC.read_text(encoding="utf-8"))
+    crons = {}
+    for node in parsed.body:
+        if isinstance(node, ast.FunctionDef):
+            for dec in node.decorator_list:
+                if (isinstance(dec, ast.Call)
+                        and getattr(dec.func, "id", "") == "time_trigger"):
+                    crons[node.name] = dec.args[0].value
+    assert crons == {"housekeeping_report": "cron(10 0 * * *)",
+                     "housekeeping_cleanup": "cron(30 3 * * *)"}

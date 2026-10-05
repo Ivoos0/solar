@@ -82,7 +82,8 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
   up to one evaluation interval after the boundary, so a block's energy covers
   [read_prev, read_this), not exactly the block; both read times are recorded.
   The recorder is wrapped: a failure is logged (rate-limited) and never touches
-  the decision. Files are never deleted by the planner.
+  the decision. The planner never deletes files; pyscript/housekeeping.py removes the old
+  ones (retention.keep_days).
 * Usage history: read_usage_history() is the single seam; see its docstring.
   Coverage (distinct local days present vs the window) is reported as
   usage_samples=N; per-slot sample_days is not the coverage signal.

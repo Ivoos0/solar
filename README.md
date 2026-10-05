@@ -189,6 +189,7 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `history.sensors.import`, `.export` | the SlimmeLezer tariff 1 and 2 counters | entity ids (list) | Cumulative kWh from and to the grid |
 | `history.sensors.solar`, `.battery_charge`, `.battery_discharge`, `.load` | `[]` | entity ids (list) | Cumulative kWh counters. See [Energy history](#energy-history) |
 | `report.enabled` | `true` | true/false | Writes the [daily report](#daily-report) |
+| `retention.keep_days` | `90` | days | Logs, history and reports older than this are deleted every night. At least 1, and at least 7 times `usage.history_weeks`. See [Daily cleanup](#daily-cleanup) |
 | `timing.block_minutes` | `15` | minutes | Planning block length. Must divide 60. Keep 15 to match the price list |
 | `timing.evaluation_interval_minutes` | `5` | minutes | How often the planner runs |
 | `timing.forecast_retry_minutes` | `10` | minutes | Minimum gap between forced forecast refreshes after failures |
@@ -266,12 +267,8 @@ tail -f <ha-config>/battery_planner/decisions-$(date +%F).log
 ```
 
 Each file holds one local calendar day, in your configured `timezone`. The planner, the peak guard
-and the HALT / RECOVERED / SKIP lines all write to it. Nothing is deleted automatically, so add your
-own cleanup, for example a daily cron job:
-
-```bash
-find <ha-config>/battery_planner -name 'decisions-*.log' -mtime +30 -delete
-```
+and the HALT / RECOVERED / SKIP lines all write to it. Old files are deleted automatically, see
+[Daily cleanup](#daily-cleanup).
 
 A normal record is one line of `|`-separated fields: timestamp, `action`, `power`, `soc`, `cons` and
 `inj` (prices), forecast and usage remaining, `saturation`, `spill`, `breach`, `end_soc`, `took`,
@@ -465,11 +462,9 @@ whole quantity `null`.
 The planner runs every `timing.evaluation_interval_minutes`, so a block's counters are read up to one
 interval after the boundary. Both read times are in every record.
 
-The planner never deletes history. To keep one year:
-
-```bash
-find <ha-config>/battery_planner/history -name 'blocks-*.jsonl' -mtime +365 -delete
-```
+History files are deleted after `retention.keep_days` days (default 90), see
+[Daily cleanup](#daily-cleanup). To keep more, raise that setting. To keep it forever, copy the
+`history` folder somewhere else before it expires.
 
 ### Daily report
 
@@ -494,6 +489,28 @@ What it contains:
 - **Data quality**: only present when something is off, for example a missing file, lines that could
   not be read (they are skipped), fewer blocks than expected, or a quantity that is empty in many
   blocks because its counter is not configured or was unreadable.
+
+### Daily cleanup
+
+Every night at 03:30 (local time) the planner deletes old files. The date in the file name decides,
+not the time the file was last changed. A file is deleted when its date is more than
+`retention.keep_days` days ago (default 90, so on 30 September the file for 1 July is still there and
+the one for 30 June is gone). Only these files are ever deleted:
+
+- `<ha-config>/battery_planner/decisions-YYYY-MM-DD.log` (the decision logs)
+- `<ha-config>/battery_planner/history/blocks-YYYY-MM-DD.jsonl` (the energy history)
+- `<ha-config>/battery_planner/history/report-YYYY-MM-DD.md` (the daily reports)
+
+Everything else is left alone: your `user_config.yaml`, the `state` and `cache` folders,
+`last_snapshot.json`, folders, and any file with a different name (so you can keep a copy by renaming
+it). Each night one line in the Home Assistant log says how many files were removed. A file that
+cannot be removed is reported as a warning and tried again the next night.
+
+`retention.keep_days` must be a whole number of at least 1 and at least 7 times `usage.history_weeks`,
+because the usage profile is built from that many weeks of history. With the default 4 weeks the lowest
+accepted value is 28; if the value is too low the planner reports a configuration error that names
+both settings, and nothing is deleted until you fix it. If you set `usage.history_weeks` above 12, raise
+`retention.keep_days` too.
 
 ## Updating
 

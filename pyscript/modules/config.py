@@ -52,6 +52,7 @@ _MAP = [
     ("capacity_tariff", "stay_under_percent", "stay_under_percent"),
     ("history", "enabled", "history_enabled"),
     ("report", "enabled", "report_enabled"),
+    ("retention", "keep_days", "retention_keep_days"),
 ]
 
 # history.sensors: quantity -> attribute holding a tuple of entity ids. An
@@ -156,6 +157,9 @@ class SiteConfig:
     history_load_sensors: tuple = ()
     # Daily report (written next to the history). Not in fingerprint().
     report_enabled: bool = True
+    # Retention: the daily cleanup deletes log, history and report files whose
+    # DATE IN THE NAME is older than this many days. Not in fingerprint().
+    retention_keep_days: int = 90
 
     def history_sensors(self):
         """{quantity: tuple of entity ids} (empty tuple = not available)."""
@@ -266,6 +270,16 @@ def _errors(cfg):
     if isinstance(cfg.usage_history_weeks, float) or cfg.usage_history_weeks < 1:
         bad("usage_history_weeks", cfg.usage_history_weeks,
             "must be an integer >= 1")
+    if isinstance(cfg.retention_keep_days, float) or cfg.retention_keep_days < 1:
+        bad("retention.keep_days", cfg.retention_keep_days,
+            "must be an integer >= 1")
+    elif (isinstance(cfg.usage_history_weeks, int)
+            and cfg.usage_history_weeks >= 1
+            and cfg.retention_keep_days < 7 * cfg.usage_history_weeks):
+        bad("retention.keep_days", cfg.retention_keep_days,
+            "must be at least 7 * usage.history_weeks (usage.history_weeks=%d "
+            "needs %d days of history to build the usage profile)"
+            % (cfg.usage_history_weeks, 7 * cfg.usage_history_weeks))
     if cfg.usage_grouping not in _GROUPINGS:
         bad("usage_grouping", cfg.usage_grouping,
             "must be one of %s" % ", ".join(_GROUPINGS))
