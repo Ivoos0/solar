@@ -125,6 +125,10 @@ history:
                                 # with `load`, or with solar + battery_charge +
                                 # battery_discharge all configured.
 
+# Daily report (see the README, section "Daily report")
+report:
+  enabled: true                 # write battery_planner/history/report-YYYY-MM-DD.md after midnight
+
 timing:
   block_minutes: 15
   evaluation_interval_minutes: 5
@@ -167,6 +171,7 @@ Checked at load. A failure is a **startup error, not a degraded cycle** — bad 
 | `alerts.peak_enabled` and `alerts.peak_warning_enabled` are booleans; `alerts.peak_warning_min_interval_minutes` and `alerts.peak_warning_ticks` are integers `>= 1` (no booleans, no floats) | A typo must not silently disable or flood a mail. None of them joins the cache fingerprint |
 | `max_charge_kw > 0`, `max_discharge_kw > 0` | Zero would make the trajectory meaningless |
 | `history.enabled` is a boolean; each `history.sensors.<quantity>` is a list of entity ids (`domain.object_id`) without duplicates; only the quantities `import`, `export`, `solar`, `battery_charge`, `battery_discharge`, `load` are accepted | A typo must not silently disable a counter. The `history` section does not join the cache fingerprint (it names where data is read from) |
+| `report.enabled` is a boolean; default true | A typo must not silently turn the report off. It does not join the cache fingerprint |
 
 ## Cache invalidation
 

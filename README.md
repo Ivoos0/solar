@@ -188,6 +188,7 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `history.enabled` | `true` | true/false | Records the energy history |
 | `history.sensors.import`, `.export` | the SlimmeLezer tariff 1 and 2 counters | entity ids (list) | Cumulative kWh from and to the grid |
 | `history.sensors.solar`, `.battery_charge`, `.battery_discharge`, `.load` | `[]` | entity ids (list) | Cumulative kWh counters. See [Energy history](#energy-history) |
+| `report.enabled` | `true` | true/false | Writes the [daily report](#daily-report) |
 | `timing.block_minutes` | `15` | minutes | Planning block length. Must divide 60. Keep 15 to match the price list |
 | `timing.evaluation_interval_minutes` | `5` | minutes | How often the planner runs |
 | `timing.forecast_retry_minutes` | `10` | minutes | Minimum gap between forced forecast refreshes after failures |
@@ -469,6 +470,30 @@ The planner never deletes history. To keep one year:
 ```bash
 find <ha-config>/battery_planner/history -name 'blocks-*.jsonl' -mtime +365 -delete
 ```
+
+### Daily report
+
+Shortly after midnight (00:10) the planner writes a short report of the day that just ended, next to
+the history: `<ha-config>/battery_planner/history/report-YYYY-MM-DD.md`. Open it in any text editor or
+Markdown viewer. It is built from that day's decision log and energy history, in your configured
+`timezone`. If either file is missing the report still appears, with a note; if both are missing
+nothing is written. After a restart or an outage the reports missing for the last seven days are
+written too. An existing report is never rewritten. Set `report.enabled: false` to turn it off.
+
+What it contains:
+
+- **Decisions**: how many records, how often each action and each selector was used, which vetoes
+  and degraded markers were seen and how often, halts, recoveries and skipped cycles, the peak guard
+  shaving periods, the highest quarter-hour average against the ceiling, and the lowest charging
+  budget (negative means the quarter-hour was already over the charging level). Units match the log.
+- **Energy**: grid import and export, solar produced against what was forecast (as a percentage; 100%
+  means the forecast was right), battery charge and discharge, and household load when it is known.
+  Totals only add up the blocks that have a value, and the table shows how many that was.
+- **Blocks recorded**: how many of the expected blocks for that day exist. A normal day has 96; the
+  day the clocks go forward has 92 and the day they go back has 100.
+- **Data quality**: only present when something is off, for example a missing file, lines that could
+  not be read (they are skipped), fewer blocks than expected, or a quantity that is empty in many
+  blocks because its counter is not configured or was unreadable.
 
 ## Updating
 

@@ -776,7 +776,7 @@ def test_loader_failure_leaves_no_half_loaded_module(env, tmp_path, monkeypatch)
 
 # ---- interpreter-safety lint ----------------------------------------------------------------
 
-_INTERPRETED = [SRC, MODULES / "inverter.py"]
+_INTERPRETED = [SRC, MODULES / "inverter.py", SRC.parent / "housekeeping.py"]
 _DECORATORS = {"property", "staticmethod", "classmethod"}
 
 

@@ -51,6 +51,7 @@ _MAP = [
     ("capacity_tariff", "month_peak_sensor", "month_peak_sensor"),
     ("capacity_tariff", "stay_under_percent", "stay_under_percent"),
     ("history", "enabled", "history_enabled"),
+    ("report", "enabled", "report_enabled"),
 ]
 
 # history.sensors: quantity -> attribute holding a tuple of entity ids. An
@@ -71,7 +72,7 @@ _NON_NUMERIC = (
     "usage_recency_weighting", "inverter_type", "price_entity",
     "price_attribute", "forecast_entity", "forecast_attribute",
     "quarter_hour_average_sensor", "month_peak_sensor", "history_enabled",
-    "peak_alert_enabled", "peak_warning_enabled",
+    "peak_alert_enabled", "peak_warning_enabled", "report_enabled",
 ) + _HISTORY_SENSOR_ATTRS
 
 # Entity-name fields (checked as domain.object_id) and attribute-name fields
@@ -153,6 +154,8 @@ class SiteConfig:
     history_battery_charge_sensors: tuple = ()
     history_battery_discharge_sensors: tuple = ()
     history_load_sensors: tuple = ()
+    # Daily report (written next to the history). Not in fingerprint().
+    report_enabled: bool = True
 
     def history_sensors(self):
         """{quantity: tuple of entity ids} (empty tuple = not available)."""
@@ -234,6 +237,8 @@ def _errors(cfg):
             "must be an integer >= 1")
     if not isinstance(cfg.history_enabled, bool):
         bad("history.enabled", cfg.history_enabled, "must be true or false")
+    if not isinstance(cfg.report_enabled, bool):
+        bad("report.enabled", cfg.report_enabled, "must be true or false")
     for q, attr in _HISTORY_SENSORS:
         v = getattr(cfg, attr)
         label = "history.sensors.%s" % q

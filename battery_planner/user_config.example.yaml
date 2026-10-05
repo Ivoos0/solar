@@ -128,6 +128,14 @@ history:
                                 # with `load`, or with solar + battery_charge +
                                 # battery_discharge all configured.
 
+# Daily report: shortly after midnight the planner writes a readable summary
+# of the day that just ended (decisions and energy) next to the energy
+# history, as battery_planner/history/report-YYYY-MM-DD.md. See the README,
+# section "Daily report". Missing days of the last week are filled in; an
+# existing report is never rewritten.
+report:
+  enabled: true
+
 timing:
   block_minutes: 15
   evaluation_interval_minutes: 5
