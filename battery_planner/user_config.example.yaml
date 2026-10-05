@@ -85,7 +85,7 @@ solar:
                                 # States and set the real name here.
   forecast_attribute: watt_hours_period
                                 # attribute holding {timestamp: Wh} per period
-  # Solar calibration (see the README, section "Solar calibration"): the forecast
+  # Solar calibration (see docs/history-and-reports.md): the forecast
   # is often too high or too low for your roof, so it is multiplied by a ratio.
   # The ratio is measured from your own energy history and needs a counter under
   # history.sensors.solar. Until that history spans calibration_weeks weeks the
@@ -144,7 +144,7 @@ usage:
 # Counters must be CUMULATIVE energy in kWh (Wh and MWh are converted).
 # Several counters per quantity are summed (tariff 1 + tariff 2). Every list
 # is optional; an empty list means "not available" and that quantity is
-# recorded as null. See the README, section "Energy history".
+# recorded as null. See docs/history-and-reports.md.
 history:
   enabled: true
   sensors:
@@ -168,8 +168,8 @@ history:
 
 # Daily report: shortly after midnight the planner writes a readable summary
 # of the day that just ended (decisions and energy) next to the energy
-# history, as battery_planner/history/report-YYYY-MM-DD.md. See the README,
-# section "Daily report". Missing days of the last week are filled in; an
+# history, as battery_planner/history/report-YYYY-MM-DD.md. See
+# docs/history-and-reports.md. Missing days of the last week are filled in; an
 # existing report is never rewritten.
 report:
   enabled: true

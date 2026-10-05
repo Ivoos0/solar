@@ -16,7 +16,7 @@ What the planner does not do yet, and what has not been tested. Back to the [REA
 - The alert e-mails and the entity names on installs other than the original one have not been tested
   against a live Home Assistant. Send a test mail ([install](../README.md#install) step 8) and check the entity names as
   described in [Install](../README.md#install) and [Sensors](../README.md#sensors).
-- The solar calibration (see [Solar calibration](../README.md#solar-calibration)) has only been tested with
+- The solar calibration (see [Solar calibration](history-and-reports.md#solar-calibration)) has only been tested with
   generated history. It needs a `solar` energy counter, which is not configured by default, and then
   about `solar.calibration_weeks` weeks of recording before it measures anything. The recorded prices,
   battery and split fields are for later analysis.
