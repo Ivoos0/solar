@@ -82,11 +82,14 @@ Do these in order.
 4. Copy the `pyscript/` folder from this repository to `<ha-config>/pyscript/`. Copy
    `configuration.yaml` to `<ha-config>/configuration.yaml`. If you already have a
    `configuration.yaml`, merge the `pyscript:`, `rest:` and `notify:` blocks into it once, by hand or
-   with `!include`; the other blocks in the file are optional price helpers. The shipped file also
+   with `!include`. The shipped file also
    includes `automations.yaml`, `scripts.yaml` and `scenes.yaml`; Home Assistant needs those files to
    exist. You never edit the blocks afterwards: personal values come from `secrets.yaml` and
    `user_config.yaml`. Loading the blocks as a Home Assistant package or from split `!include` files
-   is untested.
+   is untested. The file no longer contains the price and cost helper sensors an earlier version
+   had; if you used them, keep them in your own configuration. `examples/cost_simulation.yaml` is an
+   optional example of such helpers (its header explains how to include it); the planner does not
+   need it.
 5. Create `<ha-config>/secrets.yaml` from `secrets.example.yaml` (or add the keys to your existing
    one):
    - `forecast_solar_url`: `https://api.forecast.solar/estimate/<lat>/<lon>/<declination>/<azimuth>/<kwp>`.
