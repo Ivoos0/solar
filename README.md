@@ -188,6 +188,8 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `history.enabled` | `true` | true/false | Records the energy history |
 | `history.sensors.import`, `.export` | the SlimmeLezer tariff 1 and 2 counters | entity ids (list) | Cumulative kWh from and to the grid |
 | `history.sensors.solar`, `.battery_charge`, `.battery_discharge`, `.load` | `[]` | entity ids (list) | Cumulative kWh counters. See [Energy history](#energy-history) |
+| `report.enabled` | `true` | true/false | Writes the [daily report](#daily-report) |
+| `retention.keep_days` | `90` | days | Logs, history and reports older than this are deleted every night. At least 1, and at least 7 times `usage.history_weeks`. See [Daily cleanup](#daily-cleanup) |
 | `timing.block_minutes` | `15` | minutes | Planning block length. Must divide 60. Keep 15 to match the price list |
 | `timing.evaluation_interval_minutes` | `5` | minutes | How often the planner runs |
 | `timing.forecast_retry_minutes` | `10` | minutes | Minimum gap between forced forecast refreshes after failures |
@@ -265,12 +267,8 @@ tail -f <ha-config>/battery_planner/decisions-$(date +%F).log
 ```
 
 Each file holds one local calendar day, in your configured `timezone`. The planner, the peak guard
-and the HALT / RECOVERED / SKIP lines all write to it. Nothing is deleted automatically, so add your
-own cleanup, for example a daily cron job:
-
-```bash
-find <ha-config>/battery_planner -name 'decisions-*.log' -mtime +30 -delete
-```
+and the HALT / RECOVERED / SKIP lines all write to it. Old files are deleted automatically, see
+[Daily cleanup](#daily-cleanup).
 
 A normal record is one line of `|`-separated fields: timestamp, `action`, `power`, `soc`, `cons` and
 `inj` (prices), forecast and usage remaining, `saturation`, `spill`, `breach`, `end_soc`, `took`,
@@ -481,11 +479,55 @@ whole quantity `null`.
 The planner runs every `timing.evaluation_interval_minutes`, so a block's counters are read up to one
 interval after the boundary. Both read times are in every record.
 
-The planner never deletes history. To keep one year:
+History files are deleted after `retention.keep_days` days (default 90), see
+[Daily cleanup](#daily-cleanup). To keep more, raise that setting. To keep it forever, copy the
+`history` folder somewhere else before it expires.
 
-```bash
-find <ha-config>/battery_planner/history -name 'blocks-*.jsonl' -mtime +365 -delete
-```
+### Daily report
+
+Shortly after midnight (00:10) the planner writes a short report of the day that just ended, next to
+the history: `<ha-config>/battery_planner/history/report-YYYY-MM-DD.md`. Open it in any text editor or
+Markdown viewer. It is built from that day's decision log and energy history, in your configured
+`timezone`. If either file is missing the report still appears, with a note; if both are missing
+nothing is written. After a restart or an outage the reports missing for the last seven days are
+written too. An existing report is never rewritten. Set `report.enabled: false` to turn it off.
+
+What it contains:
+
+- **Decisions**: how many records, how often each action and each selector was used, which vetoes
+  and degraded markers were seen and how often, halts, recoveries and skipped cycles, the peak guard
+  shaving periods, the highest quarter-hour average against the ceiling, and the lowest charging
+  budget (negative means the quarter-hour was already over the charging level). Units match the log.
+- **Energy**: grid import and export, solar produced against what was forecast (as a percentage; 100%
+  means the forecast was right), battery charge and discharge, and household load when it is known.
+  Totals only add up the blocks that have a value, and the table shows how many that was.
+- **Blocks recorded**: how many of the expected blocks for that day exist. A normal day has 96; the
+  day the clocks go forward has 92 and the day they go back has 100.
+- **Data quality**: only present when something is off, for example a missing file, lines that could
+  not be read (they are skipped), fewer blocks than expected, or a quantity that is empty in many
+  blocks because its counter is not configured or was unreadable.
+
+### Daily cleanup
+
+Every night at 03:30 (local time) the planner deletes old files. The date in the file name decides,
+not the time the file was last changed. A file is deleted when its date is more than
+`retention.keep_days` days ago (default 90, so on 30 September the file for 1 July is still there and
+the one for 30 June is gone). Only these files are ever deleted:
+
+- `<ha-config>/battery_planner/decisions-YYYY-MM-DD.log` (the decision logs)
+- `<ha-config>/battery_planner/history/blocks-YYYY-MM-DD.jsonl` (the energy history)
+- `<ha-config>/battery_planner/history/report-YYYY-MM-DD.md` (the daily reports)
+
+Everything else is left alone: your `user_config.yaml`, the `state` and `cache` folders,
+`last_snapshot.json`, folders, and any file with a different name (so you can keep a copy by renaming
+it). Each night one line in the Home Assistant log says how many files were removed. A file that
+cannot be removed is reported as a warning and tried again the next night.
+
+`retention.keep_days` must be a whole number of at least 1 and at least 7 times `usage.history_weeks`,
+because the usage profile is built from that many weeks of history. With the default 4 weeks the lowest
+accepted value is 28; if the value is too low the planner reports a configuration error that names
+both settings, and nothing is deleted until you fix it. If you set `usage.history_weeks` above 12, raise
+`retention.keep_days` too.
 
 ## Updating
 

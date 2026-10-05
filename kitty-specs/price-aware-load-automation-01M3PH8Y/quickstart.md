@@ -59,7 +59,7 @@ The built-in Forecast.Solar integration is **not** used: it is UI config-flow on
 | `pyscript/` | `<config>/pyscript/` | **overwrite** |
 | `battery_planner/user_config.example.yaml` | `<config>/battery_planner/` | overwrite (the example only) |
 | — | `<config>/battery_planner/user_config.yaml` | **never touch** |
-| — | `<config>/battery_planner/decisions-YYYY-MM-DD.log` | **never copy** (one file per local day; nothing is deleted automatically) |
+| — | `<config>/battery_planner/decisions-YYYY-MM-DD.log` | **never copy** (one file per local day; files older than `retention.keep_days` are deleted daily at 03:30) |
 | — | `<config>/battery_planner/cache/` | **never copy** |
 
 Do not copy `tests/` or `kitty-specs/` to the NAS — they are development artifacts.

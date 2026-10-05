@@ -128,6 +128,25 @@ history:
                                 # with `load`, or with solar + battery_charge +
                                 # battery_discharge all configured.
 
+# Daily report: shortly after midnight the planner writes a readable summary
+# of the day that just ended (decisions and energy) next to the energy
+# history, as battery_planner/history/report-YYYY-MM-DD.md. See the README,
+# section "Daily report". Missing days of the last week are filled in; an
+# existing report is never rewritten.
+report:
+  enabled: true
+
+# Retention: every night at 03:30 (local time) the planner deletes old files
+# from battery_planner/: decision logs (decisions-YYYY-MM-DD.log) and, in
+# battery_planner/history/, the energy history (blocks-YYYY-MM-DD.jsonl) and
+# daily reports (report-YYYY-MM-DD.md). The DATE IN THE FILE NAME decides:
+# files dated more than keep_days days ago go. Nothing else is touched (state,
+# cache, last_snapshot.json, this file).
+retention:
+  keep_days: 90                 # whole days, at least 1 and at least 7 times
+                                # usage.history_weeks (the usage profile needs
+                                # that much history; 4 weeks = 28 days)
+
 timing:
   block_minutes: 15
   evaluation_interval_minutes: 5
