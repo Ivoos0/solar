@@ -97,7 +97,7 @@ weigh as much as a midday block with 1.2 kWh.
 
 A marker `solar_ratio=...` or `solar_ratio_configured=...` is added to the `degraded` field when the
 ratio for the current or next block with forecast solar is not 1.00, and the
-`sensor.battery_planner_solar_ratio` entity shows the ratio now (see [Sensors](../README.md#sensors)). Outside
+`sensor.battery_planner_solar_ratio` entity shows the ratio now (see [Sensors](alerts-and-sensors.md#sensors)). Outside
 daylight that sensor shows the configured value, because there is nothing to measure.
 
 Choose `solar.calibration_default` as the share of the forecast you normally get, rounded down. Keep
