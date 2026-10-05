@@ -1148,7 +1148,8 @@ def test_guard_passes_configured_type_and_driver_dir_to_the_boundary(make_guard)
     assert g.inv.kwargs == {"inverter_type": "alphaess",
                             "driver_dir": str(MODULES),
                             "resend_minutes": 15,
-                            "state_dir": g.mod.STATE_DIR}
+                            "state_dir": g.mod.STATE_DIR,
+                            "dry_run": False}
 
 
 def test_guard_defaults_to_the_logging_driver(make_guard):
@@ -1514,3 +1515,10 @@ def test_beat_is_cleared_when_the_flag_goes_off(make_guard):
     n = len(g.st.sets)
     _quiet_tick(g, "0.15", 6, 0)
     assert len(g.st.sets) == n              # no beat while nothing is shaving
+
+
+def test_dry_run_adds_nothing_back_because_nothing_is_commanded(make_guard):
+    g = make_guard(extra=REAL + "  dry_run: true\n")
+    _shave_tick(g, 5, 0, shaving=False)
+    assert g.mod._commanded_discharge_kw(g.mod._get_config(),
+                                         g.mod._monotonic()) == 0.0

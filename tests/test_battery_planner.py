@@ -1696,3 +1696,15 @@ def test_stale_but_usable_cached_series_does_not_trigger_v6(env, monkeypatch):
     assert any(m.startswith("cache_age_solar") for m in keys["degraded"].split(","))
     assert "solar_zero_fallback" not in keys["degraded"]
     assert "V6" not in keys["vetoes"] and keys["action"] == "charge"
+
+
+def test_dry_run_gives_no_own_grid_charge_correction(env):
+    _real_driver(env)
+    env.write_config("inverter:\n  type: fakeinv\n  dry_run: true\n"
+                     "capacity_tariff:\n  quarter_hour_average_mode: running\n"
+                     "  stay_under_percent: 80\n")
+    seen = _charge_at_budget(env)
+    env.state.set(OFFTAKE_ENTITY, "1.5", {"unit_of_measurement": "kW"})
+    env.run(T0)
+    env.run(T0 + STEP)
+    assert seen[1].own_grid_charge_kw == 0.0          # nothing was really charged

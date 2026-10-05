@@ -209,6 +209,7 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `alerts.peak_warning_ticks` | `2` | evaluations (whole number, 1 or more) | Consecutive guard evaluations above the ceiling before a warning. Fewer is earlier and noisier |
 | `inverter.type` | `logging` | driver name | Selects `pyscript/modules/inverter_<type>.py`. `none` means `logging` |
 | `inverter.resend_minutes` | `15` | minutes (whole number, 0 or more) | Fallback for drivers that do not declare how long the inverter keeps a command (`COMMAND_HOLD_MINUTES`, see [Adding an inverter driver](#adding-an-inverter-driver)): the driver gets an unchanged command again only after this long. A changed command (other action, or power differing by 0.01 kW or more) goes out at once. `0` sends on every call. A driver that declares a hold is re-sent at 80 % of it and this setting is not used. The decision log line is written every cycle either way |
+| `inverter.dry_run` | `false` | true/false | With a plan-style driver (one that defines `plan`, see [Adding an inverter driver](#adding-an-inverter-driver)): log the service calls it would make and execute none. The command is still remembered as sent. With a `send`-style driver the `send` call is skipped and logged. Run real hardware in dry run first. Nothing changes with the `logging` driver |
 | `timezone` | `Europe/Brussels` | time zone name | Local day for log files, history and monthly peak e-mails |
 
 ### Rounding: which way to err
@@ -718,9 +719,78 @@ driver, so run it with the inverter disconnected or your connection mocked. Ever
 `inverter_*.py` in `pyscript/modules/` is checked as well. Passing does not prove the driver works
 on your hardware.
 
+A driver that defines `plan` instead of `send` is checked differently: `plan` is called for every
+action and must return a valid, non-empty list of service calls quickly, the same every time and
+without network access (see the section below).
+
 Then set `inverter.type: alphaess`, restart Home Assistant and watch the log. Any driver other than
 `logging` sends real commands to a real inverter, and nothing in this project is tested against
 hardware. You are responsible for the driver you enable.
+
+
+### Drivers that switch Home Assistant helpers (plan-style)
+
+Some inverter integrations have no Home Assistant service to call. You control them by switching
+helpers (`input_boolean` switches, `input_number` sliders) that the integration watches. Drivers are
+loaded as plain Python and cannot call Home Assistant, so such a driver does not send anything
+itself. It defines `plan(action, target_power_kw)` instead of `send`: a pure function that returns
+the service calls to make, in order. The framework validates the list and runs the calls with
+Home Assistant's `service.call`, one after the other.
+
+Everything below uses made-up helper names. Replace them with the helpers of your own integration.
+This is an example, not a working driver for any product:
+
+```python
+# pyscript/modules/inverter_myinverter.py   (EXAMPLE with placeholder entities)
+SOC_ENTITY = "sensor.my_battery_soc"   # battery charge in percent, read by the framework
+COMMAND_HOLD_MINUTES = 10              # optional; this made-up inverter drops a command after ~10 min
+
+
+def plan(action, target_power_kw):
+    """Return the service calls for this command. No I/O here: just data."""
+    if action == "idle":
+        # release every forced mode: the inverter goes back to its default behaviour
+        return [
+            {"domain": "input_boolean", "service": "turn_off",
+             "data": {"entity_id": "input_boolean.my_force_charge"}},
+            {"domain": "input_boolean", "service": "turn_off",
+             "data": {"entity_id": "input_boolean.my_force_discharge"}},
+        ]
+    helper = {"charge": "input_boolean.my_force_charge",
+              "discharge": "input_boolean.my_force_discharge",
+              "export": "input_boolean.my_force_discharge"}[action]
+    return [
+        {"domain": "input_number", "service": "set_value",
+         "data": {"entity_id": "input_number.my_power", "value": round(target_power_kw, 2)}},
+        {"domain": "input_boolean", "service": "turn_on", "data": {"entity_id": helper}},
+    ]
+```
+
+What the framework does with it:
+
+- `plan` runs in the same worker thread, with the same 10 second limit, as `send`. If it raises,
+  times out or returns something invalid, nothing is executed and the command counts as failed.
+- The list may hold at most 12 calls. Each call is `{"domain", "service", "data"}`: `domain` and
+  `service` are lowercase letters, digits and underscore; `data` is a dictionary with text keys
+  whose values are text, whole or decimal numbers, true/false, or lists of those. The keys
+  `blocking`, `return_response` and `limit` are not allowed. Anything else is rejected and logged.
+- The calls run in order. If one raises (for example the helper does not exist), the rest are
+  skipped, the error is logged (at most once per 30 minutes for the same cause) and the command
+  counts as failed: it is not remembered as sent, so the next cycle tries it again.
+- The command is only planned and run when the framework decides to send it (a changed command, or
+  the resend time), exactly as for `send`. `idle` runs once after a forced mode.
+- `SOC_ENTITY` is optional. When it is set, the framework reads that sensor for the battery charge
+  and `read_charge_percent` is not needed. A value that is unavailable, not a number or outside 0 to
+  100 gives the 50 % placeholder and `degraded=inverter_read_failed`.
+
+**Run it with `inverter.dry_run: true` first.** In a dry run the framework logs the service calls it
+would make (one line per command, at info level) and executes none of them. The command is still
+remembered as sent, so you see exactly when it would be repeated. Watch the Home Assistant log for a
+day, compare it with what the planner decided, and only then set `dry_run: false`. A driver for real
+hardware is your responsibility.
+
+The service-call path was exercised only with test doubles and with the pyscript interpreter in a
+test harness, never against real hardware or a real Home Assistant.
 
 What the framework does for you:
 
@@ -755,6 +825,10 @@ Before you enable a real driver:
       again at 80 % of it. If you do not know it, leave the line out: the setting
       `inverter.resend_minutes` (default 15) applies instead; lower it if the inverter needs a
       faster refresh, `0` sends on every planner cycle and every guard call.
+- [ ] With a plan-style driver, keep `plan` pure (no network, no files, no waiting), list every helper
+      that must be switched back off for `idle`, and run with `inverter.dry_run: true` before the
+      first live run. Sliders and switches your integration owns are yours to check: nothing here has
+      been tried against real hardware.
 - [ ] Make `send("idle", 0)` a real release: it must cancel every forced mode the planner or the
       guard set (forced grid charge, forced export, forced discharge) and put the inverter back on
       its default behaviour. The planner sends it once when it stops a forced mode, and not again

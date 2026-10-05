@@ -4,7 +4,8 @@ Public surface (documented in docs/inverter-boundary.md):
     apply(action, target_power_kw, record, log_path=None,
           inverter_type="logging", driver_dir=None,
           log_dir=DEFAULT_LOG_DIR,
-          resend_minutes=DEFAULT_RESEND_MINUTES, state_dir=None) -> bool
+          resend_minutes=DEFAULT_RESEND_MINUTES, state_dir=None,
+          dry_run=False) -> bool
     log_path_for(day, log_dir=DEFAULT_LOG_DIR)
         -> "<log_dir>/decisions-YYYY-MM-DD.log"
     read_charge(inverter_type="logging", driver_dir=None)
@@ -42,6 +43,22 @@ Everything that talks to a real inverter lives in a driver file,
 interface). The default driver, `logging`, transmits nothing. This file does
 not change when an inverter is added.
 
+Two driver styles. A send-style driver defines send(action, power) and talks to
+the inverter itself. A plan-style driver defines plan(action, power): a pure
+function returning an ordered list of Home Assistant service calls
+[{"domain": ..., "service": ..., "data": {...}}, ...]. It runs natively in the
+driver-call helper (thread + timeout) and only returns data; THIS file then
+executes the calls with pyscript's service.call, one after the other. The list
+is validated first (at most MAX_PLAN_CALLS items; domain and service are
+lowercase slugs [a-z0-9_]; data is a dict with str keys and values that are
+str, int, float, bool or a list of those; anything else is a failed send). A
+call that raises stops the sequence and counts as a failed send. With plan() the
+driver's send() is not used. A plan-style driver may also declare SOC_ENTITY (the
+battery charge sensor in percent), read here with state.get, so it needs no
+read_charge_percent(). dry_run (config inverter.dry_run) logs the planned calls
+and executes nothing, yet the command is recorded as sent, so the de-duplication
+and the resend behave exactly as in a live run.
+
 This is a pyscript MODULE (pyscript/modules/), not a top-level script. Top-level
 pyscript scripts cannot import each other; only files under <config>/pyscript/
 modules/ are importable by scripts. The planner adapter and the peak guard both
@@ -78,6 +95,12 @@ HOLD_ATTRIBUTE = "COMMAND_HOLD_MINUTES"
 RESEND_FRACTION = 0.8
 # Largest hold that is believable (minutes); also rejects infinity and NaN.
 HOLD_LIMIT_MINUTES = 1.0e9
+# Plan-style drivers: the longest service-call list one command may produce, and
+# how often the same kind of failure is logged again (minutes).
+MAX_PLAN_CALLS = 12
+LOG_REPEAT_MINUTES = 30
+# {key: UTC time of the last log line of that kind} for rate-limited errors.
+_logged_at = {}
 
 
 def log_path_for(day, log_dir=DEFAULT_LOG_DIR):
@@ -185,6 +208,56 @@ def _remove_state(path):
 
 
 @pyscript_executor  # noqa: F821
+def _check_plan(plan):
+    """Validate a plan() result. Returns (calls, None) or (None, reason).
+
+    calls is a fresh list of {"domain", "service", "data"} dicts, so nothing the
+    driver thread still holds is shared with the caller.
+    """
+    import math
+    import re
+    if not isinstance(plan, (list, tuple)):
+        return None, "plan() returned %s, expected a list" % type(plan).__name__
+    if len(plan) > 12:
+        return None, "plan() returned %d calls, at most 12 are allowed" % len(plan)
+    slug = re.compile(r"[a-z0-9_]+")
+    out = []
+    for i, item in enumerate(plan):
+        where = "call %d" % i
+        if not isinstance(item, dict):
+            return None, "%s is not a dict" % where
+        extra = set(item) - {"domain", "service", "data"}
+        if extra or "domain" not in item or "service" not in item:
+            return None, ("%s must have exactly the keys domain, service and "
+                          "data (got %s)" % (where, sorted(map(str, item))))
+        for key in ("domain", "service"):
+            v = item[key]
+            if not isinstance(v, str) or not slug.fullmatch(v):
+                return None, ("%s: %s %r must be a lowercase slug "
+                              "[a-z0-9_]" % (where, key, v))
+        data = item.get("data", {})
+        if not isinstance(data, dict):
+            return None, "%s: data must be a dict" % where
+        clean = {}
+        for k, v in data.items():
+            if not isinstance(k, str) or not k or k in (
+                    "blocking", "return_response", "limit"):
+                return None, "%s: data key %r is not allowed" % (where, k)
+            values = v if isinstance(v, list) else [v]
+            for x in values:
+                if isinstance(x, float) and not math.isfinite(x):
+                    return None, "%s: data %r holds a non-finite number" % (where, k)
+                if not isinstance(x, (str, int, float, bool)):
+                    return None, ("%s: data %r holds a %s; only str, int, "
+                                  "float, bool or a list of those"
+                                  % (where, k, type(x).__name__))
+            clean[k] = list(v) if isinstance(v, list) else v
+        out.append({"domain": item["domain"], "service": item["service"],
+                    "data": clean})
+    return out, None
+
+
+@pyscript_executor  # noqa: F821
 def _load_driver(driver_dir, inverter_type):
     """Import <driver_dir>/inverter_<type>.py as CPython. Raises when unusable."""
     import importlib.util
@@ -202,9 +275,18 @@ def _load_driver(driver_dir, inverter_type):
     sys.modules[full] = module          # dataclasses etc. look themselves up
     try:
         spec.loader.exec_module(module)
-        for name in ("send", "read_charge_percent"):
-            if not callable(getattr(module, name, None)):
-                raise AttributeError("%s defines no %s()" % (path, name))
+        if not callable(getattr(module, "plan", None)):
+            if not callable(getattr(module, "send", None)):
+                raise AttributeError("%s defines no send() or plan()" % path)
+        entity = getattr(module, "SOC_ENTITY", None)
+        if entity is not None:
+            if not isinstance(entity, str) or not re.fullmatch(
+                    r"[a-z0-9_]+\.[a-z0-9_]+", entity):
+                raise ValueError("%s: SOC_ENTITY %r is not an entity id"
+                                 % (path, entity))
+        elif not callable(getattr(module, "read_charge_percent", None)):
+            raise AttributeError(
+                "%s defines no read_charge_percent() or SOC_ENTITY" % path)
     except BaseException:
         sys.modules.pop(full, None)
         raise
@@ -252,7 +334,72 @@ def _driver(inverter_type, driver_dir):
     return module, None
 
 
-def _transmit(action, target_power_kw, inverter_type, driver_dir):
+def _log_limited(key, message, when):
+    """log.error at most once per LOG_REPEAT_MINUTES for the same key."""
+    try:
+        last = _logged_at.get(key)
+        if last is not None:
+            gap = (when - last).total_seconds()
+            if 0 <= gap < LOG_REPEAT_MINUTES * 60:
+                return
+        _logged_at[key] = when
+    except Exception:
+        pass
+    log.error(message)  # noqa: F821
+
+
+def _describe(calls):
+    parts = []
+    for c in calls:
+        parts.append("%s.%s %r" % (c["domain"], c["service"], c["data"]))
+    return "; ".join(parts) or "(no calls)"
+
+
+def _transmit_plan(driver, action, target_power_kw, inverter_type, dry_run,
+                   when):
+    """Ask the driver's plan() for service calls and execute them in order.
+
+    True only when every call ran (or, in a dry run, the plan was valid). A
+    bad plan, a plan() that raises or times out, or a call that raises stops
+    here and returns False; nothing is raised into the caller.
+    """
+    ok, value, err = _invoke(driver, "plan", (action, target_power_kw),
+                             DRIVER_TIMEOUT_SECONDS)
+    if not ok:
+        _log_limited(
+            inverter_type + ":plan",
+            "inverter: driver %r plan(%s, %s) failed: %s"
+            % (inverter_type, action, target_power_kw, err), when)
+        return False
+    calls, why = _check_plan(value)
+    if calls is None:
+        _log_limited(
+            inverter_type + ":invalid",
+            "inverter: driver %r plan(%s, %s) is invalid, nothing executed: %s"
+            % (inverter_type, action, target_power_kw, why), when)
+        return False
+    if dry_run:
+        log.info(  # noqa: F821
+            "inverter: dry run, %s %s kW would call: %s (not executed)"
+            % (action, target_power_kw, _describe(calls)))
+        return True
+    for index, call in enumerate(calls):
+        try:
+            service.call(  # noqa: F821  (pyscript global)
+                call["domain"], call["service"], **call["data"])
+        except Exception as exc:
+            _log_limited(
+                inverter_type + ":call",
+                "inverter: driver %r %s %s kW stopped at call %d of %d "
+                "(%s.%s): %r; the command counts as failed"
+                % (inverter_type, action, target_power_kw, index + 1,
+                   len(calls), call["domain"], call["service"], exc), when)
+            return False
+    return True
+
+
+def _transmit(action, target_power_kw, inverter_type, driver_dir,
+              dry_run=False, when=None):
     """Hand the intent to the driver. Called only AFTER the log line is on disk.
 
     Never raises and never changes what apply() returns: the log already
@@ -260,7 +407,9 @@ def _transmit(action, target_power_kw, inverter_type, driver_dir):
     nothing is sent (logging behaviour), loudly.
 
     Returns True only when the driver accepted the command (no exception, no
-    timeout, did not return False); apply() records only those as sent.
+    timeout, did not return False; for a plan-style driver every service call
+    ran); apply() records only those as sent. In a dry run nothing is sent or
+    executed and the command counts as accepted.
     """
     try:
         driver, problem = _driver(inverter_type, driver_dir)
@@ -269,6 +418,14 @@ def _transmit(action, target_power_kw, inverter_type, driver_dir):
                 "inverter: %s; NOT transmitting %s %s kW, decision logged "
                 "only" % (problem, action, target_power_kw))
             return False
+        if callable(getattr(driver, "plan", None)):
+            return _transmit_plan(driver, action, target_power_kw,
+                                  inverter_type, dry_run, when)
+        if dry_run:
+            log.info(  # noqa: F821
+                "inverter: dry run, driver %r would be sent %s %s kW "
+                "(not sent)" % (inverter_type, action, target_power_kw))
+            return True
         ok, value, err = _invoke(driver, "send", (action, target_power_kw),
                                  DRIVER_TIMEOUT_SECONDS)
         if not ok:
@@ -427,7 +584,8 @@ def _forget_sent(path):
 
 def apply(action, target_power_kw, record, log_path=None,
           inverter_type="logging", driver_dir=None, log_dir=DEFAULT_LOG_DIR,
-          resend_minutes=DEFAULT_RESEND_MINUTES, state_dir=None):
+          resend_minutes=DEFAULT_RESEND_MINUTES, state_dir=None,
+          dry_run=False):
     """Carry out a decision: log it, then hand it to the configured driver.
 
     The decision log line is ALWAYS written, for every driver, and FIRST. The
@@ -451,6 +609,10 @@ def apply(action, target_power_kw, record, log_path=None,
                         it persists (unless this is 0). A driver that declares
                         COMMAND_HOLD_MINUTES is re-sent at 0.8 x that instead
     state_dir        -- where last_command.json lives; None = <log_dir>/state
+    dry_run          -- True: transmit and execute nothing, log what would have
+                        been done (info level); the command is still recorded as
+                        sent, so de-duplication and resend behave as when live
+                        (config inverter.dry_run)
 
     Returns True when the intent was durably recorded, False on any failure
     or mismatch (never raises into the caller; the reason goes to log.warning).
@@ -484,13 +646,15 @@ def apply(action, target_power_kw, record, log_path=None,
     # that could not be recorded is not sent. The log line above is written on
     # every call; only the driver call below is de-duplicated.
     if inverter_type == "logging":
-        _transmit(action, target_power_kw, inverter_type, driver_dir)
+        _transmit(action, target_power_kw, inverter_type, driver_dir,
+                  dry_run, record.timestamp)
         return True
     path = _state_file(state_dir, log_dir)
     hold = _hold_minutes(inverter_type, driver_dir)
     if _should_send(action, target_power_kw, record, resend_minutes, path,
                     hold):
-        if _transmit(action, target_power_kw, inverter_type, driver_dir):
+        if _transmit(action, target_power_kw, inverter_type, driver_dir,
+                     dry_run, record.timestamp):
             _remember_sent(action, target_power_kw, record, path)
         else:
             _forget_sent(path)
@@ -500,7 +664,10 @@ def apply(action, target_power_kw, record, log_path=None,
 def read_charge(inverter_type="logging", driver_dir=None):
     """Battery charge from the configured driver: (percent, is_stub, marker).
 
-    percent  -- 0-100
+    percent  -- 0-100. A driver that declares SOC_ENTITY (a sensor in percent)
+                is read with state.get here; unavailable, unknown, not a
+                number or outside 0-100 gives the placeholder and the marker
+                inverter_read_failed. Such a driver is never a stub.
     is_stub  -- True when the value is a placeholder (driver says SOC_IS_STUB);
                 the caller marks its decisions degraded=soc_stubbed
     marker   -- None, or a degraded marker string the caller must add to its
@@ -510,6 +677,18 @@ def read_charge(inverter_type="logging", driver_dir=None):
     driver, problem = _driver(inverter_type, driver_dir)
     if driver is None:
         return STUBBED_CHARGE_PERCENT, True, MARKER_UNAVAILABLE
+    entity = getattr(driver, "SOC_ENTITY", None)
+    if entity is not None:
+        try:
+            value = float(state.get(entity))  # noqa: F821  (pyscript global)
+            if not (0.0 <= value <= 100.0):
+                raise ValueError("%r is outside 0-100" % (value,))
+            return value, False, None
+        except Exception as exc:
+            log.warning(  # noqa: F821
+                "inverter: driver %r charge sensor %s unusable: %r"
+                % (inverter_type, entity, exc))
+            return STUBBED_CHARGE_PERCENT, True, MARKER_READ_FAILED
     try:
         ok, value, err = _invoke(driver, "read_charge_percent", (),
                                  DRIVER_TIMEOUT_SECONDS)

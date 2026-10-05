@@ -960,7 +960,8 @@ def _own_grid_charge_kw(cfg, local):
     capacity.budget_kw subtracts it to get household draw, so the budget does
     not shrink by the planner's own charging (no every-other-cycle flapping).
     """
-    if cfg.inverter_type == "logging" or _last_grid_charge is None:
+    if (cfg.inverter_type == "logging" or cfg.inverter_dry_run
+            or _last_grid_charge is None):
         return 0.0
     when, kw = _last_grid_charge
     age = (local - when).total_seconds()
@@ -1231,7 +1232,8 @@ def _cycle(now):
                           inverter_type=cfg.inverter_type,
                           driver_dir=CORE_DIR,
                           resend_minutes=cfg.inverter_resend_minutes,
-                          state_dir=STATE_DIR):
+                          state_dir=STATE_DIR,
+                          dry_run=cfg.inverter_dry_run):
         log.error("battery_planner: decision could not be recorded")  # noqa: F821
     else:
         _remember_grid_charge(d, local)

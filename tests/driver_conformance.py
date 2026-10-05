@@ -35,6 +35,20 @@ What is checked:
     (not a bool): how long the inverter keeps a forced command without a
     refresh. The planner re-sends an unchanged command at 0.8 x that.
 
+A plan-style driver defines plan(action, target_power_kw) instead of send(): a
+pure function returning the ordered Home Assistant service calls
+[{"domain": ..., "service": ..., "data": {...}}, ...]. When plan exists it is
+checked INSTEAD of send(): for idle, charge, discharge and export at 0.0 (idle)
+or 0.5 kW and the maximum power, the result must be a list of at most 12 calls,
+domain and service lowercase slugs, data a dict with str keys and values that
+are str, int, float (finite), bool or a list of those; idle, charge, discharge
+and export must each return at least one call (an empty idle plan would release
+nothing); the call must return within the time bound, give the same answer when
+repeated, and do no network access (sockets are blocked while it runs). Such a
+driver needs read_charge_percent() only when it declares no SOC_ENTITY (the
+entity id of the battery charge sensor in percent, read by the boundary). The
+checker never executes the service calls.
+
 Third-party imports (for example pymodbus) are allowed: drivers are loaded as
 ordinary CPython. They only have to be installed where the check runs.
 """
@@ -42,6 +56,7 @@ import importlib.util
 import json
 import math
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -55,6 +70,12 @@ FILE_NAME = re.compile(r"inverter_([a-z0-9_]+)\.py")
 DEFAULT_TIMEOUT_SECONDS = 5.0
 DEFAULT_MAX_POWER_KW = 5.0
 IMPORT_TIMEOUT_SECONDS = 30.0
+# Mirrors inverter.MAX_PLAN_CALLS and the checks in inverter._check_plan; a test
+# keeps the two in agreement.
+MAX_PLAN_CALLS = 12
+_SLUG = re.compile(r"[a-z0-9_]+")
+_ENTITY = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")
+_RESERVED_DATA_KEYS = ("blocking", "return_response", "limit")
 
 
 class ConformanceError(AssertionError):
@@ -190,6 +211,93 @@ def _send_problems(module, timeout, max_power_kw):
     return _unique(problems)
 
 
+def validate_plan(plan):
+    """Reason the plan() result is not acceptable, or None. Pure."""
+    if not isinstance(plan, (list, tuple)):
+        return "returned %s, expected a list" % type(plan).__name__
+    if len(plan) > MAX_PLAN_CALLS:
+        return "returned %d calls, at most %d are allowed" % (
+            len(plan), MAX_PLAN_CALLS)
+    for i, item in enumerate(plan):
+        where = "call %d" % i
+        if not isinstance(item, dict):
+            return "%s is not a dict" % where
+        if set(item) - {"domain", "service", "data"} or (
+                "domain" not in item or "service" not in item):
+            return "%s must have the keys domain, service and data" % where
+        for key in ("domain", "service"):
+            v = item[key]
+            if not isinstance(v, str) or not _SLUG.fullmatch(v):
+                return "%s: %s %r must be a lowercase slug [a-z0-9_]" % (
+                    where, key, v)
+        data = item.get("data", {})
+        if not isinstance(data, dict):
+            return "%s: data must be a dict" % where
+        for k, v in data.items():
+            if not isinstance(k, str) or not k or k in _RESERVED_DATA_KEYS:
+                return "%s: data key %r is not allowed" % (where, k)
+            for x in (v if isinstance(v, list) else [v]):
+                if isinstance(x, float) and not math.isfinite(x):
+                    return "%s: data %r holds a non-finite number" % (where, k)
+                if not isinstance(x, (str, int, float, bool)):
+                    return ("%s: data %r holds a %s; only str, int, float, "
+                            "bool or a list of those" % (
+                                where, k, type(x).__name__))
+    return None
+
+
+class _NoNetwork:
+    """Block socket use while plan() runs: a plan is data, never I/O."""
+
+    _names = ("connect", "connect_ex", "sendto")
+
+    def __enter__(self):
+        self._saved = {n: getattr(socket.socket, n) for n in self._names}
+
+        def blocked(*args, **kwargs):
+            raise OSError("plan() must not use the network")
+        for n in self._names:
+            setattr(socket.socket, n, blocked)
+        self._create = socket.create_connection
+        socket.create_connection = blocked
+        return self
+
+    def __exit__(self, *exc):
+        for n, fn in self._saved.items():
+            setattr(socket.socket, n, fn)
+        socket.create_connection = self._create
+
+
+def _plan_problems(module, timeout, max_power_kw):
+    plan = module.plan
+    problems = []
+    cases = [("idle", 0.0)]
+    for action in ("charge", "discharge", "export"):
+        cases += [(action, 0.5), (action, max_power_kw)]
+    for action, power in cases:
+        label = "plan(%r, %s)" % (action, power)
+        with _NoNetwork():
+            ok, value, elapsed = _call(plan, (action, power), timeout)
+            again = _call(plan, (action, power), timeout)
+        if not ok:
+            problems.append("%s failed on valid input: %s" % (label, value))
+            continue
+        why = validate_plan(value)
+        if why:
+            problems.append("%s %s" % (label, why))
+        elif not value:
+            problems.append(
+                "%s returned no calls; %s must change something (idle: release "
+                "every forced mode)" % (label, action))
+        elif elapsed > timeout:
+            problems.append("%s took %.1f s, over the %.1f s bound"
+                            % (label, elapsed, timeout))
+        elif not again[0] or again[1] != value:
+            problems.append("%s gave a different answer when repeated (a plan "
+                            "must be a pure function of its arguments)" % label)
+    return _unique(problems)
+
+
 def _read_problems(module, timeout):
     read = getattr(module, "read_charge_percent", None)
     if not callable(read):
@@ -251,8 +359,17 @@ def find_problems(driver, timeout=DEFAULT_TIMEOUT_SECONDS,
             problems.append(
                 "COMMAND_HOLD_MINUTES is %r; it must be a positive number of "
                 "minutes, or None / left out when unknown" % (hold,))
-    problems += _send_problems(module, timeout, max_power_kw)
-    problems += _read_problems(module, timeout)
+    entity = getattr(module, "SOC_ENTITY", None)
+    if entity is not None and (
+            not isinstance(entity, str) or not _ENTITY.fullmatch(entity)):
+        problems.append("SOC_ENTITY is %r; it must be an entity id like "
+                        "sensor.my_battery_soc, or be left out" % (entity,))
+    if callable(getattr(module, "plan", None)):
+        problems += _plan_problems(module, timeout, max_power_kw)
+    else:
+        problems += _send_problems(module, timeout, max_power_kw)
+    if entity is None or not isinstance(entity, str):
+        problems += _read_problems(module, timeout)
     return problems
 
 

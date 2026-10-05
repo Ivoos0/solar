@@ -211,5 +211,10 @@ inverter:
                                    # re-sent at 80 % of it instead. The decision log line is
                                    # written every cycle regardless. No effect with the logging
                                    # driver.
+  dry_run: false                   # true = a driver is not allowed to act: a plan-style driver's
+                                   # service calls are logged (info level) and NOT executed, a
+                                   # send-style driver's send() is skipped and logged. The command
+                                   # still counts as sent, so repeats behave as when live. Use it
+                                   # first on real hardware.
 
 timezone: Europe/Brussels

@@ -16,6 +16,13 @@ THE DRIVER INTERFACE (everything a new inverter has to provide):
                                             # "charge" is a forced charge from
                                             # the grid.
 
+A driver may define plan(action, target_power_kw) INSTEAD of send(): a pure
+function returning the Home Assistant service calls to make, as an ordered list
+of {"domain": ..., "service": ..., "data": {...}} dicts. The boundary validates
+and runs them (see docs/inverter-boundary.md, "Plan-style drivers"). It may then
+declare SOC_ENTITY (the battery charge sensor, percent) and omit
+read_charge_percent(). This driver uses neither.
+
 WHAT "idle" MEANS: send("idle", 0.0) must cancel every forced mode this project
 set (forced grid charge, forced export, forced discharge) and return the
 inverter to its own default behaviour. It is sent once after a forced mode, not

@@ -42,6 +42,7 @@ _MAP = [
     ("alerts", "peak_warning_ticks", "peak_warning_ticks"),
     ("inverter", "type", "inverter_type"),
     ("inverter", "resend_minutes", "inverter_resend_minutes"),
+    ("inverter", "dry_run", "inverter_dry_run"),
     (None, "timezone", "timezone"),
     ("capacity_tariff", "enabled", "capacity_enabled"),
     ("capacity_tariff", "billing_floor_kw", "billing_floor_kw"),
@@ -77,7 +78,7 @@ _NON_NUMERIC = (
     "price_attribute", "forecast_entity", "forecast_attribute",
     "quarter_hour_average_sensor", "month_peak_sensor", "history_enabled",
     "peak_alert_enabled", "peak_warning_enabled", "report_enabled",
-    "sensors_enabled",
+    "sensors_enabled", "inverter_dry_run",
 ) + _HISTORY_SENSOR_ATTRS
 
 # Entity-name fields (checked as domain.object_id) and attribute-name fields
@@ -143,6 +144,9 @@ class SiteConfig:
     solar_calibration_weeks: int = 4
     inverter_type: str = "logging"
     inverter_resend_minutes: int = 15
+    # True: a plan-style driver's service calls are logged, not executed.
+    # Not in fingerprint(): it changes what is done, not what a block means.
+    inverter_dry_run: bool = False
     # Home Assistant entities. Deliberately NOT in fingerprint(): they name
     # where data is read from, not what a block means.
     price_entity: str = "sensor.entso_prices_average_electricity_price"
@@ -255,6 +259,8 @@ def _errors(cfg):
         bad("history.enabled", cfg.history_enabled, "must be true or false")
     if not isinstance(cfg.report_enabled, bool):
         bad("report.enabled", cfg.report_enabled, "must be true or false")
+    if not isinstance(cfg.inverter_dry_run, bool):
+        bad("inverter.dry_run", cfg.inverter_dry_run, "must be true or false")
     if not isinstance(cfg.sensors_enabled, bool):
         bad("sensors.enabled", cfg.sensors_enabled, "must be true or false")
     for q, attr in _HISTORY_SENSORS:

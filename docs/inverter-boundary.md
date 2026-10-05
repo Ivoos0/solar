@@ -22,7 +22,8 @@ importable from several scripts, and modules may use pyscript features
 ```python
 def apply(action, target_power_kw, record, log_path=None,
           inverter_type="logging", driver_dir=None, log_dir=DEFAULT_LOG_DIR,
-          resend_minutes=DEFAULT_RESEND_MINUTES, state_dir=None):
+          resend_minutes=DEFAULT_RESEND_MINUTES, state_dir=None,
+          dry_run=False):
     """Log the decision, THEN hand the intent to the configured driver.
 
     The line goes to log_path when given (tests); otherwise to
@@ -156,10 +157,82 @@ cannot verify this without hardware; you must.
     never blocks a send. The attribute is read from the loaded driver the way
     `SOC_IS_STUB` is.
 
+## Plan-style drivers (service calls through Home Assistant)
+
+Some integrations are controlled by switching Home Assistant helpers rather than
+by a service or a bus. Drivers are loaded as plain CPython in an executor thread
+and cannot call Home Assistant, so the interface has a second form. A driver may
+define
+
+```python
+SOC_ENTITY = "sensor.my_battery_soc"     # optional: battery charge in percent
+COMMAND_HOLD_MINUTES = 10                # optional, as above
+
+def plan(action, target_power_kw):       # pure: returns data, does no I/O
+    return [{"domain": "input_number", "service": "set_value",
+             "data": {"entity_id": "input_number.my_power", "value": 2.0}},
+            {"domain": "input_boolean", "service": "turn_on",
+             "data": {"entity_id": "input_boolean.my_force_charge"}}]
+```
+
+instead of `send`. If `plan` exists it is used and `send` is ignored. Existing
+`send`-style drivers, and the `logging` driver, are not affected.
+
+1. **Where it runs.** `plan` runs in the same worker thread and under the same
+   10 second limit as `send`; it returns data only. The boundary (interpreted
+   pyscript code in `inverter.py`) then executes the calls one after another
+   with `service.call(domain, service, **data)`. A `plan` that raises, times out
+   or returns an invalid list is a failed send.
+2. **Validation.** The result must be a list (or tuple) of at most 12 items.
+   Each item is a dict with the keys `domain`, `service` and optionally `data`
+   and no others. `domain` and `service` are strings made of `[a-z0-9_]`.
+   `data` is a dict whose keys are non-empty strings (not `blocking`,
+   `return_response` or `limit`) and whose values are `str`, `int`, `float`
+   (finite), `bool` or a flat list of those. `None`, nested lists, dicts and
+   other objects are rejected. A rejected plan executes nothing and is logged
+   as an error; an empty list is valid. The validated calls are copies, not the
+   driver's own objects.
+3. **Failure.** A call that raises (for example `ServiceNotFound`) stops the
+   sequence, is logged, and counts as a failed send: not recorded as sent, and
+   the existing record in `last_command.json` is cleared, exactly as for
+   `send`. Errors from `plan` (raising, timeout, invalid) and from the calls are
+   logged at most once per 30 minutes for the same driver and cause. Nothing is
+   ever raised into the planner or the guard, and the decision log line is
+   written first and unchanged.
+4. **When it runs.** `plan` is called, and its calls executed, only when `apply`
+   decides to send (rules 10 to 12): a changed command, the resend time, or the
+   one `idle` after a forced mode. Unchanged commands inside the window call
+   neither `plan` nor `service.call`.
+5. **`SOC_ENTITY`.** When the driver declares it (an entity id such as
+   `sensor.my_battery_soc`), `read_charge` reads it with `state.get` in the
+   interpreted layer and the driver needs no `read_charge_percent`. A value that
+   is unavailable, unknown, not a number or outside 0 to 100 gives the 50.0
+   placeholder with `is_stub=True` and the marker `inverter_read_failed`, as for
+   an unusable reading. `SOC_IS_STUB` is not consulted: a good reading from
+   `SOC_ENTITY` is never a stub. A `SOC_ENTITY` that is not an entity id makes the
+   driver unusable (`inverter_driver_unavailable`). A driver without
+   `SOC_ENTITY` still needs `read_charge_percent`.
+6. **Dry run.** With `inverter.dry_run: true` the boundary logs, at info level,
+   one line per command that lists the planned service calls, and executes none
+   of them. The command is recorded as sent, so de-duplication and resend behave
+   exactly as in a live run. A `send`-style driver in a dry run is not called; a
+   line saying it would have been is logged instead. The `logging` driver is
+   unchanged. In a dry run the planner and the guard also assume that nothing was
+   really commanded (no own-charge or discharge correction). Run a new driver in
+   dry run on your hardware before the first live run.
+7. **What was tested.** The service-call path has been exercised with test
+   doubles for `service` and `state`, and with the pyscript interpreter in a test
+   harness. It has never been run against real hardware or a real Home
+   Assistant. `tests/driver_conformance.py` checks a plan-style driver's `plan`
+   for every action (structure, speed, repeatability, no network) but never
+   executes the calls; `tests/drivers/inverter_planstyle.py` is a generic
+   example.
+
 ## Settings
 
 `inverter.type` (default `logging`; missing, null or `none` mean `logging`;
-otherwise lowercase letters, digits and underscore) and `inverter.resend_minutes`
+otherwise lowercase letters, digits and underscore), `inverter.dry_run`
+(default `false`; see above) and `inverter.resend_minutes`
 (the fallback resend time for drivers that declare no `COMMAND_HOLD_MINUTES`; see
 the README settings table).
 
