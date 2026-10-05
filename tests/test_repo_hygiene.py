@@ -34,11 +34,53 @@ def test_credentials_come_from_secret_tags(key, secret):
 
 def test_no_literal_credentials_or_addresses_in_tracked_yaml():
     for name in ("configuration.yaml", "secrets.example.yaml",
-                 "battery_planner/user_config.example.yaml"):
+                 "battery_planner/user_config.example.yaml",
+                 "examples/cost_simulation.yaml"):
         text = (ROOT / name).read_text(encoding="utf-8")
         for addr in re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", text):
             assert addr.lower().endswith("@example.com"), (name, addr)
     assert not re.search(r"(?im)^\s*password:\s*(?!!secret)\S", CONFIG_YAML)
+
+
+def test_cost_simulation_example_is_optional_and_personal_data_free():
+    text = (ROOT / "examples" / "cost_simulation.yaml").read_text(encoding="utf-8")
+    assert "NOT loaded by configuration.yaml" in text
+    assert "://" not in text
+    assert "!secret" not in text
+    assert not re.search(r"-?\d+(?:\.\d+)?/-?\d+(?:\.\d+)?/-?\d+", text)
+    assert not re.search(r"(?im)^\s*(?:password|username):", text)
+
+
+def test_configuration_yaml_holds_only_what_the_planner_needs():
+    assert not re.search(r"^(?:template|utility_meter|input_number):",
+                         CONFIG_YAML, re.M)
+    for word in ("C-014", "OPEN QUESTION", "research.md", "NFR-", "FR-"):
+        assert word not in CONFIG_YAML, word
+
+
+def _load_yaml(name):
+    yaml = pytest.importorskip("yaml")
+
+    class Loader(yaml.SafeLoader):
+        pass
+
+    def scalar(loader, node):
+        return loader.construct_scalar(node)
+
+    for tag in ("!secret", "!include", "!include_dir_merge_named"):
+        Loader.add_constructor(tag, scalar)
+    return yaml.load((ROOT / name).read_text(encoding="utf-8"), Loader)
+
+
+def test_configuration_yaml_parses_with_expected_top_level_keys():
+    keys = set(_load_yaml("configuration.yaml"))
+    assert {"pyscript", "rest", "notify"} <= keys
+    assert {"automation", "script", "scene"} <= keys
+
+
+def test_cost_simulation_example_parses():
+    assert set(_load_yaml("examples/cost_simulation.yaml")) == {
+        "input_number", "template", "utility_meter"}
 
 
 SECRETS_EXAMPLE = (ROOT / "secrets.example.yaml").read_text(encoding="utf-8")
