@@ -149,6 +149,10 @@ history:
     solar: []                   # PV production counter(s), e.g. from the inverter
     battery_charge: []          # energy into the battery
     battery_discharge: []       # energy out of the battery
+    # With the read-only AlphaESS setup in the README:
+    # solar: [sensor.alphaess_total_energy_from_pv]
+    # battery_charge: [sensor.alphaess_total_energy_charge_battery]
+    # battery_discharge: [sensor.alphaess_total_energy_discharge_battery]
     load: []                    # household consumption counter, if you have one
                                 # Usage history (and so grid charging) unlocks
                                 # with `load`, or with solar + battery_charge +

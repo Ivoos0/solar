@@ -119,8 +119,26 @@ def test_secrets_example_covers_every_secret_configuration_yaml_uses():
     assert not missing, missing
 
 
+# Keys used only by the optional AlphaESS example in the README, not by
+# configuration.yaml. They must be documented there and be placeholders.
+README_ONLY_SECRETS = {"alphaess_modbus_host_ip", "alphaess_modbus_host_port",
+                       "alphaess_modbus_slaveId"}
+
+
 def test_secrets_example_has_no_unused_keys():
-    assert {k for k, _ in _active_secrets()} == _referenced_secrets()
+    # every key is either used by configuration.yaml or is an explicitly
+    # listed README-only key
+    active = {k for k, _ in _active_secrets()}
+    assert active - _referenced_secrets() == README_ONLY_SECRETS
+    assert _referenced_secrets() <= active
+
+
+def test_readme_only_secrets_are_used_in_the_readme_example():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    for key in README_ONLY_SECRETS:
+        assert "!secret %s" % key in readme, key
+        assert key not in CONFIG_YAML, key     # else they are not README-only
+    assert not README_ONLY_SECRETS & _referenced_secrets()
 
 
 def test_secrets_example_contains_only_placeholders():
@@ -132,6 +150,10 @@ def test_secrets_example_contains_only_placeholders():
     assert url.startswith("https://api.forecast.solar/estimate/")
     # generic example coordinates only (Brussels), never a real roof
     assert url.endswith("/50.85/4.35/35/0/5.0")
+    # modbus bridge: a documentation address (RFC 5737), never a real LAN IP
+    assert values["alphaess_modbus_host_ip"].startswith("192.0.2.")
+    assert values["alphaess_modbus_host_port"] == "502"
+    assert values["alphaess_modbus_slaveId"].isdigit()
 
 
 def test_secrets_example_has_exactly_one_uncommented_preset():
@@ -170,3 +192,8 @@ def test_docs_and_examples_hold_no_personal_data():
         for addr in re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", text):
             assert addr.lower().endswith("@example.com"), (path.name, addr)
         assert not re.search(r"192\.168\.|(?i:\bgmail\.com)", text), path.name
+        # the only IPv4 addresses allowed are the documentation range
+        for ip in re.findall(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", text):
+            assert ip.startswith("192.0.2."), (path.name, ip)
+        assert not re.search(r"\b(?:10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.)",
+                             text), path.name
