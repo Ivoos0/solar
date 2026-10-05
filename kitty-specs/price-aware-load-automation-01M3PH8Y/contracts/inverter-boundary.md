@@ -13,12 +13,18 @@ The boundary expresses **intent**, not transport. No register numbers, no connec
 
 ```python
 def apply(action, target_power_kw, record, log_path=None,
-          inverter_type="logging", driver_dir=None, log_dir=DEFAULT_LOG_DIR):
+          inverter_type="logging", driver_dir=None, log_dir=DEFAULT_LOG_DIR,
+          resend_minutes=DEFAULT_RESEND_MINUTES, state_dir=None):
     """Log the decision, THEN hand the intent to the configured driver.
 
     The line goes to log_path when given (tests, back-compat); otherwise to
     log_path_for(record.timestamp, log_dir), i.e.
     <log_dir>/decisions-YYYY-MM-DD.log for the record's own local date.
+
+    The driver's send() is called only when the command (action, power
+    rounded to 0.01 kW) differs from the last command SENT, or the last send
+    is resend_minutes old (0 = every call). state_dir (default
+    <log_dir>/state) holds last_command.json. See rule 10.
 
     Returns True when the decision line was durably recorded, False on any
     refusal or logging failure. Never raises. Driver outcomes never change it.
@@ -39,7 +45,7 @@ def read_charge(inverter_type="logging", driver_dir=None):
     """
 ```
 
-Both adapters pass `cfg.inverter_type` and their `CORE_DIR` as `driver_dir`, so the planner and the guard always select the driver from the same config value.
+Both adapters pass `cfg.inverter_type` and their `CORE_DIR` as `driver_dir`, so the planner and the guard always select the driver from the same config value. They also pass `cfg.inverter_resend_minutes` and `state_dir="<config>/battery_planner/state/"`, so both use the same de-duplication window and the same `last_command.json`. The two new arguments are optional; a caller that omits them gets a 15-minute window and `<log_dir>/state`.
 
 ## Interface a driver implements (`inverter_<type>.py`)
 
@@ -63,10 +69,11 @@ def read_charge_percent(): ...           # number, 0..100
 7. **The planner never imports anything below this boundary.** The core does not know a driver exists; the adapters know only `apply` and `read_charge`.
 8. **File I/O lives here or in the adapter, never in the core**, run off the event loop with `@pyscript_executor` (`@pyscript_compile` alone does NOT move work off the loop; `research.md` R-02).
 9. **Concurrency.** The planner and the guard may call a driver at the same time from different threads; a driver serializes its own bus access.
+10. **Command de-duplication.** The decision log line (rule 1) is written on every call, unchanged. The call to the driver's `send()` is made only when (a) no command is on record, or (b) the command differs from the recorded one in `action` or in `target_power_kw` rounded to 0.01 kW, or (c) the recorded send is `resend_minutes` old or older (config `inverter.resend_minutes`, integer `>= 0`, default 15; `0` = every call; a record dated in the future also sends). The record is `<state_dir>/last_command.json`: `{"action": ..., "power_kw": ..., "sent_at": <UTC ISO 8601>}`, written atomically, read on every call (so it survives a restart and is shared by the planner and the guard, whose commands count against each other) and kept in memory as a fallback when the file cannot be written. The time used is the decision record's timestamp. A command is recorded only when the driver accepted it; a send that raised, timed out, returned `False` or whose driver is missing is **not** recorded and also clears the existing record, because the inverter's state is then unknown and the next call must send whatever it is. A missing, empty, corrupt or incomplete file means "no command on record", never an error. The `logging` driver transmits nothing and keeps no record.
 
 ## Config
 
-`inverter.type` (default `logging`; missing, null or `none` mean `logging`; otherwise `[a-z0-9_]+`). See `user-config.md`. A non-`logging` driver transmits real commands and is the contributor's responsibility; README "Adding an inverter" holds the skeleton and the checklist, including the guard's FUTURE RISK (commanded discharge lowers the net offtake it reads; add-back and heartbeat needed before real control).
+`inverter.type` (default `logging`; missing, null or `none` mean `logging`; otherwise `[a-z0-9_]+`) and `inverter.resend_minutes` (integer `>= 0`, default 15). See `user-config.md`. A non-`logging` driver transmits real commands and is the contributor's responsibility; README "Adding an inverter" holds the skeleton and the checklist, including the guard's FUTURE RISK (commanded discharge lowers the net offtake it reads; add-back and heartbeat needed before real control).
 
 ## Adding an inverter
 

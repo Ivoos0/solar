@@ -112,7 +112,11 @@ class Env:
         self.config_path = tmp / "user_config.yaml"
         self.log_dir = tmp / "logs"
         self.cache_dir = tmp / "cache"
-        self.peak_path = tmp / "state" / "peak_alert.json"
+        self.state_dir = tmp / "state"
+        self.peak_path = self.state_dir / "peak_alert.json"
+        self.halt_path = self.state_dir / "halt.json"
+        self.mode_path = self.state_dir / "average_mode_planner.json"
+        self.command_path = self.state_dir / "last_command.json"
         # Off by default: the fixture's month peak (3.0) is above the floor
         # and would mail in every unrelated test. Peak-alert tests turn it on.
         self.peak_alerts = False
@@ -202,6 +206,9 @@ def env(tmp_path):
         mod.DECISIONS_LOG_DIR = str(e.log_dir)
         mod.HISTORY_DIR = str(e.tmp / "history") + "/"
         mod.PEAK_ALERT_PATH = str(e.peak_path)
+        mod.STATE_DIR = str(e.state_dir) + "/"
+        mod.HALT_STATE_PATH = str(e.halt_path)
+        mod.MODE_STATE_PATH = str(e.mode_path)
         mod._now = lambda: e.clock
         e.write_config()
         st = e.state
@@ -722,6 +729,9 @@ mod.inverter = real
 mod.CONFIG_PATH = str(tmp / "user_config.yaml")
 mod.CACHE_DIR = str(tmp / "cache") + "/"
 mod.DECISIONS_LOG_DIR = str(tmp / "logs")
+mod.STATE_DIR = str(tmp / "state") + "/"
+mod.HALT_STATE_PATH = str(tmp / "state" / "halt.json")
+mod.MODE_STATE_PATH = str(tmp / "state" / "average_mode_planner.json")
 mod._now = lambda: T0
 start = datetime(2026, 9, 29, 22, 0, tzinfo=UTC)
 mod_state = builtins.state

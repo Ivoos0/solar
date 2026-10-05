@@ -13,7 +13,9 @@ Source: <https://github.com/Ivoos0/solar>
   There is no dashboard.
 - It does not control your inverter. The default driver, `logging`, sends nothing. To act on the
   decisions you add a driver for your inverter (see [Adding an inverter driver](#adding-an-inverter-driver)).
-  None is shipped.
+  None is shipped. When one is enabled, the driver is sent a command only when it changes, and again
+  after `inverter.resend_minutes` (default 15), not on every five-minute cycle. The log line is still
+  written every cycle.
 - With the `logging` driver the battery charge is a fixed 50 %. Every record carries
   `degraded=soc_stubbed`. A driver that reads the real charge removes the marker.
 - Household usage history comes from energy counters you configure (see [Energy history](#energy-history)).
@@ -132,7 +134,13 @@ Files on the Home Assistant side:
     user_config.yaml            yours, created in step 6
     decisions-YYYY-MM-DD.log    generated, one file per local day
     cache/                      generated
-    state/peak_alert.json       generated, last month-peak e-mail sent
+    state/                      generated, survives restarts (see "What a restart does")
+      peak_alert.json           last month-peak e-mail sent
+      halt.json                 price-outage state while prices are missing
+      average_mode_planner.json, average_mode_guard.json
+                                what the quarter-hour average mode detection has seen
+      peak_warning.json         when the last peak warning was sent
+      last_command.json         the last command the inverter driver accepted
     history/                    generated, energy history
 ```
 
@@ -190,6 +198,7 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `alerts.peak_warning_min_interval_minutes` | `60` | minutes (whole number, 1 or more) | Minimum gap between peak warnings |
 | `alerts.peak_warning_ticks` | `2` | evaluations (whole number, 1 or more) | Consecutive guard evaluations above the ceiling before a warning. Fewer is earlier and noisier |
 | `inverter.type` | `logging` | driver name | Selects `pyscript/modules/inverter_<type>.py`. `none` means `logging` |
+| `inverter.resend_minutes` | `15` | minutes (whole number, 0 or more) | The driver gets an unchanged command again only after this long. A changed command (other action, or power differing by 0.01 kW or more) goes out at once. `0` sends on every call. The decision log line is written every cycle either way |
 | `timezone` | `Europe/Brussels` | time zone name | Local day for log files, history and monthly peak e-mails |
 
 ### Rounding: which way to err
@@ -234,9 +243,10 @@ sensor name and attribute have not been checked on other installs, so confirm th
 Quarter-hour average mode: some meters report the quarter-hour average as energy so far divided by the
 full 15 minutes (`accumulating`), others divide by elapsed time (`running`). One minute into a window
 the two differ by a factor of 15. With `auto` the peak guard works out which applies by comparing
-samples from several windows, and says so in its records. Pin the value once it is stable. The
-detection state is held in memory, so after a restart the mode is "assumed" until enough windows have
-been seen.
+samples from several windows, and says so in its records. Pin the value once it is stable. What the
+detection has seen is saved under `battery_planner/state/`, so a mode that was detected stays detected
+after a restart. If you delete those files, the mode is "assumed" again until enough windows have been
+seen.
 
 The peak guard's `@state_trigger` names `sensor.slimmelezer_power_consumed` literally, because
 decorator arguments are fixed at load time. If your netted offtake sensor has another name, the guard
@@ -371,7 +381,7 @@ quarter-hour's average from the energy so far and the current offtake. If the pr
 ceiling on `alerts.peak_warning_ticks` consecutive evaluations (default 2), it sends a prediction: the
 projected average, the ceiling, the time left, the current offtake and what the guard is doing. It is
 not sent in the first or last minute of a quarter-hour, at most once per quarter-hour and at most once
-per `alerts.peak_warning_min_interval_minutes` (default 60, forgotten on restart). When you get one,
+per `alerts.peak_warning_min_interval_minutes` (default 60, also across a restart). When you get one,
 reduce load now (oven, dryer, EV, heating) if you can. The prediction can be wrong, and a correct one
 does not mean you were billed.
 
@@ -385,6 +395,25 @@ you can avoid repeating it this month. A failed send is retried on the next cycl
 
 The last mailed month and peak are kept in `<ha-config>/battery_planner/state/peak_alert.json`. If
 that file is lost, you may get one extra e-mail for an old peak after a restart.
+
+### What a restart does
+
+Home Assistant restarts, pyscript reloads and power cuts lose everything held in memory. These are
+saved in `<ha-config>/battery_planner/state/` and picked up again, so a restart does not repeat
+something that was just done:
+
+| File | Keeps | Effect after a restart |
+|---|---|---|
+| `last_command.json` | The last command the driver accepted (action, power, time) | The driver is not sent the same command again until `inverter.resend_minutes` have passed |
+| `halt.json` | A price outage in progress: cause, when it started, when the last e-mail went out | No early second e-mail, the same outage keeps its start time, and `RECOVERED` reports its full length |
+| `average_mode_planner.json`, `average_mode_guard.json` | The quarter-hour average readings used to detect the meter's behaviour | A detected mode stays detected instead of falling back to "assumed" |
+| `peak_warning.json` | When the last peak warning was sent | No second warning for the same quarter-hour, and the minimum interval still applies |
+| `peak_alert.json` | The last month-peak e-mail | No repeat e-mail for an old peak |
+
+A missing or damaged file is treated as "nothing saved": the planner starts fresh and never stops
+because of it. Deleting a file is safe; the worst case is one repeated e-mail or command. Everything
+else starts fresh, for example the guard's shaving state, which is re-derived from the meter on the
+next evaluation.
 
 ## Energy history
 
@@ -486,6 +515,9 @@ What the framework does for you:
 - It runs your code in an executor thread, so blocking network calls are fine.
 - It gives each call 10 seconds, then treats it as failed and logs it.
 - It marks decisions `soc_stubbed` while `SOC_IS_STUB` is true.
+- It calls `send` only when the command changed or `inverter.resend_minutes` have passed since the
+  last accepted send (remembered in `state/last_command.json`, also across restarts and shared by
+  the planner and the guard). A failed send is not remembered. The `logging` driver is not affected.
 - If the driver file is missing, the HA log shows an error every cycle, nothing is sent and decisions
   carry `degraded=inverter_driver_unavailable`. Adding the file needs no restart. After editing an
   existing driver, restart Home Assistant.
@@ -501,10 +533,11 @@ Before you enable a real driver:
       same time from different threads.
 - [ ] Set your own network timeouts. After 10 seconds the call is abandoned, but its thread keeps
       running until it returns.
-- [ ] Make commands idempotent. `send("discharge", 2.5)` may arrive again unchanged. If your inverter
-      needs a periodic re-send to hold its mode, the planner's every-cycle calls provide it; the
-      guard's change-only calls do not.
-- [ ] Decide what the inverter does when commands stop. A failed `send` is only logged, not retried.
+- [ ] Make commands idempotent. `send("discharge", 2.5)` may arrive again unchanged, after
+      `inverter.resend_minutes` (default 15). If your inverter needs a faster refresh to hold its
+      mode, lower that setting; `0` sends on every planner cycle and every guard call.
+- [ ] Decide what the inverter does when commands stop. A failed `send` is logged and is not counted
+      as sent, so the next decision tries it again.
 - [ ] Do not combine a real driver with the capacity-tariff guard yet. The guard reads net grid
       offtake, which its own discharge lowers, and the commanded power is not added back, so the
       shave would switch on and off repeatedly.

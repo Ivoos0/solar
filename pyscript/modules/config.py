@@ -39,6 +39,7 @@ _MAP = [
      "peak_warning_min_interval_minutes"),
     ("alerts", "peak_warning_ticks", "peak_warning_ticks"),
     ("inverter", "type", "inverter_type"),
+    ("inverter", "resend_minutes", "inverter_resend_minutes"),
     (None, "timezone", "timezone"),
     ("capacity_tariff", "enabled", "capacity_enabled"),
     ("capacity_tariff", "billing_floor_kw", "billing_floor_kw"),
@@ -130,6 +131,7 @@ class SiteConfig:
     usage_grouping: str = "same_weekday"
     usage_recency_weighting: str = "linear"
     inverter_type: str = "logging"
+    inverter_resend_minutes: int = 15
     # Home Assistant entities. Deliberately NOT in fingerprint(): they name
     # where data is read from, not what a block means.
     price_entity: str = "sensor.entso_prices_average_electricity_price"
@@ -202,6 +204,10 @@ def _errors(cfg):
         bad("inverter.type", cfg.inverter_type,
             "must be a driver name: lowercase letters, digits, underscore "
             "(it selects pyscript/modules/inverter_<type>.py)")
+    if (isinstance(cfg.inverter_resend_minutes, float)
+            or cfg.inverter_resend_minutes < 0):
+        bad("inverter.resend_minutes", cfg.inverter_resend_minutes,
+            "must be an integer >= 0 (0 = send every call)")
     for attr, label in _ENTITY_FIELDS:
         v = getattr(cfg, attr)
         if not isinstance(v, str) or not re.fullmatch(

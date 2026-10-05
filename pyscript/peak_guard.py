@@ -167,6 +167,12 @@ battery = capacity = decision = rules = site_config = None
 # ---- constants (tests point these at tmp_path / patch them) ----------------
 CONFIG_PATH = "/config/battery_planner/user_config.yaml"
 CORE_DIR = "/config/pyscript/modules"
+# Restart-surviving state (written atomically; a missing or corrupt file means
+# a fresh start): the detector's archived samples and the last peak warning.
+# inverter.apply keeps last_command.json here too (shared with the planner).
+STATE_DIR = "/config/battery_planner/state/"
+MODE_STATE_PATH = "/config/battery_planner/state/average_mode_guard.json"
+WARN_STATE_PATH = "/config/battery_planner/state/peak_warning.json"
 # Dependency order (rules needs capacity). Deliberately narrow: never
 # trajectory, prices, series or cache (FR-051). inverter is NOT in this list.
 CORE_MODULES = ("config", "capacity", "battery", "rules", "decision")
@@ -211,7 +217,10 @@ _flags = {
     "stale_window": None,  # window a stale-average WARNING was already logged
     "stale_info_window": None,  # window a low stale-average INFO was logged
     "stale_episode": False,  # a stale average was seen and has not refreshed yet
-    "peak_warn": {},       # capacity.peak_warning_due memory (in memory only)
+    "peak_warn": {},       # capacity.peak_warning_due memory
+    "warn_loaded": False,  # peak_warning.json read once per process
+    "mode_loaded": False,  # average_mode_guard.json read once per process
+    "mode_saved": None,    # what that file holds (skip equal writes)
 }
 
 
@@ -269,6 +278,35 @@ def _ensure_core():
                                    mods["decision"])
     rules, site_config = mods["rules"], mods["config"]
     _core_ready = True
+
+
+@pyscript_executor  # noqa: F821
+def _read_json(path):
+    """Decoded JSON, or None when missing or unreadable."""
+    import json
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return None
+
+
+@pyscript_executor  # noqa: F821
+def _write_json_atomic(path, payload):
+    """Temp file, fsync, rename over the target. Error text or None."""
+    import json
+    import os
+    tmp = path + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except Exception as exc:
+        return repr(exc)
+    return None
 
 
 @pyscript_executor  # noqa: F821
@@ -401,12 +439,22 @@ def _predictive_warning(cfg, grid, shave, vetoed, batt, charge_is_stub, at):
         if not cfg.peak_warning_enabled:
             return
         mem = _flags["peak_warn"]
+        wall = _now(cfg)
+        if not _flags["warn_loaded"]:
+            _flags["warn_loaded"] = True
+            capacity.peak_warning_restore(
+                mem, _read_json(WARN_STATE_PATH), wall, at)
         if not capacity.peak_warning_due(mem, grid, cfg, at):
             return
         title, message = capacity.peak_warning_message(
             grid, cfg, _guard_note(cfg, shave, vetoed, batt, charge_is_stub))
         if _notify(cfg, title, message):
             capacity.peak_warning_sent(mem, grid, at)
+            err = _write_json_atomic(
+                WARN_STATE_PATH, capacity.peak_warning_to_data(mem, wall))
+            if err:
+                _warn("peak_warning_state",
+                      "cannot save the peak warning time: %s" % (err,))
     except Exception as exc:
         _warn("peak_warning", "predictive warning failed: %r" % (exc,))
 
@@ -424,17 +472,48 @@ def _set_shaving_entity(on, window_start, shave_kw):
 
 # ---- average-mode detection buffer -----------------------------------------
 
+def _load_detector_state():
+    """Put back the archived samples of an earlier process (once)."""
+    if _flags["mode_loaded"]:
+        return
+    _flags["mode_loaded"] = True
+    loaded = capacity.samples_from_data(
+        _read_json(MODE_STATE_PATH), MAX_HISTORY_SAMPLES)
+    _flags["mode_saved"] = capacity.samples_to_data(loaded)
+    combined = loaded + _history
+    _history.clear()
+    for sample in combined:
+        _history.append(sample)
+    while len(_history) > MAX_HISTORY_SAMPLES:
+        _history.pop(0)
+
+
+def _save_detector_state():
+    """Persist the archive (it only changes at a window boundary)."""
+    data = capacity.samples_to_data(_history)
+    if data == _flags["mode_saved"]:
+        return
+    err = _write_json_atomic(MODE_STATE_PATH, data)
+    if err:
+        _warn("mode_state", "cannot save the average-mode state: %s" % (err,))
+    else:
+        _flags["mode_saved"] = data
+
+
 def _archive_window():
+    _load_detector_state()
     for sample in _samples:
         _history.append(sample)
     while len(_history) > MAX_HISTORY_SAMPLES:
         _history.pop(0)
     _samples.clear()
+    _save_detector_state()
 
 
 def _roll_window(now):
     """Discard the per-window buffer at a boundary; return the window start."""
     start = capacity.window_start_of(now)
+    _load_detector_state()             # before the first verdict is drawn
     if _flags["window"] != start:
         _archive_window()              # buffer discarded at the boundary
         _flags["window"] = start
@@ -488,7 +567,9 @@ def _make_record(now, cfg, grid, batt, verdict, took_ms, action, power_kw,
 def _emit(action, power_kw, record, cfg):
     if not inverter.apply(action, power_kw, record,
                           inverter_type=cfg.inverter_type,
-                          driver_dir=CORE_DIR):
+                          driver_dir=CORE_DIR,
+                          resend_minutes=cfg.inverter_resend_minutes,
+                          state_dir=STATE_DIR):
         _warn("apply", "inverter.apply did not record the %s decision" % action)
 
 

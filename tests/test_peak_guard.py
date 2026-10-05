@@ -173,7 +173,13 @@ def _write_config(path, mode="running", extra=""):
 def make_guard(monkeypatch, tmp_path):
     saved_bare = {n: sys.modules.get(n) for n in _CORE_NAMES}
 
-    def build(mode="running", extra=""):
+    builds = []
+
+    def build(mode="running", extra="", state=None):
+        # Each guard gets its own state dir (as a separate install would);
+        # pass the same `state` name to simulate a restart of one guard.
+        builds.append(1)
+        state = state or ("state%d" % len(builds))
         cfg_path = tmp_path / "user_config.yaml"
         _write_config(cfg_path, mode, extra)
         triggers = []
@@ -194,6 +200,12 @@ def make_guard(monkeypatch, tmp_path):
         clock = [1000.0]
         guard = Guard(mod, st, log, inv, clock, triggers)
         monkeypatch.setattr(mod, "CONFIG_PATH", str(cfg_path))
+        state_dir = tmp_path / state
+        monkeypatch.setattr(mod, "STATE_DIR", str(state_dir) + "/")
+        monkeypatch.setattr(mod, "MODE_STATE_PATH",
+                            str(state_dir / "average_mode_guard.json"))
+        monkeypatch.setattr(mod, "WARN_STATE_PATH",
+                            str(state_dir / "peak_warning.json"))
         monkeypatch.setattr(mod, "inverter", inv)
         monkeypatch.setattr(mod, "_monotonic", lambda: clock[0])
         monkeypatch.setattr(mod, "_now", lambda cfg: guard.now)
@@ -1016,6 +1028,9 @@ assert not any(n in sys.modules for n in ("config", "capacity", "decision"))
     "battery:\n  capacity_kwh: 10.0\nalerts:\n  address: a@b.c\n"
     "capacity_tariff:\n  quarter_hour_average_mode: running\n")
 mod.CONFIG_PATH = str(tmp / "user_config.yaml")
+mod.STATE_DIR = str(tmp / "state") + "/"
+mod.MODE_STATE_PATH = str(tmp / "state" / "average_mode_guard.json")
+mod.WARN_STATE_PATH = str(tmp / "state" / "peak_warning.json")
 mod.CORE_DIR = str(modules)
 mod._now = lambda cfg: datetime(2026, 9, 30, 12, 7, 30, tzinfo=ZoneInfo("Europe/Brussels"))
 builtins.state.d.update({
@@ -1117,7 +1132,9 @@ def test_guard_passes_configured_type_and_driver_dir_to_the_boundary(make_guard)
     g.tick(**PEAK_ARGS)
     assert g.inv.reads and g.inv.reads[0] == ("alphaess", str(MODULES))
     assert g.inv.kwargs == {"inverter_type": "alphaess",
-                            "driver_dir": str(MODULES)}
+                            "driver_dir": str(MODULES),
+                            "resend_minutes": 15,
+                            "state_dir": g.mod.STATE_DIR}
 
 
 def test_guard_defaults_to_the_logging_driver(make_guard):

@@ -93,8 +93,16 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
   applied (marker NOGRID) when capacity is enabled but the grid sensors are
   unreadable, because rules.decide with no grid state would grid-charge with no
   budget cap.
-* Average-mode samples for capacity.detect_average_mode are kept in memory
-  only; after a restart the mode is "assumed" until enough windows are seen.
+* State that survives a restart (all under <config>/battery_planner/state/,
+  written atomically, read once per process in @pyscript_executor helpers; a
+  missing or corrupt file means a fresh start, never an error):
+    halt.json                  price-outage halt (cause, entered_at,
+                               last_alert_at): a restart during an outage
+                               neither re-alerts early nor loses the outage
+    average_mode_planner.json  the detector samples that can still vote, so
+                               a detected quarter-hour mode stays "detected"
+    peak_alert.json            last month-peak e-mail (see _check_peak_alert)
+    last_command.json          written by inverter.apply (command de-dup)
 """
 import hashlib
 import json
@@ -112,7 +120,10 @@ CONFIG_PATH = "/config/battery_planner/user_config.yaml"
 CACHE_DIR = "/config/battery_planner/cache/"
 DECISIONS_LOG_DIR = inverter.DEFAULT_LOG_DIR
 HISTORY_DIR = "/config/battery_planner/history/"
+STATE_DIR = "/config/battery_planner/state/"
 PEAK_ALERT_PATH = "/config/battery_planner/state/peak_alert.json"
+HALT_STATE_PATH = "/config/battery_planner/state/halt.json"
+MODE_STATE_PATH = "/config/battery_planner/state/average_mode_planner.json"
 CORE_DIR = "/config/pyscript/modules"
 # Dependency order (rules needs capacity). inverter is NOT in this list.
 CORE_MODULES = ("config", "prices", "series", "battery", "trajectory",
@@ -148,9 +159,12 @@ _config = None
 _config_mtime = None
 _config_error = None
 _halt_state = None
+_halt_loaded = False                  # halt.json read once per process
 _forecast_failures = 0
 _refresh_calls = []
 _mode_samples = []
+_mode_loaded = False                  # average_mode_planner.json read once
+_mode_saved = None                    # what that file holds (skip equal writes)
 _hist_last = None                     # history.Snapshot at the last boundary
 _hist_loaded = False                  # last_snapshot.json read once per process
 _hist_warned = {}                     # warning kind -> last time logged
@@ -436,23 +450,70 @@ def _send_alert(cfg, cause, entered):
             cfg.realert_minutes))
 
 
+def _save_halt():
+    """Persist the halt state (or "not halted") so a restart can resume it."""
+    h = _halt_state
+    if h is None:
+        payload = {"active": False}
+    else:
+        payload = {
+            "active": True, "cause": h.cause,
+            "entered_at": h.entered_at.isoformat(),
+            "last_alert_at": (h.last_alert_at.isoformat()
+                              if h.last_alert_at is not None else None)}
+    err = _write_json_atomic(HALT_STATE_PATH, payload)
+    if err:
+        log.error(f"battery_planner: cannot save halt state: {err}")  # noqa: F821
+
+
+def _load_halt():
+    """Resume a halt that was running when the process stopped (once).
+
+    Anything unreadable counts as "not halted"; the next outage then starts
+    fresh. An outage that ended while we were down is closed by _recover.
+    """
+    global _halt_state, _halt_loaded
+    if _halt_loaded:
+        return
+    _halt_loaded = True
+    if _halt_state is not None:
+        return
+    data = _read_json(HALT_STATE_PATH)
+    if not isinstance(data, dict) or data.get("active") is not True:
+        return
+    try:
+        entered = datetime.fromisoformat(data["entered_at"])
+        raw = data.get("last_alert_at")
+        last = None if raw is None else datetime.fromisoformat(raw)
+        if entered.tzinfo is None or (last is not None and last.tzinfo is None):
+            return
+        _halt_state = decision.HaltState(
+            True, decision.one_line(data["cause"]), entered, last)
+    except Exception:
+        _halt_state = None
+
+
 def _halt(cfg, local, cause):
     """Price outage: no decision; alert on entry, then per realert_minutes."""
     global _halt_state
+    _load_halt()
     cause = decision.one_line(cause)     # may embed an exception repr
     if _halt_state is None:
         log.error(f"battery_planner: HALT, {cause}")  # noqa: F821
         _halt_state = decision.HaltState(True, cause, local, None)
+        _save_halt()
     last = _halt_state.last_alert_at
     if last is None or (local - last).total_seconds() >= cfg.realert_minutes * 60:
         if _send_alert(cfg, _halt_state.cause, _halt_state.entered_at):
             _halt_state = decision.HaltState(
                 True, _halt_state.cause, _halt_state.entered_at, local)
+            _save_halt()
     _log_line(decision.format_halt(_halt_state, local), local)
 
 
 def _recover(local):
     global _halt_state
+    _load_halt()
     if _halt_state is None:
         return
     entered = _halt_state.entered_at
@@ -464,6 +525,7 @@ def _recover(local):
         "halted_for=%dm" % minutes]), local)
     log.info("battery_planner: prices recovered, resuming decisions")  # noqa: F821
     _halt_state = None
+    _save_halt()
 
 
 # ---- month-peak notice ---------------------------------------------------------
@@ -813,6 +875,32 @@ def _own_grid_charge_kw(cfg, local):
     return kw
 
 
+def _load_mode_samples():
+    """Restore the detector samples saved by an earlier process (once)."""
+    global _mode_samples, _mode_loaded, _mode_saved
+    if _mode_loaded:
+        return
+    _mode_loaded = True
+    loaded = capacity.samples_from_data(
+        _read_json(MODE_STATE_PATH), MAX_MODE_SAMPLES)
+    _mode_saved = capacity.samples_to_data(loaded)
+    _mode_samples = loaded + _mode_samples
+
+
+def _save_mode_samples():
+    """Persist the samples that can still vote; skipped when unchanged."""
+    global _mode_saved
+    data = capacity.samples_to_data(_mode_samples)
+    if data == _mode_saved:
+        return
+    err = _write_json_atomic(MODE_STATE_PATH, data)
+    if err:
+        log.error(  # noqa: F821
+            f"battery_planner: cannot save average-mode state: {err}")
+    else:
+        _mode_saved = data
+
+
 def _grid_state(cfg, local):
     """capacity.GridState, or None (capacity off, or a sensor is unreadable)."""
     global _mode_samples
@@ -824,9 +912,11 @@ def _grid_state(cfg, local):
     if offtake is None or reported is None or peak is None:
         return None
     start = capacity.window_start_of(local)
+    _load_mode_samples()
     _mode_samples.append(capacity.Sample(
         start, (local - start).total_seconds() / 60.0, reported, offtake))
     _mode_samples = _mode_samples[-MAX_MODE_SAMPLES:]
+    _save_mode_samples()
     verdict = capacity.detect_average_mode(_mode_samples, cfg)
     return capacity.build_state(
         offtake, 0.0, local, peak, cfg, reported_average_kw=reported,
@@ -919,7 +1009,9 @@ def _cycle(now):
     if not inverter.apply(d.action, d.target_power_kw, record,
                           log_dir=DECISIONS_LOG_DIR,
                           inverter_type=cfg.inverter_type,
-                          driver_dir=CORE_DIR):
+                          driver_dir=CORE_DIR,
+                          resend_minutes=cfg.inverter_resend_minutes,
+                          state_dir=STATE_DIR):
         log.error("battery_planner: decision could not be recorded")  # noqa: F821
     else:
         _remember_grid_charge(d, local)

@@ -165,5 +165,10 @@ inverter:
                                    #   REAL COMMANDS to your inverter. You are responsible
                                    #   for the driver you enable. Lowercase letters,
                                    #   digits, underscore.
+  resend_minutes: 15               # the driver gets an UNCHANGED command again only after this
+                                   # many minutes (whole number, 0 or more). A changed command
+                                   # (other action, or power differing by 0.01 kW) is sent at once.
+                                   # 0 = send on every call. The decision log line is written
+                                   # every cycle regardless. No effect with the logging driver.
 
 timezone: Europe/Brussels
