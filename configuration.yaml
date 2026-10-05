@@ -44,7 +44,7 @@ rest:
 #   sensor.slimmelezer_maandpiek                         1-0:1.6.0  this month's peak (level to defend)
 #   sensor.slimmelezer_gemiddelde_maandpiek_13_maanden   13-month average (what the fee is billed on)
 #   sensor.slimmelezer_power_consumed                    netted total
-# No utility_meter / max helpers are needed: the meter's own registers are
+# No helper sensors are needed: the meter's own registers are
 # authoritative. Do not add them.
 #
 # Whether the quarter-hour sensor accumulates (energy so far / full 15 min) or
