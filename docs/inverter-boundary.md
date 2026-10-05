@@ -5,8 +5,8 @@ The planner and the peak guard never talk to an inverter directly. They call
 the intent to a driver file, `pyscript/modules/inverter_<type>.py`, selected
 with `inverter.type`. The default `logging` driver records the intent and
 transmits nothing. Other types are drop-in files; none is shipped. The
-walkthrough for writing one is in the README under
-[Adding an inverter driver](../README.md#adding-an-inverter-driver); this page
+walkthrough for writing one is in
+[Adding an inverter driver](inverter-drivers.md#adding-an-inverter-driver); this page
 is the exact interface and rules.
 
 The boundary expresses intent, not transport. No register numbers, connection
@@ -237,7 +237,7 @@ otherwise lowercase letters, digits and underscore), `inverter.dry_run`
 the README settings table).
 
 A non-`logging` driver sends real commands and is your responsibility. The
-README checklist covers what the peak guard already handles (it adds the
+[driver checklist](inverter-drivers.md#adding-an-inverter-driver) covers what the peak guard already handles (it adds the
 commanded discharge back to the net offtake it reads, so a shave does not flip
 on and off; it refreshes a `last_beat` attribute on
 `pyscript.peak_guard_shaving` that the planner requires to be at most 3 guard
