@@ -161,7 +161,7 @@ GUARD_FLAG_ENTITY = "pyscript.peak_guard_shaving"   # set by the peak guard
 # dead guard cannot clear a stuck "on").
 GUARD_BEAT_FACTOR = 3
 _BAD_STATES = (None, "", "unknown", "unavailable", "none", "None")
-# Entities the planner creates (state.set) once per cycle; see README, "Sensors".
+# Entities the planner creates (state.set) once per cycle; see docs/alerts-and-sensors.md, "Sensors".
 SENSOR_ACTION = "sensor.battery_planner_action"
 SENSOR_BUDGET = "sensor.battery_planner_budget"
 SENSOR_HALTED = "binary_sensor.battery_planner_halted"

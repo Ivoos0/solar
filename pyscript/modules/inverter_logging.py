@@ -41,8 +41,7 @@ repeatedly, so it has to be a real release, not a "do nothing for now".
 Copy this file to inverter_<name>.py and set `inverter.type: <name>`.
 Drivers run as ordinary CPython in an executor thread (blocking I/O is fine,
 set your own network timeouts), never on the Home Assistant event loop. They
-must not use pyscript globals (log, state, ...). See README, "Adding an
-inverter".
+must not use pyscript globals (log, state, ...). See docs/inverter-drivers.md.
 """
 
 SOC_IS_STUB = True

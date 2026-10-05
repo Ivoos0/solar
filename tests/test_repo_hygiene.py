@@ -104,7 +104,7 @@ def test_secrets_example_covers_every_secret_configuration_yaml_uses():
     assert not missing, missing
 
 
-# Keys used only by the optional AlphaESS example in the README, not by
+# Keys used only by the optional AlphaESS example in docs/alphaess.md, not by
 # configuration.yaml. They must be documented there and be placeholders.
 README_ONLY_SECRETS = {"alphaess_modbus_host_ip", "alphaess_modbus_host_port",
                        "alphaess_modbus_slaveId"}
@@ -119,9 +119,9 @@ def test_secrets_example_has_no_unused_keys():
 
 
 def test_readme_only_secrets_are_used_in_the_readme_example():
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    example = (ROOT / "docs" / "alphaess.md").read_text(encoding="utf-8")
     for key in README_ONLY_SECRETS:
-        assert "!secret %s" % key in readme, key
+        assert "!secret %s" % key in example, key
         assert key not in CONFIG_YAML, key     # else they are not README-only
     assert not README_ONLY_SECRETS & _referenced_secrets()
 

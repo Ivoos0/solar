@@ -1,5 +1,16 @@
 # Decision log format
 
+The format of the decision log: one line per planner or peak guard evaluation. Back to the [README](../README.md).
+
+**Contents**
+
+- [Format](#format)
+- [Fields](#fields)
+- [Vetoes](#vetoes)
+- [Degraded markers](#degraded-markers)
+- [HALT record](#halt-record)
+- [Labels in the decision log](#labels-in-the-decision-log)
+
 The planner and the peak guard write one line per evaluation to
 `<ha-config>/battery_planner/decisions-YYYY-MM-DD.log`. Nothing else is
 recorded about what the planner decided, so the line carries everything needed
@@ -10,10 +21,8 @@ the daily cleanup at 03:30 local time.
 
 The decision is written by the inverter boundary before any driver is called
 (see [inverter-boundary.md](inverter-boundary.md)). The labels `V1` to `V7` and
-`S0` to `S6` are explained in the README under
-[Labels in the decision log](../README.md#labels-in-the-decision-log). There is
-no `S2`: storing surplus solar is the inverter's own default, so no rule is
-needed, and the other labels keep their numbers.
+`S0` to `S6` are explained under
+[Labels in the decision log](#labels-in-the-decision-log) below.
 
 ## Format
 
@@ -85,18 +94,11 @@ Several suppressed proposals are separate entries, for example
 `V4(suppressed S1 charge),V4(suppressed S5 charge)`. A record that shows a veto
 always also shows the selector that finally fired.
 
-| Label | Forbids | Fires when |
-|---|---|---|
-| V1 | export | Charge is at or below `battery.reserve_percent` |
-| V2 | export | The injection price is negative |
-| V3 | grid charging | No capacity budget is left in this quarter-hour |
-| V4 | grid charging, export | There is no usable usage history |
-| V5 | discharge | The battery is empty (0 % charge) |
-| V6 | grid charging, export | There is no solar forecast (`solar_zero_fallback`, no usable cache) |
-| V7 | grid charging, export | No battery reading: `battery.soc_sensor` is set but unreadable (`soc_unavailable`). V1 and V5 need the reading and are skipped, so the peak guard may still shave; V7 forbids neither discharge nor peak shaving |
+What each label forbids, and when it fires, is listed under
+[Labels in the decision log](#labels-in-the-decision-log).
 
 V4 fires on every cycle until the energy history holds a known household load
-(see the README section "Energy history"), so it appears bare on most records
+(see [Energy history](history-and-reports.md#energy-history)), so it appears bare on most records
 until then, and as `V4(suppressed ...)` whenever a price-driven selector (S1 to
 S5) would have acted. V4 does not stop the S0 peak shave, and neither does V1:
 only V5 can stop a peak shave, shown as `V5(suppressed S0 discharge)`.
@@ -117,7 +119,7 @@ only V5 can stop a peak shave, shown as `V5(suppressed S0 discharge)`.
 | `usage_samples=N` | The usage profile rests on N days of history, fewer than `usage.history_weeks` x 7 |
 | `solar_ratio=0.83` | The forecast of the current or next block that has solar was multiplied by this ratio, measured from your own history. Absent when it rounds to 1.00 |
 | `solar_ratio_configured=0.80` | The same with `solar.calibration_default`, used while the history is too short or too thin around that time of day. Absent at 1.00 |
-| `usage_history_unavailable`, `grid_sensors_unavailable`, `inverter_driver_unavailable`, `inverter_read_failed` | See the marker table in the README under "Check that it works" |
+| `usage_history_unavailable`, `grid_sensors_unavailable`, `inverter_driver_unavailable`, `inverter_read_failed` | See the marker table under [Check that it works](troubleshooting.md#check-that-it-works) |
 
 The daily report counts the two `solar_ratio` markers under their name without
 the value.
@@ -133,3 +135,38 @@ When price data is missing no decision is produced, but the cycle is not silent:
 
 `alerted=none` means no e-mail was sent for this outage yet. `RECOVERED` and
 `SKIP` lines are written to the same file.
+
+## Labels in the decision log
+
+The decision log prints short labels for the rules and actions. These are the labels the log prints, and nothing else in the documentation uses them: elsewhere the same
+rules are described in words. The field-by-field format of a log line, including the `degraded=`
+markers, is described in the sections above. A rule that forbids an action is called a veto and
+shows under `vetoes=`; an action the planner can pick is called a selector and shows under `selector=`.
+
+Vetoes:
+
+| Label | Forbids | When |
+|---|---|---|
+| V1 | export | Charge is at or below `battery.reserve_percent`. Only exporting to the grid is forbidden; peak shaving may still use charge below it |
+| V2 | export | The injection price is negative |
+| V3 | grid charging | No capacity budget is left in this quarter-hour |
+| V4 | grid charging, export | There is no usable usage history. Peak shaving (S0) is not affected |
+| V5 | discharge | The battery is empty (0 % charge). The planner cannot know your inverter's own minimum charge, so this is the only lower limit it applies to peak shaving |
+| V6 | grid charging, export | There is no solar forecast: it is missing or too old and there is no usable cached copy (`degraded=solar_zero_fallback`). Peak shaving (S0) is not affected. A stale but usable cached forecast does not trigger it |
+| V7 | grid charging, export | `battery.soc_sensor` is set but unreadable (`degraded=soc_unavailable`): there is no battery reading, so nothing is bought or exported. Peak shaving (S0) is not affected. V1 and V5 need a reading and are not checked meanwhile, so the peak guard may still shave. V7 forbids neither discharge nor peak shaving |
+
+Selectors, in the order they are tried:
+
+| Label | Action |
+|---|---|
+| S0 | Peak shave: discharge to the house when the quarter-hour is heading above the ceiling. Mostly relevant when the planner is holding energy back (see [Peak guard](how-it-works.md#peak-guard)) |
+| S1 | Charge from the grid while the consumption price is negative |
+| S3 | Export when the battery would otherwise overflow and now is the best injection price in the window |
+| S4 | Charge from the grid in the cheapest blocks when that is cheaper than importing later, ahead of the battery reaching the reserve. The comparison is the price now divided by `battery.round_trip_efficiency` against the average buying price (weighted by energy) of the blocks where the house would otherwise import. It needs usage history, like the other price-driven choices |
+| S5 | Charge from the grid when a later injection price, after round-trip losses, beats the price now |
+| S6 | Idle: nothing applies, so the planner cancels any forced mode and the inverter does what it does by default (see [What the planner does](how-it-works.md#what-the-planner-does)) |
+
+There is no S2, and the other labels keep their numbers. Storing surplus solar needs no rule: the inverter's own default does it. By default
+the inverter charges the battery from solar surplus until it is full and then exports, and drains it to
+serve the house until it is empty and then uses grid power. The planner only steps in when it wants
+something different (peak shaving, charging from the grid, exporting); the rest of the time it idles.

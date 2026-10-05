@@ -1,12 +1,23 @@
 # Inverter boundary
 
+The exact interface and rules between the planner, the peak guard and an inverter driver. Back to the [README](../README.md).
+
+**Contents**
+
+- [What the adapters call (`inverter.py`)](#what-the-adapters-call-inverterpy)
+- [What a driver implements (`inverter_<type>.py`)](#what-a-driver-implements-inverter_typepy)
+- [Rules](#rules)
+- [Plan-style drivers (service calls through Home Assistant)](#plan-style-drivers-service-calls-through-home-assistant)
+- [Settings](#settings)
+- [Adding an inverter](#adding-an-inverter)
+
 The planner and the peak guard never talk to an inverter directly. They call
 `pyscript/modules/inverter.py`, which writes the decision line and then hands
 the intent to a driver file, `pyscript/modules/inverter_<type>.py`, selected
 with `inverter.type`. The default `logging` driver records the intent and
 transmits nothing. Other types are drop-in files; none is shipped. The
-walkthrough for writing one is in the README under
-[Adding an inverter driver](../README.md#adding-an-inverter-driver); this page
+walkthrough for writing one is in
+[Adding an inverter driver](inverter-drivers.md#adding-an-inverter-driver); this page
 is the exact interface and rules.
 
 The boundary expresses intent, not transport. No register numbers, connection
@@ -234,10 +245,10 @@ instead of `send`. If `plan` exists it is used and `send` is ignored. Existing
 otherwise lowercase letters, digits and underscore), `inverter.dry_run`
 (default `false`; see above) and `inverter.resend_minutes`
 (the fallback resend time for drivers that declare no `COMMAND_HOLD_MINUTES`; see
-the README settings table).
+the [settings reference](configuration.md#settings-reference)).
 
 A non-`logging` driver sends real commands and is your responsibility. The
-README checklist covers what the peak guard already handles (it adds the
+[driver checklist](inverter-drivers.md#adding-an-inverter-driver) covers what the peak guard already handles (it adds the
 commanded discharge back to the net offtake it reads, so a shave does not flip
 on and off; it refreshes a `last_beat` attribute on
 `pyscript.peak_guard_shaving` that the planner requires to be at most 3 guard

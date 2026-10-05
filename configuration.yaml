@@ -71,8 +71,8 @@ rest:
 #
 # UNVERIFIED: the SMTP YAML platform may be deprecated in recent HA releases.
 # If Home Assistant reports it as unsupported, create the notifier through the
-# UI instead and put its service name in alerts.notify_service (README, "Alert
-# e-mail").
+# UI instead and put its service name in alerts.notify_service (docs/alerts-and-sensors.md,
+# "Alert e-mails").
 notify:
   - name: battery_alert            # must equal alerts.notify_service
     platform: smtp

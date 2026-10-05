@@ -53,8 +53,8 @@ battery:
                                 # percent (0..100). Without it the charge is the
                                 # driver's placeholder (50 % with the logging
                                 # driver). Set but unreadable: the planner holds
-                                # (no grid charging, no export). See the README,
-                                # section "AlphaESS inverter, read-only".
+                                # (no grid charging, no export). See
+                                # docs/alphaess.md.
   # power_sensor: sensor.alphaess_power_battery
                                 # OPTIONAL. Battery power, in W or kW (the unit
                                 # attribute is read). With it the grid charge
@@ -76,7 +76,7 @@ battery:
   round_trip_efficiency: 0.90   # gates arbitrage and the solar-hold decision
 
 # The roof (position, tilt, direction, kWp) is NOT configured here: it lives only
-# in forecast_solar_url in secrets.yaml. See README, Install step 5.
+# in forecast_solar_url in secrets.yaml. See docs/install.md, step 5.
 solar:
   forecast_entity: sensor.forecast_solar_estimate
                                 # The REST sensor from configuration.yaml that
@@ -85,7 +85,7 @@ solar:
                                 # States and set the real name here.
   forecast_attribute: watt_hours_period
                                 # attribute holding {timestamp: Wh} per period
-  # Solar calibration (see the README, section "Solar calibration"): the forecast
+  # Solar calibration (see docs/history-and-reports.md): the forecast
   # is often too high or too low for your roof, so it is multiplied by a ratio.
   # The ratio is measured from your own energy history and needs a counter under
   # history.sensors.solar. Until that history spans calibration_weeks weeks the
@@ -144,7 +144,7 @@ usage:
 # Counters must be CUMULATIVE energy in kWh (Wh and MWh are converted).
 # Several counters per quantity are summed (tariff 1 + tariff 2). Every list
 # is optional; an empty list means "not available" and that quantity is
-# recorded as null. See the README, section "Energy history".
+# recorded as null. See docs/history-and-reports.md.
 history:
   enabled: true
   sensors:
@@ -157,7 +157,7 @@ history:
     solar: []                   # PV production counter(s), e.g. from the inverter
     battery_charge: []          # energy into the battery
     battery_discharge: []       # energy out of the battery
-    # With the read-only AlphaESS setup in the README:
+    # With the read-only AlphaESS setup in docs/alphaess.md:
     # solar: [sensor.alphaess_total_energy_from_pv]
     # battery_charge: [sensor.alphaess_total_energy_charge_battery]
     # battery_discharge: [sensor.alphaess_total_energy_discharge_battery]
@@ -168,8 +168,8 @@ history:
 
 # Daily report: shortly after midnight the planner writes a readable summary
 # of the day that just ended (decisions and energy) next to the energy
-# history, as battery_planner/history/report-YYYY-MM-DD.md. See the README,
-# section "Daily report". Missing days of the last week are filled in; an
+# history, as battery_planner/history/report-YYYY-MM-DD.md. See
+# docs/history-and-reports.md. Missing days of the last week are filled in; an
 # existing report is never rewritten.
 report:
   enabled: true
@@ -177,7 +177,7 @@ report:
 # Sensors: once per planner cycle the planner publishes sensor.battery_planner_action,
 # sensor.battery_planner_budget and binary_sensor.battery_planner_halted in Home
 # Assistant. They are created by pyscript at run time (gone after a restart until the
-# next cycle, no unique id so not editable in the UI). See the README, section "Sensors".
+# next cycle, no unique id so not editable in the UI). See docs/alerts-and-sensors.md.
 sensors:
   enabled: true
 
