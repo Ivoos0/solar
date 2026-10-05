@@ -95,7 +95,8 @@ Do these in order.
      settings. After you change the URL, the planner picks up the new forecast at the next cycle once
      the sensor has refreshed (hourly, or restart Home Assistant). It serves the previous forecast
      only while the sensor is unavailable, and for at most `timing.solar_cache_stale_minutes`
-     (default 120).
+     (default 120). A sensor that stays available but stops refreshing is treated the same way:
+     once its data is older than that limit the planner ignores it.
    - `smtp_sender`, `smtp_password`, `smtp_recipient`: the sending account, its app password (not
      the normal password; Gmail needs 2-step verification first) and the address that receives alerts.
    - `smtp_server`, `smtp_port`, `smtp_encryption` (`starttls`, `tls` or `none`; ports 587, 465, 25):
@@ -269,7 +270,8 @@ Markers you can expect in `degraded=` on a fresh install:
 | `usage_history_unavailable` | No household usage history yet. Normal until a load source is configured; grid charging is blocked meanwhile |
 | `usage_samples=N` | The usage profile rests on fewer than `usage.history_weeks` x 7 days of history (N days). Disappears as history builds up |
 | `cache_age_solar=...`, `cache_age_usage=...` | A cached series was used, with its age |
-| `solar_zero_fallback` | The forecast was unavailable, so solar was treated as zero. The planner retries and does not halt |
+| `forecast_age=...` | The forecast was used, but the sensor last refreshed 75 minutes or more ago (a normal hourly refresh keeps it under that) |
+| `solar_zero_fallback` | The forecast was unavailable (or older than `timing.solar_cache_stale_minutes`), so solar was treated as zero. The planner retries and does not halt |
 | `grid_sensors_unavailable` | Capacity logic is on but the grid sensors are unreadable. Grid charging is suppressed |
 | `inverter_driver_unavailable`, `inverter_read_failed` | The configured driver is missing or its charge reading failed |
 
@@ -284,6 +286,7 @@ materially, is blocked or stops, not once per 30-second tick.
 | `ImportError` in the HA log | `allow_all_imports: true` is missing | Add it to the `pyscript:` block |
 | HA log warns about blocking I/O | A file operation ran on the event loop | It must use `@pyscript_executor` |
 | Forecast always zero | The REST sensor is failing | Check `forecast_solar_url` and the forecast.solar free-tier rate limit |
+| `forecast_age=...` on records, or a HA log warning "forecast sensor ... has not refreshed for ..." | The forecast sensor is not refreshing hourly. Past `timing.solar_cache_stale_minutes` the planner ignores its data and uses the cached series, or zero solar | Check the sensor's last updated time in Developer Tools -> States, the forecast.solar rate limit, and that `scan_interval` in `configuration.yaml` is still 3600 |
 | Constant HALT with "attribute prices missing or empty on ..." | `prices.entity` or `prices.attribute` does not match your install | Open the entity in Developer Tools -> States and copy the sensor and attribute name into `user_config.yaml` |
 | `peak_guard: ... not refreshed since window ...` | The quarter-hour average sensor has not published since this window began | At INFO level with a low value this is normal for a quiet house. At WARNING level with a high average and an old timestamp, the meter or its link is stuck and the guard is doing nothing |
 | Config edits have no effect | You edited the repository copy | Edit `<ha-config>/battery_planner/user_config.yaml` and restart |

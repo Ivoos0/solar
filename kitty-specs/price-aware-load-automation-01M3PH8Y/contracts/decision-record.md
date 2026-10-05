@@ -46,7 +46,7 @@ Every field appears in **every** record. An inapplicable value is written explic
 | `vetoes` | comma-separated \| `none` | FR-028 — a veto that suppressed a proposal, with what it suppressed |
 | `selector` | `S0`–`S6` | Which one fired |
 | `why` | quoted free text | The values that made the condition true |
-| `degraded` | comma-separated \| `none` | FR-027 — `soc_stubbed`, `solar_zero_fallback`, `cache_age_solar=3h12m`, `usage_samples=N` |
+| `degraded` | comma-separated \| `none` | FR-027 — `soc_stubbed`, `solar_zero_fallback`, `cache_age_solar=3h12m`, `forecast_age=1h20m` (forecast used but its sensor stamp is 75 minutes or more old; a stamp older than `timing.solar_cache_stale_minutes` counts as a failed forecast instead), `usage_samples=N` |
 | `source` | `planner` \| `guard` | Which loop produced the record; always the last field |
 
 **Absent values.** When capacity handling is off, `avg`, `ceiling` and `budget` render the literal `n/a`; when the current block has no market price, `cons` and `inj` render `n/a`; the peak guard has no trajectory, so its `solar_rem`, `usage_rem` and `spill` render `n/a` too. Free-text parts (each `vetoes`/`degraded` entry, the HALT `cause`) may not contain `|` or a line break, and numbers must be finite; a record violating this is rejected (ValueError) rather than written. `n/a` is an explicit value, never a blank and never confusable with `0.00kW`.

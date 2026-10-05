@@ -43,11 +43,20 @@ _INJECTED = ("pyscript_executor", "time_trigger", "task_unique", "state",
              "service", "log", "task")
 
 
+class StateVal(str):
+    """What pyscript's state.get() returns: the state string carrying the
+    virtual last_reported / last_updated attributes (getattr() strips them)."""
+
+
 class FakeState:
     def __init__(self):
         self.data = {}
 
-    def set(self, entity, value=None, attrs=None):
+    def set(self, entity, value=None, attrs=None, **stamps):
+        if stamps:
+            value = StateVal(value)
+            for k, v in stamps.items():
+                setattr(value, k, v)
         self.data[entity] = (value, dict(attrs or {}))
 
     def drop(self, entity):
@@ -1394,3 +1403,141 @@ def test_real_driver_without_own_correction_would_oscillate(env):
         g.running_average_kw, g.month_peak_kw, g.is_restored)
     cfg = env.mod._config
     assert cap.budget_kw(naive, cfg) < cap.budget_kw(g, cfg)
+
+
+# ---- forecast sensor age ------------------------------------------------------------
+
+def _forecast_stamped(env, **stamps):
+    env.state.set(FORECAST_ENTITY, "12.3",
+                  {FORECAST_ATTRIBUTE: forecast_payload()}, **stamps)
+
+
+def _age_warnings(env):
+    return [w for w in env.log.by_level["warning"] if "forecast sensor" in w]
+
+
+def _degraded(env):
+    return fields_of(env.decisions()[-1])["degraded"]
+
+
+def test_fresh_forecast_stamp_adds_no_marker(env):
+    _forecast_stamped(env, last_reported=T0 - timedelta(minutes=20))
+    env.run(T0)
+    assert "forecast_age" not in _degraded(env)
+    assert "solar_zero_fallback" not in _degraded(env)
+
+
+def test_forecast_marker_threshold_is_inclusive_at_75(env):
+    _forecast_stamped(env, last_reported=T0 - timedelta(minutes=74))
+    env.run(T0)
+    assert "forecast_age" not in _degraded(env)
+    _forecast_stamped(env, last_reported=T0 + STEP - timedelta(minutes=75))
+    env.run(T0 + STEP)
+    assert "forecast_age=1h15m" in _degraded(env)
+
+
+def test_forecast_80_minutes_old_is_used_and_marked(env):
+    _forecast_stamped(env, last_reported=T0 - timedelta(minutes=80))
+    env.run(T0)
+    assert "forecast_age=1h20m" in _degraded(env)
+    assert "solar_zero_fallback" not in _degraded(env)
+    assert (env.cache_dir / "solar.json").exists()        # the payload was used
+    assert env.service.of("homeassistant", "update_entity") == []
+    assert _age_warnings(env) == []
+
+
+def test_forecast_older_than_limit_counts_as_failed_zero_fallback(env):
+    _forecast_stamped(env, last_reported=T0 - timedelta(hours=3))
+    env.run(T0)
+    degraded = _degraded(env)
+    assert "solar_zero_fallback" in degraded
+    assert "forecast_age" not in degraded
+    assert not (env.cache_dir / "solar.json").exists()    # old payload unused
+    warnings = _age_warnings(env)
+    assert len(warnings) == 1
+    assert FORECAST_ENTITY in warnings[0] and "3h0m" in warnings[0]
+    env.run(T0 + STEP)                                    # 2nd failure: nudge
+    assert len(env.service.of("homeassistant", "update_entity")) == 1
+    assert len(_age_warnings(env)) == 1          # rate limited
+    env.run(T0 + 2 * STEP)                                # bounded spacing
+    assert len(env.service.of("homeassistant", "update_entity")) == 1
+
+
+def test_limit_is_exclusive_and_follows_config(env):
+    _forecast_stamped(env, last_reported=T0 - timedelta(minutes=120))
+    env.run(T0)
+    assert "forecast_age=2h0m" in _degraded(env)          # == limit: still used
+    env.write_config("timing:\n  solar_cache_stale_minutes: 90\n")
+    _forecast_stamped(env, last_reported=T0 + STEP - timedelta(minutes=91))
+    env.run(T0 + STEP)
+    assert "forecast_age" not in _degraded(env)
+
+
+def test_stale_forecast_uses_cached_series_with_its_age(env):
+    env.run(T0)                                           # builds the cache
+    _forecast_stamped(env, last_reported=T0 + STEP - timedelta(hours=3))
+    env.run(T0 + STEP)
+    degraded = _degraded(env)
+    assert "cache_age_solar=5m" in degraded
+    assert "solar_zero_fallback" not in degraded
+    assert "forecast_age" not in degraded
+
+
+def test_old_payload_is_not_used_even_if_it_differs(env):
+    env.run(T0)
+    changed = forecast_payload()
+    changed[next(iter(changed))] = 9000
+    env.state.set(FORECAST_ENTITY, "12.3", {FORECAST_ATTRIBUTE: changed},
+                  last_reported=T0 + STEP - timedelta(hours=3))
+    env.run(T0 + STEP)
+    data = (env.cache_dir / "solar.json").read_text()
+    assert "9000" not in data and "9.0" not in data
+    assert "cache_age_solar=5m" in _degraded(env)         # not rebuilt
+
+
+def test_no_stamp_keeps_old_behaviour(env):
+    env.run(T0)                                           # fixture: plain str
+    assert "forecast_age" not in _degraded(env)
+    assert _age_warnings(env) == []
+    _forecast_stamped(env, last_reported=None, last_updated="garbage")
+    env.run(T0 + STEP)
+    assert "forecast_age" not in _degraded(env)
+
+
+def test_last_reported_preferred_over_last_updated(env):
+    _forecast_stamped(env, last_reported=T0 - timedelta(minutes=10),
+                      last_updated=T0 - timedelta(hours=5))
+    env.run(T0)
+    assert "solar_zero_fallback" not in _degraded(env)
+    assert "forecast_age" not in _degraded(env)
+
+
+def test_last_updated_is_the_fallback(env):
+    _forecast_stamped(env, last_updated=T0 - timedelta(minutes=90))
+    env.run(T0)
+    assert "forecast_age=1h30m" in _degraded(env)
+
+
+def test_iso_and_naive_stamps(env):
+    iso = (T0 - timedelta(minutes=80)).isoformat()
+    _forecast_stamped(env, last_reported=iso)
+    env.run(T0)
+    assert "forecast_age=1h20m" in _degraded(env)
+    naive = (T0 - timedelta(minutes=100)).replace(tzinfo=None)   # taken as UTC
+    _forecast_stamped(env, last_reported=naive)
+    env.run(T0 + STEP)
+    assert "forecast_age=1h45m" in _degraded(env)
+
+
+def test_future_stamp_counts_as_age_zero(env):
+    _forecast_stamped(env, last_reported=T0 + timedelta(hours=1))
+    env.run(T0)
+    assert "forecast_age" not in _degraded(env)
+
+
+def test_unavailable_sensor_path_unchanged_with_old_stamp(env):
+    env.state.set(FORECAST_ENTITY, "unavailable", {},
+                  last_reported=T0 - timedelta(hours=5))
+    env.run(T0)
+    assert "solar_zero_fallback" in _degraded(env)
+    assert _age_warnings(env) == []              # plain failure, no age log
