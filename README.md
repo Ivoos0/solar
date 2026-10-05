@@ -345,7 +345,7 @@ Selectors, in the order they are tried:
 | S1 | Charge from the grid while the consumption price is negative |
 | S2 | Charge from surplus solar when storing it beats exporting now |
 | S3 | Export when the battery would otherwise overflow and now is the best injection price in the window |
-| S4 | Charge from the grid in the cheapest blocks when the battery would otherwise drop to the reserve |
+| S4 | Charge from the grid in the cheapest blocks when that is cheaper than importing later, ahead of the battery reaching the reserve. The comparison is the price now divided by `battery.round_trip_efficiency` against the average buying price (weighted by energy) of the blocks where the house would otherwise import. It needs usage history, like the other price-driven choices |
 | S5 | Charge from the grid when a later injection price, after round-trip losses, beats the price now |
 | S6 | Idle |
 

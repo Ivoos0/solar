@@ -95,6 +95,16 @@ Resolved ambiguities / documented readings
   / (max_charge_kw * block_hours))), capped at the window size. "Among the
   cheapest N" includes ties with the N-th cheapest price. S4 and S5 need
   headroom > 0.
+* S4 acts only when charging is CHEAPER than simply importing at the breach.
+  The reserve is a floor, not a target: when the battery gets there the house
+  imports at that time. Charging now costs price_now / round_trip_efficiency
+  per kWh delivered later; importing at the breach costs the energy-weighted
+  average consumption price of the blocks that have grid shortfall (weights =
+  their grid_shortfall_kwh; blocks without a published price are ignored; with
+  no priced shortfall block S4 does nothing). Every candidate, the current
+  block included, must satisfy price / efficiency < that weighted price,
+  strictly; on a tie importing wins. Otherwise S4 proposes nothing and the
+  loop falls through.
 * Every grid-charging selector (S1, S4, S5) clamps to budget_kw
   (capacity.budget_kw: charge power left after the household draw, capped there
   at max_charge_kw) and says so when the cap bit. budget_kw is 0.0 in the last minute of a window (WP11), so V3 then
@@ -385,12 +395,41 @@ def _s3(ctx):
                      ctx.config.max_discharge_kw))
 
 
+def _breach_import_price(ctx):
+    """Energy-weighted average consumption price of the shortfall blocks.
+
+    The blocks where the projection has the grid serving load because the
+    battery sits at the reserve; weights are their grid_shortfall_kwh. Blocks
+    without a published price are ignored. None when no priced block has a
+    shortfall.
+    """
+    energy = cost = 0.0
+    for i, p in enumerate(ctx.prices):
+        kwh = ctx.traj.blocks[i].grid_shortfall_kwh
+        if p is None or kwh <= 0:
+            continue
+        energy += kwh
+        cost += kwh * p.consumption_price
+    if energy <= 0:
+        return None
+    return cost / energy
+
+
 def _s4(ctx):
     p, t, cfg = ctx.price_now, ctx.traj, ctx.config
-    if p is None or t.reserve_breach_block is None \
-            or ctx.battery.headroom_kwh <= 0:
+    if p is None or t.reserve_breach_block is None             or ctx.battery.headroom_kwh <= 0:
         return None
     cands = _priced(ctx, _window(ctx, t.reserve_breach_block))
+    if not cands:
+        return None
+    import_price = _breach_import_price(ctx)
+    if import_price is None:
+        return None
+    eff = cfg.round_trip_efficiency
+    # the reserve is a floor, not a target: charge only when cheaper than the
+    # import it would replace, every candidate block judged after losses
+    # (the current block is in the window, so it is judged here too)
+    cands = [c for c in cands if c[1].consumption_price / eff < import_price]
     if not cands:
         return None
     shortfall = sum(b.grid_shortfall_kwh for b in t.blocks)
@@ -404,11 +443,13 @@ def _s4(ctx):
     return Proposal(
         "charge", kw,
         "reserve breach at %s, shortfall %.2f kWh needs %d block(s) at "
-        "%.2f kW; consumption price now %.4f EUR/kWh is within the cheapest "
-        "%d of %d priced blocks before the breach (cutoff %.4f): charge from "
-        "grid at %.2f kW%s"
+        "%.2f kW; charging now costs %.4f EUR/kWh after losses vs %.4f "
+        "importing at the breach, and consumption price now %.4f is within "
+        "the cheapest %d of %d qualifying blocks before the breach (cutoff "
+        "%.4f): charge from grid at %.2f kW%s"
         % (_hhmm(t.reserve_breach_block), shortfall, n, cfg.max_charge_kw,
-           p.consumption_price, n, len(cands), threshold, kw, note),
+           p.consumption_price / eff, import_price, p.consumption_price, n,
+           len(cands), threshold, kw, note),
         "grid")
 
 

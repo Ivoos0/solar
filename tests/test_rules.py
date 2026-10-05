@@ -11,6 +11,8 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+import dataclasses
+
 import pytest
 
 import battery
@@ -531,11 +533,16 @@ def test_s3_no_price_for_current_block(site_config):
 
 # ---- S4 -------------------------------------------------------------------
 
-# consumption b0 .30 b1 .20 b2 .25 b3 .35 | b4..b7 .05 (after the breach)
-# injection tiny (0.02) so arbitrage (S5) never applies: 0.018 < any cons.
-S4_PRICES = [(0.30, 0.02), (0.20, 0.02), (0.25, 0.02), (0.35, 0.02)] \
-    + [(0.05, 0.02)] * 4
+# consumption b0 .30 b1 .20 b2 .25 b3 .35 | b4 .60 b5 .20 | b6, b7 .05
+# (b4..b7 are after the breach at b4). injection tiny (0.02) so arbitrage (S5)
+# never applies: 0.018 < any cons.
+S4_PRICES = [(0.30, 0.02), (0.20, 0.02), (0.25, 0.02), (0.35, 0.02),
+             (0.60, 0.02), (0.20, 0.02), (0.05, 0.02), (0.05, 0.02)]
 # shortfall total 2.0 kWh; per block 5 kW * 0.25 = 1.25 -> N = ceil(1.6) = 2.
+# The shortfall blocks b4 (.60) and b5 (.20), 1 kWh each, are what importing
+# at the breach costs: (0.60 + 0.20) / 2 = 0.40 EUR/kWh. Charging now costs
+# price / 0.9 (the default efficiency): .20 -> .222, .25 -> .278, .30 -> .333,
+# .35 -> .389: all below .40, so the cheapest-N rule decides, as before.
 S4_SHORT = {4: 1.0, 5: 1.0}
 
 
@@ -672,8 +679,9 @@ def test_negative_injection_positive_consumption_band(site_config):
 
 def test_vetoed_s3_advances_to_next_selector_not_first(site_config):
     # S3 vetoed by V2, then S4 (NOT S1, NOT out of the loop) fires:
-    # breach at block 3, consumption now .20 is cheapest of window 0..2.
-    plist = [(0.20, -0.01), (0.30, -0.05), (0.40, -0.05), (0.10, -0.05)]
+    # breach at block 3 (importing there costs .60), consumption now .20 is
+    # cheapest of window 0..2 and .20 / 0.9 = .22 is below .60.
+    plist = [(0.20, -0.01), (0.30, -0.05), (0.40, -0.05), (0.60, -0.05)]
     d = go(site_config, plist, pct=30.0, breach=3, spill=1.0,
            shortfall={3: 1.0})
     assert d.suppressed == [("S3", "export", "V2")]
@@ -890,7 +898,7 @@ def test_v4_blocks_s3_export(site_config):
 
 
 def test_v4_blocks_s4_grid_charge(site_config):
-    plist = [(0.10, 0.02)] * 3
+    plist = [(0.10, 0.02), (0.10, 0.02), (0.30, 0.02)]
     d = go(site_config, plist, breach=2, shortfall={2: 0.5}, history=True)
     assert (d.selector, d.action) == ("S4", "charge")
     d = go(site_config, plist, breach=2, shortfall={2: 0.5}, history=False)
@@ -1010,3 +1018,93 @@ def test_s4_clamps_to_budget_after_household_draw(site_config):
     assert d.selector == "S4"
     assert d.target_power_kw == pytest.approx(0.2)
     assert "capped by grid budget 0.20 kW" in d.reasoning
+
+
+# ---- S4 only when cheaper than importing at the breach ---------------------
+#
+# The reserve is a floor, not a target: when the battery reaches it the house
+# imports at that time. S4 charges ahead only if price now / efficiency (0.9)
+# is below the energy-weighted consumption price of the shortfall blocks.
+
+def _s4_case(site_config, now_cons, breach_cons, short=1.0, **kw):
+    plist = [(now_cons, 0.02), (0.50, 0.02), (breach_cons, 0.02)]
+    return go(site_config, plist, pct=30.0, breach=2,
+              shortfall=kw.pop("shortfall", {2: short}), **kw)
+
+
+def test_s4_cheaper_now_charges_and_states_the_comparison(site_config):
+    d = _s4_case(site_config, 0.20, 0.30)          # .20 / .9 = .2222 < .30
+    assert (d.selector, d.action) == ("S4", "charge")
+    assert "charging now costs 0.2222 EUR/kWh after losses vs 0.3000 "         "importing at the breach" in d.reasoning
+
+
+def test_s4_dearer_now_does_nothing_and_falls_through(site_config):
+    # 0.30 now vs 0.22 at the breach: 0.30 / 0.9 = 0.333 > 0.22 -> no charge
+    d = _s4_case(site_config, 0.30, 0.22)
+    assert d.selector == "S6" and d.action == "idle"
+    assert d.suppressed == []        # not proposed, so not a suppression
+
+
+def test_s4_dearer_now_lets_a_later_selector_act(site_config):
+    # S4 steps aside; S5 (arbitrage against a later injection price) can act.
+    plist = [(0.30, 0.02), (0.50, 0.02), (0.22, 0.60)]
+    d = go(site_config, plist, pct=30.0, breach=2, shortfall={2: 1.0})
+    assert d.selector == "S5"
+
+
+def test_s4_efficiency_decides(site_config):
+    # 0.20 now vs 0.21 at the breach: charges at 0.9 (.222?) no - 0.2222 > 0.21
+    d = _s4_case(site_config, 0.20, 0.21)
+    assert d.selector == "S6"
+    # a better battery (0.99) makes the same prices worth it: .2020 < .21
+    better = dataclasses.replace(site_config, round_trip_efficiency=0.99)
+    d = _s4_case(better, 0.20, 0.21)
+    assert d.selector == "S4"
+
+
+def test_s4_equal_cost_prefers_importing(site_config):
+    cfg = dataclasses.replace(site_config, round_trip_efficiency=1.0)
+    d = _s4_case(cfg, 0.25, 0.25)
+    assert d.selector == "S6"
+
+
+def test_s4_unpriced_shortfall_blocks_are_ignored(site_config):
+    # block 3 has the big shortfall but no price: only block 2 (.30) counts
+    plist = [(0.20, 0.02), (0.50, 0.02), (0.30, 0.02), (0.01, 0.02)]
+    d = go(site_config, plist, pct=30.0, breach=2, hide={3},
+           shortfall={2: 1.0, 3: 50.0})
+    assert d.selector == "S4"
+    assert "0.3000 importing at the breach" in d.reasoning
+
+
+def test_s4_does_nothing_when_no_shortfall_block_is_priced(site_config):
+    plist = [(0.20, 0.02), (0.20, 0.02), None]
+    d = go(site_config, plist, pct=30.0, breach=2, shortfall={2: 1.0})
+    assert d.selector == "S6"
+
+
+def test_s4_shortfall_prices_are_weighted_by_energy(site_config):
+    # 3 kWh at .50 and 1 kWh at .10 -> (1.5 + 0.1) / 4 = 0.40, not the plain
+    # mean .30. Now .30 / .9 = .333: below .40 (charges), above .30 (would not).
+    plist = [(0.30, 0.02), (0.60, 0.02), (0.50, 0.02), (0.10, 0.02)]
+    d = go(site_config, plist, pct=30.0, breach=2,
+           shortfall={2: 3.0, 3: 1.0})
+    assert d.selector == "S4"
+    assert "0.4000 importing at the breach" in d.reasoning
+    # and the other way round: the cheap block carries the weight -> .20
+    d = go(site_config, plist, pct=30.0, breach=2,
+           shortfall={2: 1.0, 3: 3.0})
+    assert d.selector == "S6"
+
+
+def test_s4_every_candidate_must_beat_the_import_price(site_config):
+    # importing at the breach (block 3) costs .30; shortfall 2.5 kWh asks for
+    # N = 2 blocks. Blocks 0..2 cost .20 / .28 / .29, i.e. .222 / .311 / .322
+    # after losses: only block 0 beats .30. Without the check the 2nd cheapest
+    # (.28) would also charge.
+    plist = [(0.20, 0.02), (0.28, 0.02), (0.29, 0.02), (0.30, 0.02)]
+    d = go(site_config, plist, pct=30.0, breach=3, shortfall={3: 2.5})
+    assert d.selector == "S4" and "cheapest 1 of 1 qualifying" in d.reasoning
+    d = go(site_config, plist, now_i=1, pct=30.0, breach=3,
+           shortfall={3: 2.5})
+    assert d.selector == "S6"
