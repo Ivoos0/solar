@@ -53,8 +53,8 @@ battery:
                                 # percent (0..100). Without it the charge is the
                                 # driver's placeholder (50 % with the logging
                                 # driver). Set but unreadable: the planner holds
-                                # (no grid charging, no export). See the README,
-                                # section "AlphaESS inverter, read-only".
+                                # (no grid charging, no export). See
+                                # docs/alphaess.md.
   # power_sensor: sensor.alphaess_power_battery
                                 # OPTIONAL. Battery power, in W or kW (the unit
                                 # attribute is read). With it the grid charge
@@ -157,7 +157,7 @@ history:
     solar: []                   # PV production counter(s), e.g. from the inverter
     battery_charge: []          # energy into the battery
     battery_discharge: []       # energy out of the battery
-    # With the read-only AlphaESS setup in the README:
+    # With the read-only AlphaESS setup in docs/alphaess.md:
     # solar: [sensor.alphaess_total_energy_from_pv]
     # battery_charge: [sensor.alphaess_total_energy_charge_battery]
     # battery_discharge: [sensor.alphaess_total_energy_discharge_battery]
