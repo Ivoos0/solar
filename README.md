@@ -476,6 +476,19 @@ def read_charge_percent():
     ...
 ```
 
+Check the file before you enable it:
+
+```bash
+python3 -m pytest tests/test_driver_conformance.py --driver pyscript/modules/inverter_alphaess.py
+```
+
+It checks the file name, that importing it touches no network, that `send` returns `True` for
+every action (`charge`, `discharge`, `export`, `idle`), also when repeated and within a few
+seconds, and that `read_charge_percent` returns a number from 0 to 100. It really calls your
+driver, so run it with the inverter disconnected or your connection mocked. Every
+`inverter_*.py` in `pyscript/modules/` is checked as well. Passing does not prove the driver works
+on your hardware.
+
 Then set `inverter.type: alphaess`, restart Home Assistant and watch the log. Any driver other than
 `logging` sends real commands to a real inverter, and nothing in this project is tested against
 hardware. You are responsible for the driver you enable.
