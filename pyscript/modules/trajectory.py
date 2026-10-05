@@ -2,7 +2,7 @@
 
 Projects what happens if the planner does NOTHING (the baseline the selectors
 reason against). Recomputed every cycle from live charge; never cached or
-stored (FR-034).
+stored.
 
 Definitions (per block, all kWh):
   usage_covered_kwh   solar consumed directly by the household:
@@ -21,6 +21,12 @@ Two identities hold in every block (see tests):
 Absorption is bound by TWO independent ceilings plus the surplus itself:
   absorbed = min(surplus, max_charge_kw * block_hours, headroom)
 so spill can occur while headroom remains (charge-power limit).
+
+The reserve is the projection's floor, not a target: the do-nothing baseline
+stops serving the house from the battery there and counts the rest as grid
+shortfall (the house imports at that time). That is a modelling assumption for
+the selectors; in real life the reserve only limits exporting to the grid, peak
+shaving may use charge below it, and the inverter has its own minimum charge.
 
 If the battery starts below the reserve floor it is NOT lifted to the floor
 (that would create energy): it simply cannot discharge until it climbs back.
@@ -107,7 +113,7 @@ def project(battery_state, solar_series, usage_series, price_map, config,
     projection window whose start is not on the block grid (misaligned, e.g. a
     :07 start) raises rather than being silently dropped; entries outside the
     window (before start_time, at or beyond horizon_end) are ignored. A block absent from price_map
-    is still projected with has_price False (FR-040).
+    is still projected with has_price False.
     TrajectoryBlock.block_start is an aware local datetime derived from the
     UTC instant.
     """

@@ -8,9 +8,10 @@ object that collects warnings.
 import ast
 import builtins
 import importlib.util
+import json
 import re
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -22,16 +23,22 @@ SRC = Path(__file__).resolve().parent.parent / "pyscript" / "modules" / "inverte
 TZ = ZoneInfo("Europe/Brussels")
 
 MODULES = SRC.parent
-ALLOWED_IMPORTS = {"os", "decision", "importlib.util", "re", "sys", "threading"}
+ALLOWED_IMPORTS = {"os", "decision", "importlib.util", "re", "sys",
+                   "threading", "datetime", "json"}
 ALLOWED_CALL_NAMES = {"open", "abs", "_append_line", "isinstance", "callable",
                       "getattr", "bool", "float", "ValueError", "AttributeError",
                       "FileNotFoundError", "repr", "_load_driver", "_invoke",
-                      "_driver", "_transmit", "run", "fn", "log_path_for"}
+                      "_driver", "_transmit", "run", "fn", "log_path_for",
+                      "_read_state", "_write_state", "_remove_state",
+                      "_state_file", "_utc", "_last_command", "_should_send",
+                      "_remember_sent", "_forget_sent", "round"}
 ALLOWED_CALL_ATTRS = {"write", "flush", "fileno", "fsync", "makedirs",
                       "dirname", "format_record", "warning", "error", "get",
                       "isfile", "join", "fullmatch", "spec_from_file_location",
                       "module_from_spec", "exec_module", "pop", "append",
-                      "Thread", "start", "rstrip"}
+                      "Thread", "start", "rstrip", "load", "dumps",
+                      "replace", "remove", "astimezone", "fromisoformat",
+                      "total_seconds", "isoformat"}
 
 
 class FakeLog:
@@ -260,8 +267,12 @@ def test_only_the_write_helper_opens_files_in_append_mode():
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                     and node.func.id == "open"):
                 owners.add(fn.name)
-                assert node.args[1].value == "a"  # append mode only
-    assert owners == {"_append_line"}
+                # the log is append-only; the state files are read, or
+                # written whole through a temp file (never the log).
+                assert node.args[1].value == {
+                    "_append_line": "a", "_read_state": "r",
+                    "_write_state": "w"}[fn.name]
+    assert owners == {"_append_line", "_read_state", "_write_state"}
     # No open() call hiding at module level either.
     module_level = [n for n in tree.body if not isinstance(n, ast.FunctionDef)]
     for stmt in module_level:
@@ -341,7 +352,9 @@ def test_public_surface_is_exactly_three_functions_plus_constants(inverter):
              and getattr(getattr(inverter, n), "__module__", None)
              == inverter.__name__}
     assert funcs == {"apply", "read_charge", "log_path_for"}
-    assert public == {"os", "decision", "apply", "read_charge",
+    assert public == {"os", "decision", "datetime", "apply", "read_charge",
+                      "DEFAULT_RESEND_MINUTES", "LAST_COMMAND_FILE",
+                      "POWER_DECIMALS",
                       "DEFAULT_LOG_DIR", "DEFAULT_DRIVER_DIR", "log_path_for",
                       "STUBBED_CHARGE_PERCENT", "POWER_TOLERANCE_KW",
                       "DRIVER_TIMEOUT_SECONDS", "MARKER_UNAVAILABLE",
@@ -392,6 +405,14 @@ _DRIVERS = {
     "nosend": "def read_charge_percent():\n    return 1.0\n",
     "noread": "def send(a, p):\n    return True\n",
     "crashes": "raise RuntimeError('import time failure')\n",
+    "toggle": (
+        "SENT = []\nMODE = ['ok']\nSOC_IS_STUB = False\n"
+        "def send(action, target_power_kw):\n"
+        "    SENT.append((action, target_power_kw))\n"
+        "    if MODE[0] == 'raise':\n        raise OSError('bus down')\n"
+        "    if MODE[0] == 'slow':\n        import time; time.sleep(1.5)\n"
+        "    return MODE[0] != 'false'\n"
+        "def read_charge_percent():\n    return 50.0\n"),
 }
 
 
@@ -413,10 +434,13 @@ def _driver_module(name):
     return sys.modules["inverter_driver_" + name]
 
 
-def _apply(inverter, tmp_path, kind, action="export", power=2.5, **rec):
+def _apply(inverter, tmp_path, kind, action="export", power=2.5,
+           resend_minutes=0, **rec):
     log = tmp_path / "decisions.log"
     record = make_record(action=action, target_power_kw=power, **rec)
-    ok = inverter.apply(action, power, record, str(log), inverter_type=kind)
+    ok = inverter.apply(action, power, record, str(log), inverter_type=kind,
+                        resend_minutes=resend_minutes,
+                        state_dir=str(tmp_path / "state"))
     return ok, log, record
 
 
@@ -679,3 +703,263 @@ def test_planner_and_guard_records_of_one_day_share_a_file(inverter, tmp_path):
     assert [p.name for p in tmp_path.iterdir()] == [f.name]
     lines = f.read_text().splitlines()
     assert "source=planner" in lines[0] and "source=guard" in lines[1]
+
+
+# ---- command de-duplication (inverter.resend_minutes, last_command.json) ----------
+
+T_BASE = datetime(2026, 9, 29, 14, 0, tzinfo=TZ)
+
+
+def _send(inverter, tmp_path, minutes=0, action="export", power=2.5,
+          kind="toggle", resend=15, source="planner", state=None, seconds=0):
+    """One apply() call `minutes` after T_BASE; returns the decision-log path."""
+    ts = T_BASE + timedelta(minutes=minutes, seconds=seconds)
+    record = make_record(timestamp=ts, action=action, target_power_kw=power,
+                         source=source)
+    ok = inverter.apply(
+        action, power, record, inverter_type=kind, resend_minutes=resend,
+        log_dir=str(tmp_path / "logs"),
+        state_dir=str(state if state is not None else tmp_path / "state"))
+    assert ok is True
+    return tmp_path / "logs" / ("decisions-%s.log" % ts.date())
+
+
+def _sent():
+    return _driver_module("toggle").SENT
+
+
+def _state_json(tmp_path):
+    return json.loads((tmp_path / "state" / "last_command.json")
+                      .read_text(encoding="utf-8"))
+
+
+def test_identical_command_within_the_window_is_sent_once(
+        inverter, drivers, tmp_path):
+    for i in range(5):
+        _send(inverter, tmp_path, minutes=i)
+    assert _sent() == [("export", 2.5)]
+
+
+def test_the_log_line_is_written_on_every_call_even_when_not_sent(
+        inverter, drivers, tmp_path):
+    for i in range(5):
+        log = _send(inverter, tmp_path, minutes=i)
+    assert len(log.read_text().splitlines()) == 5
+    assert len(_sent()) == 1
+
+
+def test_changed_power_is_sent_again(inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0, power=2.5)
+    _send(inverter, tmp_path, 1, power=2.5)
+    _send(inverter, tmp_path, 2, power=1.75)
+    _send(inverter, tmp_path, 3, power=1.75)
+    assert _sent() == [("export", 2.5), ("export", 1.75)]
+
+
+def test_changed_action_is_sent_again(inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0, action="idle", power=0.0)
+    _send(inverter, tmp_path, 1, action="discharge", power=1.5)
+    _send(inverter, tmp_path, 2, action="idle", power=0.0)
+    assert [a for a, _ in _sent()] == ["idle", "discharge", "idle"]
+
+
+def test_power_is_compared_rounded_to_a_hundredth_of_a_kw(
+        inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0, power=2.5)
+    _send(inverter, tmp_path, 1, power=2.5004)      # same at 0.01 kW
+    _send(inverter, tmp_path, 2, power=2.4996)
+    assert len(_sent()) == 1
+    _send(inverter, tmp_path, 3, power=2.52)        # a visible step
+    assert len(_sent()) == 2
+
+
+def test_resend_happens_once_resend_minutes_have_passed(
+        inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0)
+    _send(inverter, tmp_path, 14, seconds=59)
+    assert len(_sent()) == 1
+    _send(inverter, tmp_path, 15)                    # exactly the window
+    assert len(_sent()) == 2
+    _send(inverter, tmp_path, 20)                    # new window started at 15
+    assert len(_sent()) == 2
+    _send(inverter, tmp_path, 30)
+    assert len(_sent()) == 3
+
+
+def test_resend_window_is_measured_from_the_last_send_not_the_last_call(
+        inverter, drivers, tmp_path):
+    for m in range(0, 15):                           # calls every minute
+        _send(inverter, tmp_path, m)
+    assert len(_sent()) == 1
+    _send(inverter, tmp_path, 15)
+    assert len(_sent()) == 2
+
+
+def test_resend_minutes_zero_sends_every_call(inverter, drivers, tmp_path):
+    for i in range(4):
+        _send(inverter, tmp_path, i, resend=0)
+    assert len(_sent()) == 4
+
+
+def test_custom_window(inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0, resend=5)
+    _send(inverter, tmp_path, 4, resend=5)
+    assert len(_sent()) == 1
+    _send(inverter, tmp_path, 5, resend=5)
+    assert len(_sent()) == 2
+
+
+def test_last_command_is_persisted_with_utc_time(inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0, action="discharge", power=1.5)
+    data = _state_json(tmp_path)
+    assert data == {"action": "discharge", "power_kw": 1.5,
+                    "sent_at": "2026-09-29T12:00:00+00:00"}
+
+
+def test_state_survives_a_restart(inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0)
+    assert len(_sent()) == 1
+    # Restart: a fresh module has no memory, only the file remains.
+    spec = importlib.util.spec_from_file_location("inverter_restarted", SRC)
+    fresh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh)
+    fresh.DEFAULT_DRIVER_DIR = inverter.DEFAULT_DRIVER_DIR
+    assert fresh._last_sent == {}
+    _send(fresh, tmp_path, 5)
+    assert len(_sent()) == 1                         # not re-sent
+    before = _sent()
+    _send(fresh, tmp_path, 16)                       # window elapsed: re-sent
+    assert _sent() is not before                     # (by the freshly loaded driver)
+    assert _sent() == [("export", 2.5)]
+
+
+def test_planner_and_guard_share_the_state(inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0, source="planner")
+    _send(inverter, tmp_path, 1, source="guard")
+    assert len(_sent()) == 1
+    _send(inverter, tmp_path, 2, source="guard", action="discharge", power=1.0)
+    _send(inverter, tmp_path, 3, source="planner", action="discharge",
+          power=1.0)
+    assert [a for a, _ in _sent()] == ["export", "discharge"]
+    _send(inverter, tmp_path, 4, source="planner")   # back to the old command
+    assert len(_sent()) == 3
+
+
+def test_state_is_shared_between_module_instances(inverter, drivers, tmp_path):
+    # The guard and the planner may hold separate module objects: only the
+    # file connects them, and it is read on every call.
+    spec = importlib.util.spec_from_file_location("inverter_other", SRC)
+    other = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(other)
+    other.DEFAULT_DRIVER_DIR = inverter.DEFAULT_DRIVER_DIR
+    _send(inverter, tmp_path, 0)
+    _send(other, tmp_path, 1)
+    assert len(_sent()) == 1
+
+
+@pytest.mark.parametrize("mode", ["false", "raise", "slow"])
+def test_a_failed_send_is_not_recorded_and_retries_next_call(
+        inverter, drivers, tmp_path, monkeypatch, mode):
+    monkeypatch.setattr(inverter, "DRIVER_TIMEOUT_SECONDS", 0.2)
+    _send(inverter, tmp_path, 0)                     # loads the driver
+    _driver_module("toggle").MODE[0] = mode
+    _send(inverter, tmp_path, 15, power=3.0)         # new command, fails
+    assert _sent()[-1] == ("export", 3.0)
+    assert not (tmp_path / "state" / "last_command.json").exists()
+    _driver_module("toggle").MODE[0] = "ok"
+    _send(inverter, tmp_path, 16, power=3.0)         # retried at once
+    assert _sent()[-2:] == [("export", 3.0), ("export", 3.0)]
+    assert _state_json(tmp_path)["power_kw"] == 3.0
+    _send(inverter, tmp_path, 17, power=3.0)         # and now de-duplicated
+    assert len(_sent()) == 3
+
+
+def test_failed_send_of_the_same_command_is_retried(inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0)
+    _driver_module("toggle").MODE[0] = "false"
+    _send(inverter, tmp_path, 15)                    # resend due, refused
+    _send(inverter, tmp_path, 16)                    # still due: retried
+    assert len(_sent()) == 3
+
+
+def test_failure_forgets_the_previous_command_too(inverter, drivers, tmp_path):
+    # idle was sent; charge fails (inverter state unknown); idle again must
+    # be sent rather than assumed to be in force.
+    _send(inverter, tmp_path, 0, action="idle", power=0.0)
+    _driver_module("toggle").MODE[0] = "raise"
+    _send(inverter, tmp_path, 1, action="charge", power=2.0)
+    _driver_module("toggle").MODE[0] = "ok"
+    _send(inverter, tmp_path, 2, action="idle", power=0.0)
+    assert [a for a, _ in _sent()] == ["idle", "charge", "idle"]
+
+
+def test_missing_driver_is_not_recorded_as_sent(inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0, kind="later")
+    assert not (tmp_path / "state" / "last_command.json").exists()
+    (drivers / "inverter_later.py").write_text(_DRIVERS["toggle"],
+                                               encoding="utf-8")
+    _send(inverter, tmp_path, 1, kind="later")
+    assert _driver_module("later").SENT == [("export", 2.5)]
+
+
+@pytest.mark.parametrize("content", [
+    "", "not json", "[]", "null", "{}", '{"action": 3}',
+    '{"action": "export", "power_kw": "x", "sent_at": "2026-09-29T12:00:00+00:00"}',
+    '{"action": "export", "power_kw": 2.5, "sent_at": "yesterday"}',
+    '{"action": "export", "power_kw": 2.5, "sent_at": "2026-09-29T12:00:00"}',
+    '{"action": "export", "power_kw": true, "sent_at": "2026-09-29T12:00:00+00:00"}',
+    '{"action": "export", "power_kw": NaN, "sent_at": "2026-09-29T12:00:00+00:00"}',
+])
+def test_corrupt_state_file_means_send_and_never_crashes(
+        inverter, drivers, tmp_path, content):
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "last_command.json").write_text(content, encoding="utf-8")
+    _send(inverter, tmp_path, 0)
+    assert len(_sent()) == 1
+    assert _state_json(tmp_path)["action"] == "export"    # healed
+    _send(inverter, tmp_path, 1)
+    assert len(_sent()) == 1
+
+
+def test_missing_state_dir_is_created(inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0, state=tmp_path / "deep" / "er" / "state")
+    assert (tmp_path / "deep" / "er" / "state" / "last_command.json").is_file()
+
+
+def test_unwritable_state_falls_back_to_memory(inverter, drivers, tmp_path):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")
+    bad = blocker / "state"
+    for i in range(3):
+        _send(inverter, tmp_path, i, state=bad)
+    assert len(_sent()) == 1                         # memory still dedupes
+    assert any("cannot save" in m for m in builtins.log.messages)
+
+
+def test_clock_going_backwards_sends(inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 30)
+    _send(inverter, tmp_path, 10)
+    assert len(_sent()) == 2
+
+
+def test_logging_driver_keeps_no_state(inverter, tmp_path):
+    for i in range(3):
+        _send(inverter, tmp_path, i, kind="logging")
+    assert not (tmp_path / "state").exists()
+    assert builtins.log.errors == [] and builtins.log.messages == []
+
+
+def test_default_state_dir_is_below_the_log_dir(inverter, drivers, tmp_path):
+    record = make_record(timestamp=T_BASE)
+    assert inverter.apply("export", 2.5, record, inverter_type="toggle",
+                          log_dir=str(tmp_path / "bp")) is True
+    assert (tmp_path / "bp" / "state" / "last_command.json").is_file()
+
+
+def test_apply_signature_is_backwards_compatible(inverter, drivers, tmp_path):
+    # Old positional/keyword use keeps working: no new required arguments.
+    record = make_record(timestamp=T_BASE)
+    assert inverter.apply("export", 2.5, record, str(tmp_path / "d.log"),
+                          "logging", None, str(tmp_path)) is True
+    assert inverter.DEFAULT_RESEND_MINUTES == 15

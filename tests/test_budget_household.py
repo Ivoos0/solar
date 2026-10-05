@@ -94,7 +94,7 @@ def test_grid_power_clamps_to_post_household_budget(c80):
 
 
 def test_v3_fires_when_household_eats_the_whole_allowance(c80):
-    batt = type("B", (), {"charge_percent": 50.0})()
+    batt = type("B", (), {"charge_percent": 50.0, "stored_kwh": 5.0})()
     _, fired = rules.establish_vetoes(batt, None, c80,
                                       hstate(offtake=TOTAL + 0.5), True)
     assert "V3" in fired

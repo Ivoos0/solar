@@ -1,21 +1,21 @@
 """Decision record: build and format the one auditable line per cycle. Pure.
 
-No file I/O (WP09 appends the line to the day's decision log), no clock (the cycle
+No file I/O (the inverter boundary appends the line to the day's decision log), no clock (the cycle
 time is a parameter), no third-party / Home Assistant imports.
 
 Public API
 ----------
     DecisionRecord            frozen dataclass, EVERY field required (no
-                              defaults: NFR-004)
-    HaltState                 data-model HaltState
+                              defaults)
+    HaltState                 a price outage with no decision
     build(decision, trajectory, battery_state, prices_now, degraded, *,
           now, duration_ms, grid_state=None, config=None, source="planner")
-    format_record(record)     -> one line, contract field order
+    format_record(record)     -> one line, fixed field order
     format_halt(halt_state, now) -> one HALT line
     degraded_markers(battery_state, solar_zero_fallback=False,
                      cache_markers=(), usage_samples=None) -> [str]
     render_vetoes(decision)   -> [str] (also used by build)
-    FIELD_NAMES               the contract keys after the timestamp, in
+    FIELD_NAMES               the keys after the timestamp, in
                               output order
 
 Field order (every record, always)
@@ -26,13 +26,13 @@ vetoes | selector | why | degraded | source
 
 Documented readings / discrepancies
 -----------------------------------
-* cache.py is NOT in this lane (it lives in the WP07 lane), so age markers
-  cannot be imported here. ``degraded`` is a list of already-rendered
+* This module does not import cache.py, so age markers
+  are not computed here. ``degraded`` is a list of already-rendered
   strings; the caller renders cache ages with ``cache.age_marker(series,
   now)`` and passes them via ``degraded_markers(cache_markers=...)``. This
   module never reimplements age formatting.
-* ``source=planner|guard`` is not in the contract sample line; it is the
-  LAST field (after degraded) so the contract columns keep their positions.
+* ``source=planner|guard`` is the LAST field (after
+  degraded), so the other columns keep their positions.
 * avg / ceiling / budget come from the GridState the rules used (via
   capacity), not from the Decision. When capacity is inactive (grid_state
   None or config.capacity_enabled False) they render the literal ``n/a``:
@@ -60,7 +60,7 @@ Documented readings / discrepancies
 * ``why`` is single-lined: whitespace runs collapse to one space, a double
   quote becomes two single quotes, ``|`` becomes ``/`` so the line still
   splits on " | ".
-* HaltState does not exist upstream; it is defined here per data-model.md.
+* HaltState is not defined elsewhere; it is defined here.
   Halt timestamp is the cycle time ``now``; a never-alerted halt renders
   ``alerted=none``.
 """
@@ -75,7 +75,7 @@ SOURCES = ("planner", "guard")
 NONE = "none"
 NA = "n/a"
 
-# Contract keys after the leading timestamp, in output order.
+# Keys after the leading timestamp, in output order.
 FIELD_NAMES = (
     "action", "power", "soc", "cons", "inj", "solar_rem", "usage_rem",
     "saturation", "spill", "breach", "end_soc", "took", "avg", "ceiling",
@@ -197,7 +197,7 @@ def render_vetoes(decision):
 
 def degraded_markers(battery_state, solar_zero_fallback=False,
                      cache_markers=(), usage_samples=None):
-    """Assemble the degraded list (FR-027).
+    """Assemble the degraded list.
 
     cache_markers: strings from cache.age_marker(series, now), passed through
     untouched. usage_samples: days of history behind the usage profile when
@@ -293,7 +293,7 @@ def _why(text):
 
 
 def format_record(record):
-    """One physical line, contract field order, every field present."""
+    """One physical line, fixed field order, every field present."""
     r = record
     parts = [
         r.timestamp.isoformat(timespec="seconds"),
@@ -322,7 +322,7 @@ def format_record(record):
 
 
 def format_halt(halt_state, now):
-    """HALT line for a cycle that produced no decision (FR-021, SC-001)."""
+    """HALT line for a cycle that produced no decision."""
     _reject_delimiters("cause", halt_state.cause)
     return " | ".join([
         now.isoformat(timespec="seconds"),

@@ -20,3 +20,10 @@ def site_config():
         # against the full ceiling. The 80 % semantics are tested explicitly.
         "capacity_tariff": {"stay_under_percent": 100},
     })
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--driver", action="append", default=[], metavar="PATH",
+        help="inverter driver file to check in tests/test_driver_conformance.py "
+             "(repeatable)")

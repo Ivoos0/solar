@@ -1,0 +1,128 @@
+# Decision log format
+
+The planner and the peak guard write one line per evaluation to
+`<ha-config>/battery_planner/decisions-YYYY-MM-DD.log`. Nothing else is
+recorded about what the planner decided, so the line carries everything needed
+to understand it. The file holds one local calendar day (in your configured
+`timezone`), is only ever appended to, and can be read with `tail`, `grep` or a
+text editor. Files older than `retention.keep_days` (default 90) are deleted by
+the daily cleanup at 03:30 local time.
+
+The decision is written by the inverter boundary before any driver is called
+(see [inverter-boundary.md](inverter-boundary.md)). The labels `V1` to `V5` and
+`S0` to `S6` are explained in the README under
+[Labels in the decision log](../README.md#labels-in-the-decision-log).
+
+## Format
+
+Key-value pairs on a single line, separated by ` | `. Wrapped here for reading:
+
+```
+2026-09-29T14:35:00+02:00 | action=export | power=2.50kW | soc=78.0%/7.80kWh |
+  cons=0.2140 | inj=0.1890 | solar_rem=11.20kWh | usage_rem=14.60kWh |
+  saturation=2026-09-29T12:45:00+02:00 | spill=2.40kWh | breach=none |
+  end_soc=2.10kWh | took=84ms | avg=1.20kW | ceiling=2.50kW | budget=1.95kW |
+  vetoes=none | selector=S3 |
+  why="leftover 4.1kWh with saturation at 12:45; best injection price before saturation" |
+  degraded=soc_stubbed | source=planner
+```
+
+Every field appears in every record, in this fixed order: timestamp, action,
+power, soc, cons, inj, solar_rem, usage_rem, saturation, spill, breach, end_soc,
+took, avg, ceiling, budget, vetoes, selector, why, degraded, source.
+
+A value that does not apply is written explicitly (`none`, `n/a`, or a computed
+`0.00kWh`), never left out, so a missing field and a zero field never look alike.
+
+## Fields
+
+| Field | Format | Meaning |
+|---|---|---|
+| timestamp | ISO 8601 with offset | Local time in your configured `timezone` |
+| `action` | `charge`, `discharge`, `export` or `idle` | What was decided |
+| `power` | `N.NNkW` | `0.00kW` when idle |
+| `soc` | `N.N%/N.NNkWh` | Battery charge as a percentage (what the inverter reports) and in kWh (what the rules use) |
+| `cons`, `inj` | 4 decimals, EUR/kWh | Consumption and injection price of the current block, after your price formulas. `n/a` when the block has no market price |
+| `solar_rem`, `usage_rem` | `N.NNkWh` or `n/a` | Forecast solar and expected usage over the rest of the projection. `n/a` for records from the peak guard, which has no projection |
+| `saturation` | ISO 8601 or `none` | When the battery is projected to be full |
+| `spill` | `N.NNkWh` or `n/a` | Solar energy projected to be wasted because the battery is full. `0.00kWh` when none; `n/a` for the guard |
+| `breach` | ISO 8601 or `none` | When the battery is projected to reach the reserve |
+| `end_soc` | `N.NNkWh` | Projected charge at the end of the projection |
+| `took` | `NNNms` | How long the cycle took |
+| `avg` | `N.NNkW` or `n/a` | Running quarter-hour average of grid offtake. `n/a` when capacity handling is off |
+| `ceiling` | `N.NNkW` or `n/a` | The peak level being defended: the larger of 2.5 kW and this month's peak |
+| `budget` | `N.NNkW` or `n/a` | Grid power still available for charging in this quarter-hour, after the household's own estimated draw and capped at `max_charge_kw`, measured against `capacity_tariff.stay_under_percent` of the ceiling (80 % of 2.5 kW = 2.0 kW by default). Negative when the window is already over that level |
+| `vetoes` | comma-separated or `none` | Rules that fired, and what each suppressed (see below) |
+| `selector` | `S0` to `S6` | The action that was chosen |
+| `why` | quoted text | The values that made the condition true |
+| `degraded` | comma-separated or `none` | Inputs that were missing, stale or replaced (see below) |
+| `source` | `planner` or `guard` | Which loop wrote the record. Always the last field |
+
+Free text (each `vetoes` and `degraded` entry, the HALT cause) cannot contain
+`|` or a line break, and numbers must be finite. A record that breaks this is
+rejected rather than written.
+
+## Vetoes
+
+A veto that stopped a proposal names itself and what it stopped:
+
+```
+# S3 wanted to export but V2 forbade it, and nothing else applied
+vetoes=V2(suppressed S3 export) | selector=S6 |
+  why="injection -0.0043 forbids export; no spill or breach ahead, holding"
+
+# several vetoes block the same proposal: joined with +
+vetoes=V1+V2(suppressed S3 export) | selector=S6 | ...
+
+# a veto fired but blocked nothing (S2 won first): written bare
+vetoes=V2 | selector=S2 |
+  why="injection -0.0043; surplus 2.4kW, headroom 3.2kWh, charging from solar"
+```
+
+Several suppressed proposals are separate entries, for example
+`V4(suppressed S1 charge),V4(suppressed S2 charge)`. A record that shows a veto
+always also shows the selector that finally fired.
+
+| Label | Forbids | Fires when |
+|---|---|---|
+| V1 | export | Charge is at or below `battery.reserve_percent` |
+| V2 | export | The injection price is negative |
+| V3 | grid charging | No capacity budget is left in this quarter-hour |
+| V4 | grid charging, solar charging, export | There is no usable usage history |
+| V5 | discharge | The battery is empty (0 % charge) |
+
+V4 fires on every cycle until the energy history holds a known household load
+(see the README section "Energy history"), so it appears bare on most records
+until then, and as `V4(suppressed ...)` whenever a price-driven selector (S1 to
+S5) would have acted. V4 does not stop the S0 peak shave, and neither does V1:
+only V5 can stop a peak shave, shown as `V5(suppressed S0 discharge)`.
+
+## Degraded markers
+
+`degraded=` lists everything the decision had to work around:
+
+| Marker | Meaning |
+|---|---|
+| `soc_stubbed` | The battery charge is the 50 % placeholder of the `logging` driver |
+| `solar_zero_fallback` | The forecast was unavailable, so solar was treated as zero |
+| `cache_age_solar=3h12m`, `cache_age_usage=...` | A cached series was used, with its age |
+| `forecast_age=1h20m` | The forecast was used, but its sensor last refreshed 75 minutes or more ago. A stamp older than `timing.solar_cache_stale_minutes` counts as a failed forecast instead |
+| `usage_samples=N` | The usage profile rests on N days of history, fewer than `usage.history_weeks` x 7 |
+| `solar_ratio=0.83` | The forecast of the current or next block that has solar was multiplied by this ratio, measured from your own history. Absent when it rounds to 1.00 |
+| `solar_ratio_configured=0.80` | The same with `solar.calibration_default`, used while the history is too short or too thin around that time of day. Absent at 1.00 |
+| `usage_history_unavailable`, `grid_sensors_unavailable`, `inverter_driver_unavailable`, `inverter_read_failed` | See the marker table in the README under "Check that it works" |
+
+The daily report counts the two `solar_ratio` markers under their name without
+the value.
+
+## HALT record
+
+When price data is missing no decision is produced, but the cycle is not silent:
+
+```
+2026-09-29T14:35:00+02:00 | HALT | cause=price_data_unavailable |
+  entered=2026-09-29T14:20:00+02:00 | alerted=2026-09-29T14:20:00+02:00
+```
+
+`alerted=none` means no e-mail was sent for this outage yet. `RECOVERED` and
+`SKIP` lines are written to the same file.

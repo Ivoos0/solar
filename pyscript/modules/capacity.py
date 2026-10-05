@@ -3,7 +3,9 @@
 Billing is on grid offtake averaged over clock-aligned quarter-hours; the fee
 is the mean of the last N monthly peaks, floored at billing_floor_kw.
 """
+import math
 from dataclasses import dataclass
+from datetime import datetime
 
 WINDOW_MINUTES = 15.0
 WINDOW_HOURS = 0.25
@@ -257,6 +259,40 @@ def peak_warning_sent(mem, state, now_s):
     mem["sent_at"] = now_s
 
 
+def peak_warning_to_data(mem, wall_now):
+    """JSON-ready record of the last successful warning, or None.
+
+    `mem` keeps sent_at on a monotonic clock, which means nothing after a
+    restart, so the file stores the wall-clock send time instead. The caller
+    saves it right after peak_warning_sent().
+    """
+    window = mem.get("sent_window")
+    if window is None or mem.get("sent_at") is None:
+        return None
+    return {"sent_window": window.isoformat(),
+            "sent_at": wall_now.isoformat()}
+
+
+def peak_warning_restore(mem, data, wall_now, now_s):
+    """Load a saved warning into `mem` after a restart. True when applied.
+
+    Anything unreadable is ignored (the warning may then be sent once more,
+    which is the safe direction). The wall-clock send time is turned back into
+    the monotonic clock `mem` uses: sent_at = now_s - age.
+    """
+    try:
+        window = datetime.fromisoformat(data["sent_window"])
+        sent = datetime.fromisoformat(data["sent_at"])
+        if window.tzinfo is None or sent.tzinfo is None:
+            return False
+        age = max(0.0, (wall_now - sent).total_seconds())
+    except Exception:
+        return False
+    mem["sent_window"] = window
+    mem["sent_at"] = now_s - age
+    return True
+
+
 def peak_warning_message(state, config, guard_note):
     """(title, message) of the predictive warning. guard_note says what the
     guard is doing about it."""
@@ -285,7 +321,7 @@ def arbitrage_value_eur(kwh, price_spread):
     return kwh * price_spread
 
 
-# ---- quarter-hour average semantics detection (FR-055, FR-058) ----------
+# ---- quarter-hour average semantics detection ----------
 
 @dataclass(frozen=True)
 class Sample:
@@ -325,6 +361,49 @@ def _window_vote(samples):
     if abs(ratio - 1.0) < abs(ratio - expected):
         return "running"
     return "accumulating"
+
+
+def samples_to_data(samples):
+    """JSON-ready form of the detector samples that can still matter.
+
+    Only samples inside the detection minutes ever take part in a vote
+    (_window_vote ignores the rest), so only those are kept.
+    """
+    out = []
+    for s in samples:
+        if DETECT_MIN_MIN <= s.elapsed_minutes <= DETECT_MAX_MIN:
+            out.append([s.window_start.isoformat(), s.elapsed_minutes,
+                        s.reported_kw, s.offtake_kw])
+    return out
+
+
+def samples_from_data(data, limit=None):
+    """Detector samples from samples_to_data() output; [] for anything else.
+
+    A malformed entry is skipped, a malformed whole is an empty list, so a
+    damaged file means a fresh start, never an error. `limit` keeps only the
+    newest entries.
+    """
+    if not isinstance(data, list):
+        return []
+    out = []
+    for item in data:
+        try:
+            start = datetime.fromisoformat(item[0])
+            nums = [item[1], item[2], item[3]]
+            ok = start.tzinfo is not None and len(item) == 4
+            for n in nums:
+                if isinstance(n, bool) or not isinstance(n, (int, float)) \
+                        or not math.isfinite(n):
+                    ok = False
+            if ok:
+                out.append(Sample(start, float(nums[0]), float(nums[1]),
+                                  float(nums[2])))
+        except Exception:
+            continue
+    if limit is not None:
+        out = out[-limit:]
+    return out
 
 
 def detect_average_mode(samples, config):

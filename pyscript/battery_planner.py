@@ -1,7 +1,7 @@
 """Battery planner: the pyscript adapter. The ONLY code that touches Home
 Assistant state, files and the clock. Every decision lives in pyscript/modules/.
 
-Cycle (FR-021..024, FR-034, NFR-006, NFR-009), fired every minute and gated on
+Cycle, fired every minute and gated on
 config.evaluation_interval_minutes so that value is really configurable:
 
   config -> prices (missing/stale: HALT) -> forecast (missing: zero solar +
@@ -11,7 +11,7 @@ config.evaluation_interval_minutes so that value is really configurable:
 Documented readings and guesses (this file cannot be run outside Home Assistant)
 --------------------------------------------------------------------------------
 * I/O: every open()/os call is inside a @pyscript_executor helper (native code
-  in an executor thread). Never merely @pyscript_compile (R-02 correction).
+  in an executor thread). Never merely @pyscript_compile, which does not leave the event loop.
 * NATIVE CORE LOADER. Files under pyscript/modules/ are *pyscript* modules:
   pyscript runs them in its own AST interpreter, which lacks generator
   expressions, @property, native callbacks to pyscript functions (key=fn) and
@@ -38,7 +38,7 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
   in `finally`. A DUE cycle that finds it set logs a warning and writes a SKIP
   line to the day's decision log; a marker older than 2 intervals (a hung cycle, e.g. an
   executor blocked on NAS I/O) is logged as an error. Not @task_unique: its
-  kill_me kills the NEW call before it can log (NFR-001).
+  kill_me kills the NEW call before it can log.
 * Gate: cron fires at :00 of each minute, so elapsed time is compared with a
   GATE_TOLERANCE_SECONDS allowance, else jitter would halve the rate.
 * took= covers config to just before the record is built; the final append
@@ -65,7 +65,7 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
   affects a decision.
   Mail account settings live in HA's own configuration; none appear here.
 * Cache: verdicts come from cache.evaluate; every series taken FROM the cache,
-  fresh or stale, adds a cache_age_<kind> marker (FR-027/SC-014); a series just
+  fresh or stale, adds a cache_age_<kind> marker; a series just
   rebuilt adds none. Solar is
   rebuilt when the forecast signature changes, usage once per local day.
   Extra keys (forecast_signature, history_days) ride along in the JSON; the
@@ -82,19 +82,45 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
   up to one evaluation interval after the boundary, so a block's energy covers
   [read_prev, read_this), not exactly the block; both read times are recorded.
   The recorder is wrapped: a failure is logged (rate-limited) and never touches
-  the decision. Files are never deleted by the planner.
+  the decision. The planner never deletes files; pyscript/housekeeping.py removes the old
+  ones (retention.keep_days).
+* Solar calibration (history.py, "solar calibration"): the cache and the history
+  hold the RAW forecast. Every cycle the ratio of the time of day is applied on
+  top of the raw series (_calibrated), so a changed ratio or setting takes
+  effect at once and nothing is applied twice. The per-time-of-day ratios are
+  recomputed from the last solar.calibration_weeks weeks of history files at
+  most once per clock hour (or when the date or the settings change), never
+  every cycle. A read/calculation failure falls back to the configured default
+  (or the raw series) with a rate-limited warning. Markers: solar_ratio=0.83
+  (measured) or solar_ratio_configured=0.80 (configured), none at 1.00.
 * Usage history: read_usage_history() is the single seam; see its docstring.
   Coverage (distinct local days present vs the window) is reported as
   usage_samples=N; per-slot sample_days is not the coverage signal.
-* Peak guard coordination: if pyscript.peak_guard_shaving is "on" and the
-  decision would charge from the grid (charge_source == "grid"), the decision
+* Peak guard coordination: if pyscript.peak_guard_shaving is "on" with a fresh
+  last_beat attribute (at most 3 x guard_interval_seconds old; a stuck flag of
+  a stopped guard is ignored) and the decision would charge from the grid (charge_source == "grid"), the decision
   is replaced by an idle S6 Decision whose reasoning says so, and the veto
   field records GUARD(suppressed <selector> charge). The same downgrade is
   applied (marker NOGRID) when capacity is enabled but the grid sensors are
   unreadable, because rules.decide with no grid state would grid-charge with no
   budget cap.
-* Average-mode samples for capacity.detect_average_mode are kept in memory
-  only; after a restart the mode is "assumed" until enough windows are seen.
+* Sensors (sensors.enabled): once per cycle, after the decision or the halt is
+  known, state.set() publishes sensor.battery_planner_action / _budget and
+  binary_sensor.battery_planner_halted. Missing data is "unknown" (state) or
+  null (attribute), never a figure of an earlier cycle; during a halt the action
+  and budget are unknown. Publishing is wrapped: a failure is logged (rate-limited)
+  and never touches a decision. The entities live only in Home Assistant's
+  state machine (no unique id), so they vanish on a restart until the next cycle.
+* State that survives a restart (all under <config>/battery_planner/state/,
+  written atomically, read once per process in @pyscript_executor helpers; a
+  missing or corrupt file means a fresh start, never an error):
+    halt.json                  price-outage halt (cause, entered_at,
+                               last_alert_at): a restart during an outage
+                               neither re-alerts early nor loses the outage
+    average_mode_planner.json  the detector samples that can still vote, so
+                               a detected quarter-hour mode stays "detected"
+    peak_alert.json            last month-peak e-mail (see _check_peak_alert)
+    last_command.json          written by inverter.apply (command de-dup)
 """
 import hashlib
 import json
@@ -112,7 +138,10 @@ CONFIG_PATH = "/config/battery_planner/user_config.yaml"
 CACHE_DIR = "/config/battery_planner/cache/"
 DECISIONS_LOG_DIR = inverter.DEFAULT_LOG_DIR
 HISTORY_DIR = "/config/battery_planner/history/"
+STATE_DIR = "/config/battery_planner/state/"
 PEAK_ALERT_PATH = "/config/battery_planner/state/peak_alert.json"
+HALT_STATE_PATH = "/config/battery_planner/state/halt.json"
+MODE_STATE_PATH = "/config/battery_planner/state/average_mode_planner.json"
 CORE_DIR = "/config/pyscript/modules"
 # Dependency order (rules needs capacity). inverter is NOT in this list.
 CORE_MODULES = ("config", "prices", "series", "battery", "trajectory",
@@ -126,17 +155,27 @@ CORE_MODULES = ("config", "prices", "series", "battery", "trajectory",
 # names the configured entity and attribute.
 # The netted offtake sensor id also comes from config
 # (capacity_tariff.offtake_sensor, default sensor.slimmelezer_power_consumed).
-GUARD_FLAG_ENTITY = "pyscript.peak_guard_shaving"   # set by the peak guard (WP12)
+GUARD_FLAG_ENTITY = "pyscript.peak_guard_shaving"   # set by the peak guard
+# The flag only counts while the guard keeps it fresh: its last_beat attribute
+# must be at most this many guard intervals old, else the flag is ignored (a
+# dead guard cannot clear a stuck "on").
+GUARD_BEAT_FACTOR = 3
 _BAD_STATES = (None, "", "unknown", "unavailable", "none", "None")
+# Entities the planner creates (state.set) once per cycle; see README, "Sensors".
+SENSOR_ACTION = "sensor.battery_planner_action"
+SENSOR_BUDGET = "sensor.battery_planner_budget"
+SENSOR_HALTED = "binary_sensor.battery_planner_halted"
+SENSOR_SOLAR_RATIO = "sensor.battery_planner_solar_ratio"
+UNKNOWN = "unknown"
 
 # ---- tuning that is not user config ----------------------------------------
 GATE_TOLERANCE_SECONDS = 30
 CONFIG_RETRY_MINUTES = 5              # cadence while the config is unusable
 SERIES_SPAN_HOURS = 72
-MAX_FETCHES_PER_HOUR = 12             # NFR-002, shared with the hourly poll
+MAX_FETCHES_PER_HOUR = 12             # shared with the hourly poll
 FORECAST_FAILURES_BEFORE_RETRY = 2
 FORECAST_AGE_MARKER_MINUTES = 75      # older than a normal hourly refresh: mark it
-SLOW_CYCLE_MS = 5000                  # NFR-001
+SLOW_CYCLE_MS = 5000                  # a cycle slower than this is logged
 MAX_MODE_SAMPLES = 400
 HISTORY_WARN_MINUTES = 60             # per warning kind, energy history
 
@@ -148,15 +187,20 @@ _config = None
 _config_mtime = None
 _config_error = None
 _halt_state = None
+_halt_loaded = False                  # halt.json read once per process
 _forecast_failures = 0
 _refresh_calls = []
 _mode_samples = []
+_mode_loaded = False                  # average_mode_planner.json read once
+_mode_saved = None                    # what that file holds (skip equal writes)
 _hist_last = None                     # history.Snapshot at the last boundary
 _hist_loaded = False                  # last_snapshot.json read once per process
 _hist_warned = {}                     # warning kind -> last time logged
 _peak_alert_loaded = False            # peak_alert.json read once per process
 _peak_alert_last = None               # (YYYY-MM, kW) of the last notified peak
 _last_grid_charge = None              # (local time, kW) of the last recorded grid-charge decision
+_calibration = None                   # history.solar_calibration result, per clock hour
+_calibration_key = None               # what it was computed for (date, hour, settings)
 
 
 def _now():
@@ -436,23 +480,70 @@ def _send_alert(cfg, cause, entered):
             cfg.realert_minutes))
 
 
+def _save_halt():
+    """Persist the halt state (or "not halted") so a restart can resume it."""
+    h = _halt_state
+    if h is None:
+        payload = {"active": False}
+    else:
+        payload = {
+            "active": True, "cause": h.cause,
+            "entered_at": h.entered_at.isoformat(),
+            "last_alert_at": (h.last_alert_at.isoformat()
+                              if h.last_alert_at is not None else None)}
+    err = _write_json_atomic(HALT_STATE_PATH, payload)
+    if err:
+        log.error(f"battery_planner: cannot save halt state: {err}")  # noqa: F821
+
+
+def _load_halt():
+    """Resume a halt that was running when the process stopped (once).
+
+    Anything unreadable counts as "not halted"; the next outage then starts
+    fresh. An outage that ended while we were down is closed by _recover.
+    """
+    global _halt_state, _halt_loaded
+    if _halt_loaded:
+        return
+    _halt_loaded = True
+    if _halt_state is not None:
+        return
+    data = _read_json(HALT_STATE_PATH)
+    if not isinstance(data, dict) or data.get("active") is not True:
+        return
+    try:
+        entered = datetime.fromisoformat(data["entered_at"])
+        raw = data.get("last_alert_at")
+        last = None if raw is None else datetime.fromisoformat(raw)
+        if entered.tzinfo is None or (last is not None and last.tzinfo is None):
+            return
+        _halt_state = decision.HaltState(
+            True, decision.one_line(data["cause"]), entered, last)
+    except Exception:
+        _halt_state = None
+
+
 def _halt(cfg, local, cause):
     """Price outage: no decision; alert on entry, then per realert_minutes."""
     global _halt_state
+    _load_halt()
     cause = decision.one_line(cause)     # may embed an exception repr
     if _halt_state is None:
         log.error(f"battery_planner: HALT, {cause}")  # noqa: F821
         _halt_state = decision.HaltState(True, cause, local, None)
+        _save_halt()
     last = _halt_state.last_alert_at
     if last is None or (local - last).total_seconds() >= cfg.realert_minutes * 60:
         if _send_alert(cfg, _halt_state.cause, _halt_state.entered_at):
             _halt_state = decision.HaltState(
                 True, _halt_state.cause, _halt_state.entered_at, local)
+            _save_halt()
     _log_line(decision.format_halt(_halt_state, local), local)
 
 
 def _recover(local):
     global _halt_state
+    _load_halt()
     if _halt_state is None:
         return
     entered = _halt_state.entered_at
@@ -464,6 +555,7 @@ def _recover(local):
         "halted_for=%dm" % minutes]), local)
     log.info("battery_planner: prices recovered, resuming decisions")  # noqa: F821
     _halt_state = None
+    _save_halt()
 
 
 # ---- month-peak notice ---------------------------------------------------------
@@ -633,7 +725,7 @@ def _solar(cfg, local, span_start, span_end, payload, markers):
             usable = None
     if usable is not None and verdict == "fresh" and (
             sig is None or data.get("forecast_signature") == sig):
-        markers.append(cache.age_marker(cached, local))     # SC-014
+        markers.append(cache.age_marker(cached, local))
         return usable, False
     if payload:
         built = series.solar_series(payload, cfg, span_start, span_end)
@@ -731,18 +823,14 @@ def _record_history(cfg, now, price_map=None, solar=None, zero_fallback=False,
             pass
 
 
-def read_usage_history(cfg, local):
-    """Per-INTERVAL household kWh as [(aware datetime, kwh)], oldest first.
+def _read_history_records(cfg, local, window):
+    """Every record of the history files of the last `window` (a timedelta).
 
-    Read from the planner's own daily history files (blocks-YYYY-MM-DD.jsonl)
-    covering cfg.usage_history_weeks weeks. Only blocks whose load_kwh is known
-    are returned, so with no `load` counter and no complete solar + battery
-    counter set configured this is [] (and V4 keeps grid charging off). Missing
-    files are normal; unreadable files and corrupt lines are skipped, counted
-    and warned about (rate-limited). Interval energy, never meter totals.
+    Files are blocks-YYYY-MM-DD.jsonl, one per local date from (local - window)
+    to today. Missing files are normal; unreadable files and corrupt lines are
+    skipped, counted and warned about (rate-limited).
     """
     tz = ZoneInfo(cfg.timezone)
-    window = timedelta(weeks=cfg.usage_history_weeks)
     day = (local - window).astimezone(tz).date()
     last = local.astimezone(tz).date()
     paths = []
@@ -760,7 +848,75 @@ def read_usage_history(cfg, local):
     if bad or found["errors"]:
         _hist_warn("read", "skipped %d corrupt line(s), %d unreadable file(s)"
                    % (bad, len(found["errors"])), local)
+    return records
+
+
+def read_usage_history(cfg, local):
+    """Per-INTERVAL household kWh as [(aware datetime, kwh)], oldest first.
+
+    Read from the planner's own daily history files (blocks-YYYY-MM-DD.jsonl)
+    covering cfg.usage_history_weeks weeks. Only blocks whose load_kwh is known
+    are returned, so with no `load` counter and no complete solar + battery
+    counter set configured this is [] (and V4 keeps grid charging off). Missing
+    files are normal; unreadable files and corrupt lines are skipped, counted
+    and warned about (rate-limited). Interval energy, never meter totals.
+    """
+    window = timedelta(weeks=cfg.usage_history_weeks)
+    records = _read_history_records(cfg, local, window)
     return history.usage_series(records, since=local - window)
+
+
+def _solar_calibration(cfg, local):
+    """The solar calibration (history.solar_calibration), recomputed at most
+    once per clock hour (and when the date or the calibration settings change),
+    so the history files are not read every cycle. Never raises: a read or
+    calculation failure falls back to the configured default for that hour."""
+    global _calibration, _calibration_key
+    key = (local.date().isoformat(), local.hour, cfg.solar_calibration_weeks,
+           cfg.solar_calibration_default, cfg.block_minutes)
+    if _calibration is not None and key == _calibration_key:
+        return _calibration
+    weeks = cfg.solar_calibration_weeks
+    try:
+        # One day more than the window, so the span test can reach 7 * weeks days.
+        records = _read_history_records(cfg, local, timedelta(days=7 * weeks + 1))
+        cal = history.solar_calibration(
+            records, local, weeks, cfg.solar_calibration_default,
+            ZoneInfo(cfg.timezone), cfg.block_minutes)
+    except Exception as exc:
+        _warn_hourly("solar_calibration",
+                     "solar calibration failed, using the configured ratio: %r"
+                     % (exc,), local)
+        cal = history.default_calibration(cfg.solar_calibration_default, weeks)
+    _calibration, _calibration_key = cal, key
+    return cal
+
+
+def _calibrated(cfg, local, raw, zero_fallback, markers):
+    """(solar series with the calibration applied, ratio info for the sensor).
+
+    `raw` is the series as built or cached (never modified: it is what the cache
+    holds and what the history records as the forecast). The ratio info is
+    (ratio, source, weeks_of_history), or None when there is no forecast. Never
+    raises: on failure the raw series is used, uncalibrated.
+    """
+    if zero_fallback:
+        return raw, None
+    try:
+        tz = ZoneInfo(cfg.timezone)
+        cal = _solar_calibration(cfg, local)
+        solar = history.apply_solar_calibration(raw, cal, tz, cfg.block_minutes)
+        marker = history.calibration_marker(cal, raw, local, tz, cfg.block_minutes)
+        if marker:
+            markers.append(marker)
+        ratio, source = history.current_solar_ratio(
+            cal, local, tz, cfg.block_minutes)
+        return solar, (ratio, source, history.weeks_of_history(cal))
+    except Exception as exc:
+        _warn_hourly("solar_calibration",
+                     "solar calibration failed, forecast used as is: %r"
+                     % (exc,), local)
+        return raw, None
 
 
 def _usage(cfg, local, span_start, span_end, markers):
@@ -775,7 +931,7 @@ def _usage(cfg, local, span_start, span_end, markers):
         except (KeyError, TypeError, ValueError):
             usable = None
     if usable is not None and verdict == "fresh":
-        markers.append(cache.age_marker(cached, local))     # SC-014
+        markers.append(cache.age_marker(cached, local))
         return usable, days
     samples = read_usage_history(cfg, local)
     if samples:
@@ -813,6 +969,32 @@ def _own_grid_charge_kw(cfg, local):
     return kw
 
 
+def _load_mode_samples():
+    """Restore the detector samples saved by an earlier process (once)."""
+    global _mode_samples, _mode_loaded, _mode_saved
+    if _mode_loaded:
+        return
+    _mode_loaded = True
+    loaded = capacity.samples_from_data(
+        _read_json(MODE_STATE_PATH), MAX_MODE_SAMPLES)
+    _mode_saved = capacity.samples_to_data(loaded)
+    _mode_samples = loaded + _mode_samples
+
+
+def _save_mode_samples():
+    """Persist the samples that can still vote; skipped when unchanged."""
+    global _mode_saved
+    data = capacity.samples_to_data(_mode_samples)
+    if data == _mode_saved:
+        return
+    err = _write_json_atomic(MODE_STATE_PATH, data)
+    if err:
+        log.error(  # noqa: F821
+            f"battery_planner: cannot save average-mode state: {err}")
+    else:
+        _mode_saved = data
+
+
 def _grid_state(cfg, local):
     """capacity.GridState, or None (capacity off, or a sensor is unreadable)."""
     global _mode_samples
@@ -824,14 +1006,44 @@ def _grid_state(cfg, local):
     if offtake is None or reported is None or peak is None:
         return None
     start = capacity.window_start_of(local)
+    _load_mode_samples()
     _mode_samples.append(capacity.Sample(
         start, (local - start).total_seconds() / 60.0, reported, offtake))
     _mode_samples = _mode_samples[-MAX_MODE_SAMPLES:]
+    _save_mode_samples()
     verdict = capacity.detect_average_mode(_mode_samples, cfg)
     return capacity.build_state(
         offtake, 0.0, local, peak, cfg, reported_average_kw=reported,
         average_mode=verdict.mode, mode_confidence=verdict.confidence,
         own_grid_charge_kw=_own_grid_charge_kw(cfg, local))
+
+
+def _guard_is_shaving(cfg, local):
+    """True when the peak guard flag is "on" AND its heartbeat is fresh.
+
+    The guard rewrites the flag with last_beat = now at least once per guard
+    interval while shaving. A flag that is "on" with a missing, unparseable or
+    older-than GUARD_BEAT_FACTOR x guard_interval_seconds beat means the guard
+    is no longer running: it is ignored (and warned about) so grid charging is
+    not blocked forever by a stuck flag.
+    """
+    if _state_value(GUARD_FLAG_ENTITY) != "on":
+        return False
+    beat = _state_attr(GUARD_FLAG_ENTITY, "last_beat")
+    try:
+        when = datetime.fromisoformat(beat)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        age = (local - when).total_seconds()
+    except Exception:
+        age = None
+    if age is not None and age <= GUARD_BEAT_FACTOR * cfg.guard_interval_seconds:
+        return True
+    log.warning(  # noqa: F821
+        "battery_planner: peak guard flag is 'on' but its heartbeat is %s; "
+        "treating the guard as stopped" % (
+            "missing" if age is None else "%.0f s old" % age))
+    return False
 
 
 def _remember_grid_charge(d, local):
@@ -853,6 +1065,101 @@ def _suppress_grid_charge(d, veto, why):
         None, d.block_start)
 
 
+# ---- Home Assistant sensors ----------------------------------------------------
+
+def _publish(entity, value, attrs, now):
+    """state.set one entity; a failure is logged (rate-limited), never raised."""
+    try:
+        state.set(entity, value, new_attributes=attrs)  # noqa: F821
+    except Exception as exc:
+        _warn_hourly("sensor_publish", "cannot publish %s: %r" % (entity, exc), now)
+
+
+def _rounded(value, digits):
+    """value rounded, or None when it is missing."""
+    return None if value is None else round(float(value), digits)
+
+
+def _publish_halted(on, cause, since, now):
+    _publish(SENSOR_HALTED, "on" if on else "off", {
+        "friendly_name": "Battery planner halted",
+        "icon": "mdi:alert-octagon" if on else "mdi:check-circle-outline",
+        "device_class": "problem",
+        "cause": cause, "since": since}, now)
+
+
+def _publish_sensors(cfg, local, record, grid, stubbed, solar_ratio=None):
+    """Publish this cycle's decision. NEVER raises, never touches a decision.
+
+    Missing data is published as "unknown" (state) or null (attribute), never
+    as the figure of an earlier cycle. solar_ratio is (ratio, source,
+    weeks_of_history) of the block now, or None when there is no forecast.
+    """
+    try:
+        if not cfg.sensors_enabled:
+            return
+        soc = None if stubbed else _rounded(record.charge_percent, 1)
+        _publish(SENSOR_ACTION, record.action, {
+            "friendly_name": "Battery planner action",
+            "icon": "mdi:battery-sync",
+            "power_kw": _rounded(record.target_power_kw, 2),
+            "selector": record.selector,
+            "vetoes": ", ".join(record.vetoes_applied) or "none",
+            "why": decision.one_line(record.reasoning),
+            "degraded": ", ".join(record.degraded_inputs) or "none",
+            "soc_percent": soc,
+            "decided_at": record.timestamp.isoformat(timespec="seconds"),
+            "source": record.source}, local)
+        budget = _rounded(record.budget_kw, 2)
+        _publish(SENSOR_BUDGET, UNKNOWN if budget is None else budget, {
+            "friendly_name": "Battery planner grid charge budget",
+            "icon": "mdi:transmission-tower",
+            "unit_of_measurement": "kW", "device_class": "power",
+            "state_class": "measurement",
+            "ceiling_kw": _rounded(record.ceiling_kw, 2),
+            "average_kw": _rounded(record.running_average_kw, 2),
+            "month_peak_kw": _rounded(
+                None if grid is None else grid.month_peak_kw, 2)}, local)
+        _publish_halted(False, None, None, local)
+        _publish(SENSOR_SOLAR_RATIO,
+                 UNKNOWN if solar_ratio is None else round(solar_ratio[0], 2), {
+            "friendly_name": "Battery planner solar ratio",
+            "icon": "mdi:solar-power",
+            "source": None if solar_ratio is None else solar_ratio[1],
+            "weeks_of_history": None if solar_ratio is None else solar_ratio[2]},
+            local)
+    except Exception as exc:
+        _warn_hourly("sensor_publish", "publishing failed: %r" % (exc,), local)
+
+
+def _publish_halt_sensors(cfg, local):
+    """Price outage: halted on; the action and budget are unknown, not stale."""
+    try:
+        if not cfg.sensors_enabled:
+            return
+        since = (_halt_state.entered_at.isoformat(timespec="seconds")
+                 if _halt_state is not None else None)
+        cause = _halt_state.cause if _halt_state is not None else None
+        _publish_halted(True, cause, since, local)
+        _publish(SENSOR_ACTION, UNKNOWN, {
+            "friendly_name": "Battery planner action",
+            "icon": "mdi:battery-sync",
+            "power_kw": None, "selector": None, "vetoes": "none",
+            "why": "halted: %s" % cause, "degraded": "none",
+            "soc_percent": None,
+            "decided_at": local.isoformat(timespec="seconds"),
+            "source": "planner"}, local)
+        _publish(SENSOR_BUDGET, UNKNOWN, {
+            "friendly_name": "Battery planner grid charge budget",
+            "icon": "mdi:transmission-tower",
+            "unit_of_measurement": "kW", "device_class": "power",
+            "state_class": "measurement",
+            "ceiling_kw": None, "average_kw": None,
+            "month_peak_kw": None}, local)
+    except Exception as exc:
+        _warn_hourly("sensor_publish", "publishing failed: %r" % (exc,), local)
+
+
 # ---- the cycle -----------------------------------------------------------------
 
 def _cycle(now):
@@ -865,6 +1172,7 @@ def _cycle(now):
     price_map, cause = _read_prices(cfg, local)
     if cause is not None:
         _halt(cfg, local, cause)
+        _publish_halt_sensors(cfg, local)
         _record_history(cfg, now)        # counters keep counting during a halt
         return
     _recover(local)
@@ -879,7 +1187,8 @@ def _cycle(now):
             markers.append("forecast_age=" + cache.format_minutes(forecast_age))
     midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
     span_end = midnight.astimezone(timezone.utc) + timedelta(hours=SERIES_SPAN_HOURS)
-    solar, zero_fallback = _solar(cfg, local, midnight, span_end, payload, markers)
+    solar_raw, zero_fallback = _solar(cfg, local, midnight, span_end, payload, markers)
+    solar, solar_ratio = _calibrated(cfg, local, solar_raw, zero_fallback, markers)
     usage, history_days = _usage(cfg, local, midnight, span_end, markers)
     window_days = cfg.usage_history_weeks * 7
     coverage = history_days if history_days < window_days else None
@@ -899,7 +1208,7 @@ def _cycle(now):
                      usage_history_available=history_days > 0)
 
     if d.action == "charge" and d.charge_source == "grid":
-        if _state_value(GUARD_FLAG_ENTITY) == "on":
+        if _guard_is_shaving(cfg, local):
             d = _suppress_grid_charge(d, "GUARD", "peak guard is shaving")
         elif cfg.capacity_enabled and grid is None:
             d = _suppress_grid_charge(d, "NOGRID", "grid sensors unreadable")
@@ -919,13 +1228,18 @@ def _cycle(now):
     if not inverter.apply(d.action, d.target_power_kw, record,
                           log_dir=DECISIONS_LOG_DIR,
                           inverter_type=cfg.inverter_type,
-                          driver_dir=CORE_DIR):
+                          driver_dir=CORE_DIR,
+                          resend_minutes=cfg.inverter_resend_minutes,
+                          state_dir=STATE_DIR):
         log.error("battery_planner: decision could not be recorded")  # noqa: F821
     else:
         _remember_grid_charge(d, local)
+    _publish_sensors(cfg, local, record, grid, bat.is_stubbed, solar_ratio)
     if took > SLOW_CYCLE_MS:
         log.warning(f"battery_planner: slow cycle {took}ms")  # noqa: F821
-    _record_history(cfg, now, price_map, solar, zero_fallback,
+    # The history records the RAW forecast: a calibrated one would feed the
+    # ratio back into itself.
+    _record_history(cfg, now, price_map, solar_raw, zero_fallback,
                     None if charge_is_stub else charge)
 
 
@@ -937,7 +1251,7 @@ def _due(now):
 
 
 def _skip(now, started):
-    """A due cycle found the previous one still running: say so (NFR-001)."""
+    """A due cycle found the previous one still running: say so."""
     interval = _config.evaluation_interval_minutes if _config else CONFIG_RETRY_MINUTES
     busy = int((now - started).total_seconds())
     msg = "battery_planner: cycle skipped, previous cycle running for %ds" % busy

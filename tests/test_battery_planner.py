@@ -51,8 +51,15 @@ class StateVal(str):
 class FakeState:
     def __init__(self):
         self.data = {}
+        self.published = []             # (entity, value, attrs) of planner state.set calls
+        self.fail_publish = False       # make planner state.set calls raise
 
-    def set(self, entity, value=None, attrs=None, **stamps):
+    def set(self, entity, value=None, attrs=None, new_attributes=None, **stamps):
+        if new_attributes is not None:  # the planner publishing, like pyscript's state.set
+            if self.fail_publish:
+                raise RuntimeError("state.set down")
+            self.published.append((entity, value, dict(new_attributes)))
+            attrs = new_attributes
         if stamps:
             value = StateVal(value)
             for k, v in stamps.items():
@@ -112,7 +119,11 @@ class Env:
         self.config_path = tmp / "user_config.yaml"
         self.log_dir = tmp / "logs"
         self.cache_dir = tmp / "cache"
-        self.peak_path = tmp / "state" / "peak_alert.json"
+        self.state_dir = tmp / "state"
+        self.peak_path = self.state_dir / "peak_alert.json"
+        self.halt_path = self.state_dir / "halt.json"
+        self.mode_path = self.state_dir / "average_mode_planner.json"
+        self.command_path = self.state_dir / "last_command.json"
         # Off by default: the fixture's month peak (3.0) is above the floor
         # and would mail in every unrelated test. Peak-alert tests turn it on.
         self.peak_alerts = False
@@ -189,6 +200,7 @@ def env(tmp_path):
     builtins.service = FakeService()
     builtins.log = FakeLog()
     builtins.task = object()
+    restore_decide = None
     try:
         spec = importlib.util.spec_from_file_location(
             "battery_planner_under_test", SRC)
@@ -197,11 +209,15 @@ def env(tmp_path):
         e = Env(mod, tmp_path)
         mod.CORE_DIR = str(MODULES)
         mod._ensure_core()
+        restore_decide = (mod.rules, mod.rules.decide)  # a test may wrap it
         mod.CONFIG_PATH = str(e.config_path)
         mod.CACHE_DIR = str(e.cache_dir) + "/"
         mod.DECISIONS_LOG_DIR = str(e.log_dir)
         mod.HISTORY_DIR = str(e.tmp / "history") + "/"
         mod.PEAK_ALERT_PATH = str(e.peak_path)
+        mod.STATE_DIR = str(e.state_dir) + "/"
+        mod.HALT_STATE_PATH = str(e.halt_path)
+        mod.MODE_STATE_PATH = str(e.mode_path)
         mod._now = lambda: e.clock
         e.write_config()
         st = e.state
@@ -214,6 +230,8 @@ def env(tmp_path):
         st.set(MONTH_PEAK_ENTITY, "3.0", {"unit_of_measurement": "kW"})
         yield e
     finally:
+        if restore_decide is not None:      # the core module outlives the test
+            restore_decide[0].decide = restore_decide[1]
         for n in _INJECTED:
             if n in saved:
                 setattr(builtins, n, saved[n])
@@ -392,7 +410,7 @@ def test_forecast_down_with_fresh_solar_cache_states_its_age(env):
     env.state.set(FORECAST_ENTITY, "unavailable", {})
     env.run(T0 + STEP)
     degraded = fields_of(env.decisions()[-1])["degraded"]
-    assert "cache_age_solar=5m" in degraded               # FR-027 / SC-014
+    assert "cache_age_solar=5m" in degraded            
     assert "solar_zero_fallback" not in degraded
 
 
@@ -451,7 +469,7 @@ def test_solar_cache_miss_rebuilds_then_hits_and_survives_deletion(env, monkeypa
     assert len(calls) == 2                                 # miss rebuilt
     after = fields_of(env.decisions()[-1])
     for key in ("action", "power", "selector", "solar_rem"):
-        assert before[key] == after[key]                   # SC-013
+        assert before[key] == after[key]                 
 
 
 def test_new_forecast_rebuilds_solar(env, monkeypatch):
@@ -553,7 +571,7 @@ def test_grid_charge_passes_when_guard_is_off(env, monkeypatch):
 
 def test_grid_charge_downgraded_while_guard_shaving(env, monkeypatch):
     _force_grid_charge(env, monkeypatch)
-    env.state.set(env.mod.GUARD_FLAG_ENTITY, "on", {})
+    _flag(env, 10)
     env.run()
     keys = fields_of(env.decisions()[0])
     assert keys["action"] == "idle" and keys["power"] == "0.00kW"
@@ -570,7 +588,7 @@ def test_solar_charge_is_not_downgraded_by_guard(env, monkeypatch):
         lambda *a, **kw: mod.rules.Decision(
             "charge", 2.0, "S2", "solar surplus", [], [], "solar",
             real(*a, **kw).block_start))
-    env.state.set(mod.GUARD_FLAG_ENTITY, "on", {})
+    _flag(env, 10)
     env.run()
     assert fields_of(env.decisions()[0])["action"] == "charge"
 
@@ -583,6 +601,71 @@ def test_grid_charge_downgraded_when_grid_sensors_unreadable(env, monkeypatch):
     assert keys["action"] == "idle"
     assert "NOGRID" in keys["vetoes"]
     assert "grid_sensors_unavailable" in keys["degraded"]
+
+
+# ---- guard heartbeat: a stuck "on" flag must not block charging forever ------
+
+def _flag(env, beat_age_s, value="on"):
+    attrs = {}
+    if beat_age_s is not None:
+        attrs["last_beat"] = (env.clock - timedelta(seconds=beat_age_s)
+                              ).isoformat()
+    env.state.set(env.mod.GUARD_FLAG_ENTITY, value, attrs)
+
+
+def test_guard_flag_with_a_fresh_beat_suppresses_grid_charge(env, monkeypatch):
+    _force_grid_charge(env, monkeypatch)
+    _flag(env, 30)
+    env.run()
+    keys = fields_of(env.decisions()[0])
+    assert keys["action"] == "idle" and "GUARD" in keys["vetoes"]
+
+
+def test_guard_flag_beat_at_the_limit_still_counts(env, monkeypatch):
+    _force_grid_charge(env, monkeypatch)
+    _flag(env, 90)                  # 3 x the 30 s default guard interval
+    env.run()
+    assert fields_of(env.decisions()[0])["action"] == "idle"
+
+
+def test_stuck_on_flag_with_an_old_beat_is_ignored(env, monkeypatch):
+    _force_grid_charge(env, monkeypatch)
+    _flag(env, 91)
+    env.run()
+    keys = fields_of(env.decisions()[0])
+    assert keys["action"] == "charge" and "GUARD" not in keys["vetoes"]
+    assert any("heartbeat is 91 s old" in m for m in env.log.by_level["warning"])
+
+
+def test_on_flag_without_a_beat_is_ignored(env, monkeypatch):
+    _force_grid_charge(env, monkeypatch)
+    _flag(env, None)
+    env.run()
+    assert fields_of(env.decisions()[0])["action"] == "charge"
+    assert any("heartbeat is missing" in m for m in env.log.by_level["warning"])
+
+
+def test_unparseable_beat_is_ignored(env, monkeypatch):
+    _force_grid_charge(env, monkeypatch)
+    env.state.set(env.mod.GUARD_FLAG_ENTITY, "on", {"last_beat": "soon"})
+    env.run()
+    assert fields_of(env.decisions()[0])["action"] == "charge"
+
+
+def test_beat_window_follows_the_guard_interval(env):
+    env.write_config(
+        extra="capacity_tariff:\n  guard_interval_seconds: 60\n")
+    cfg = env.mod._load_config()
+    _flag(env, 180)
+    assert env.mod._guard_is_shaving(cfg, env.clock) is True
+    _flag(env, 181)
+    assert env.mod._guard_is_shaving(cfg, env.clock) is False
+
+
+def test_off_flag_is_off_whatever_the_beat(env):
+    cfg = env.mod._load_config()
+    _flag(env, 1, value="off")
+    assert env.mod._guard_is_shaving(cfg, env.clock) is False
 
 
 # ---- source hygiene ---------------------------------------------------------------------------
@@ -722,6 +805,9 @@ mod.inverter = real
 mod.CONFIG_PATH = str(tmp / "user_config.yaml")
 mod.CACHE_DIR = str(tmp / "cache") + "/"
 mod.DECISIONS_LOG_DIR = str(tmp / "logs")
+mod.STATE_DIR = str(tmp / "state") + "/"
+mod.HALT_STATE_PATH = str(tmp / "state" / "halt.json")
+mod.MODE_STATE_PATH = str(tmp / "state" / "average_mode_planner.json")
 mod._now = lambda: T0
 start = datetime(2026, 9, 29, 22, 0, tzinfo=UTC)
 mod_state = builtins.state
@@ -766,7 +852,7 @@ def test_loader_failure_leaves_no_half_loaded_module(env, tmp_path, monkeypatch)
 
 # ---- interpreter-safety lint ----------------------------------------------------------------
 
-_INTERPRETED = [SRC, MODULES / "inverter.py"]
+_INTERPRETED = [SRC, MODULES / "inverter.py", SRC.parent / "housekeeping.py"]
 _DECORATORS = {"property", "staticmethod", "classmethod"}
 
 
@@ -977,10 +1063,11 @@ def test_empty_history_vetoes_grid_charge_in_the_record(env):
     _negative_prices(env)
     env.run()
     keys = fields_of(env.decisions()[0])
-    # S1 grid charge is vetoed; the planner falls through to S2, which
-    # charges from SOLAR (unaffected by V4).
-    assert keys["selector"] == "S2" and keys["action"] == "charge"
+    # Without usage history the planner holds: S1 is vetoed, S2 (solar
+    # storage) too, and the record is an idle one that says why.
+    assert keys["selector"] == "S6" and keys["action"] == "idle"
     assert "V4(suppressed S1 charge)" in keys["vetoes"]
+    assert "no usage history: planner holds" in keys["why"]
     assert "usage_history_unavailable" in keys["degraded"]
 
 

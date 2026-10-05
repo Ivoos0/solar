@@ -22,6 +22,8 @@ _MAP = [
     ("battery", "round_trip_efficiency", "round_trip_efficiency"),
     ("solar", "forecast_entity", "forecast_entity"),
     ("solar", "forecast_attribute", "forecast_attribute"),
+    ("solar", "calibration_default", "solar_calibration_default"),
+    ("solar", "calibration_weeks", "solar_calibration_weeks"),
     ("timing", "block_minutes", "block_minutes"),
     ("timing", "evaluation_interval_minutes", "evaluation_interval_minutes"),
     ("timing", "forecast_retry_minutes", "forecast_retry_minutes"),
@@ -39,6 +41,7 @@ _MAP = [
      "peak_warning_min_interval_minutes"),
     ("alerts", "peak_warning_ticks", "peak_warning_ticks"),
     ("inverter", "type", "inverter_type"),
+    ("inverter", "resend_minutes", "inverter_resend_minutes"),
     (None, "timezone", "timezone"),
     ("capacity_tariff", "enabled", "capacity_enabled"),
     ("capacity_tariff", "billing_floor_kw", "billing_floor_kw"),
@@ -50,6 +53,9 @@ _MAP = [
     ("capacity_tariff", "month_peak_sensor", "month_peak_sensor"),
     ("capacity_tariff", "stay_under_percent", "stay_under_percent"),
     ("history", "enabled", "history_enabled"),
+    ("report", "enabled", "report_enabled"),
+    ("retention", "keep_days", "retention_keep_days"),
+    ("sensors", "enabled", "sensors_enabled"),
 ]
 
 # history.sensors: quantity -> attribute holding a tuple of entity ids. An
@@ -70,7 +76,8 @@ _NON_NUMERIC = (
     "usage_recency_weighting", "inverter_type", "price_entity",
     "price_attribute", "forecast_entity", "forecast_attribute",
     "quarter_hour_average_sensor", "month_peak_sensor", "history_enabled",
-    "peak_alert_enabled", "peak_warning_enabled",
+    "peak_alert_enabled", "peak_warning_enabled", "report_enabled",
+    "sensors_enabled",
 ) + _HISTORY_SENSOR_ATTRS
 
 # Entity-name fields (checked as domain.object_id) and attribute-name fields
@@ -129,7 +136,13 @@ class SiteConfig:
     usage_history_weeks: int = 4
     usage_grouping: str = "same_weekday"
     usage_recency_weighting: str = "linear"
+    # Solar calibration: the ratio applied to the forecast until
+    # solar_calibration_weeks weeks of measured history exist. Both are applied
+    # AFTER the cached series is read, so neither is in fingerprint().
+    solar_calibration_default: float = 1.0
+    solar_calibration_weeks: int = 4
     inverter_type: str = "logging"
+    inverter_resend_minutes: int = 15
     # Home Assistant entities. Deliberately NOT in fingerprint(): they name
     # where data is read from, not what a block means.
     price_entity: str = "sensor.entso_prices_average_electricity_price"
@@ -151,6 +164,14 @@ class SiteConfig:
     history_battery_charge_sensors: tuple = ()
     history_battery_discharge_sensors: tuple = ()
     history_load_sensors: tuple = ()
+    # Daily report (written next to the history). Not in fingerprint().
+    report_enabled: bool = True
+    # Retention: the daily cleanup deletes log, history and report files whose
+    # DATE IN THE NAME is older than this many days. Not in fingerprint().
+    retention_keep_days: int = 90
+    # Publish the planner state as Home Assistant sensors (battery_planner_*).
+    # Not in fingerprint(): it changes no block.
+    sensors_enabled: bool = True
 
     def history_sensors(self):
         """{quantity: tuple of entity ids} (empty tuple = not available)."""
@@ -202,6 +223,10 @@ def _errors(cfg):
         bad("inverter.type", cfg.inverter_type,
             "must be a driver name: lowercase letters, digits, underscore "
             "(it selects pyscript/modules/inverter_<type>.py)")
+    if (isinstance(cfg.inverter_resend_minutes, float)
+            or cfg.inverter_resend_minutes < 0):
+        bad("inverter.resend_minutes", cfg.inverter_resend_minutes,
+            "must be an integer >= 0 (0 = send every call)")
     for attr, label in _ENTITY_FIELDS:
         v = getattr(cfg, attr)
         if not isinstance(v, str) or not re.fullmatch(
@@ -228,6 +253,10 @@ def _errors(cfg):
             "must be an integer >= 1")
     if not isinstance(cfg.history_enabled, bool):
         bad("history.enabled", cfg.history_enabled, "must be true or false")
+    if not isinstance(cfg.report_enabled, bool):
+        bad("report.enabled", cfg.report_enabled, "must be true or false")
+    if not isinstance(cfg.sensors_enabled, bool):
+        bad("sensors.enabled", cfg.sensors_enabled, "must be true or false")
     for q, attr in _HISTORY_SENSORS:
         v = getattr(cfg, attr)
         label = "history.sensors.%s" % q
@@ -255,6 +284,26 @@ def _errors(cfg):
     if isinstance(cfg.usage_history_weeks, float) or cfg.usage_history_weeks < 1:
         bad("usage_history_weeks", cfg.usage_history_weeks,
             "must be an integer >= 1")
+    if not 0 < cfg.solar_calibration_default <= 2:
+        bad("solar.calibration_default", cfg.solar_calibration_default,
+            "must be > 0 and <= 2")
+    if (isinstance(cfg.solar_calibration_weeks, float)
+            or cfg.solar_calibration_weeks < 1):
+        bad("solar.calibration_weeks", cfg.solar_calibration_weeks,
+            "must be an integer >= 1")
+    if isinstance(cfg.retention_keep_days, float) or cfg.retention_keep_days < 1:
+        bad("retention.keep_days", cfg.retention_keep_days,
+            "must be an integer >= 1")
+    else:
+        weeks = [w for w in (cfg.usage_history_weeks, cfg.solar_calibration_weeks)
+                 if isinstance(w, int) and w >= 1]
+        if weeks and cfg.retention_keep_days < 7 * max(weeks):
+            bad("retention.keep_days", cfg.retention_keep_days,
+                "must be at least 7 * max(usage.history_weeks, "
+                "solar.calibration_weeks) (usage.history_weeks=%d and "
+                "solar.calibration_weeks=%d need %d days of history)"
+                % (cfg.usage_history_weeks, cfg.solar_calibration_weeks,
+                   7 * max(weeks)))
     if cfg.usage_grouping not in _GROUPINGS:
         bad("usage_grouping", cfg.usage_grouping,
             "must be one of %s" % ", ".join(_GROUPINGS))

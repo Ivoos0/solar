@@ -227,11 +227,42 @@ def test_message_uses_the_configured_floor_and_the_month_peak(wg):
 
 def test_message_says_when_the_guard_cannot_shave(wg):
     g = wg()
-    g.inv.charge_percent = 10.0                      # at the reserve: V1
+    g.inv.charge_percent = 0.0                       # empty: V5
     two_ticks(g, **HIGH)
     msg = warned(g)[0][2]["message"]
-    assert "CANNOT shave" in msg and "V1" in msg and "10.0%" in msg
+    assert "CANNOT shave" in msg and "V5" in msg and "empty" in msg
+    assert "only limits exporting" in msg
     assert g.discharges == []
+
+
+def test_message_says_the_guard_shaves_below_the_reserve(wg):
+    g = wg()
+    g.inv.charge_percent = 5.0                       # under the reserve
+    two_ticks(g, **HIGH)
+    msg = warned(g)[0][2]["message"]
+    assert "CANNOT" not in msg and "is shaving" in msg
+    assert len(g.discharges) >= 1
+
+
+REAL = "inverter:\n  type: fake\n"
+
+
+def test_warning_reads_the_metered_state_when_a_shave_does_not_take_effect(wg):
+    # real driver, shave commanded, but the meter still shows the full load:
+    # the add-back must not hide the crossing from the warning
+    g = wg(capacity_extra=REAL)
+    two_ticks(g, **HIGH)
+    assert len(g.discharges) >= 1
+    assert len(warned(g)) == 1
+
+
+def test_no_warning_when_the_commanded_shave_takes_effect(wg):
+    g = wg(capacity_extra=REAL)
+    go(g, 12, 7, 30, **HIGH)
+    # the battery now shaves: the meter shows 0.5 kW, window energy as before
+    go(g, 12, 8, 0, offtake="0.5", avg="3.9", peak="2.5")
+    assert warned(g) == []
+    assert g.st.values["pyscript.peak_guard_shaving"] == "on"
 
 
 def test_failed_send_is_retried_and_not_marked_sent(wg):

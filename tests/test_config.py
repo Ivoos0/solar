@@ -236,6 +236,33 @@ def test_inverter_type_is_not_in_the_cache_fingerprint():
     assert from_dict(base(inverter__type="alphaess")).fingerprint() == ref
 
 
+# ---- inverter.resend_minutes (command de-duplication window) ------------------
+
+def test_inverter_resend_minutes_defaults_to_15(site_config):
+    assert site_config.inverter_resend_minutes == 15
+    assert from_dict({**base(), "inverter": {"type": None}}) \
+        .inverter_resend_minutes == 15
+
+
+@pytest.mark.parametrize("value", [0, 1, 15, 240])
+def test_inverter_resend_minutes_accepts_whole_numbers(value):
+    c = from_dict(base(inverter__resend_minutes=value))
+    assert c.inverter_resend_minutes == value
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, 15.0, True, "15", [15]])
+def test_inverter_resend_minutes_rejects_bad_values(value):
+    with pytest.raises(ConfigError) as exc:
+        from_dict(base(inverter__resend_minutes=value))
+    assert "inverter.resend_minutes" in str(exc.value) \
+        or "inverter_resend_minutes" in str(exc.value)
+
+
+def test_inverter_resend_minutes_is_not_in_the_cache_fingerprint():
+    ref = from_dict(base()).fingerprint()
+    assert from_dict(base(inverter__resend_minutes=0)).fingerprint() == ref
+
+
 # --- configurable Home Assistant entities --------------------------------
 
 ENTITY_DEFAULTS = {

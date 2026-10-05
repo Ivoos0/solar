@@ -70,7 +70,7 @@ def _source_resolution(times):
 def expand_to_blocks(raw_entries, config, start_time):
     """Expand raw {time, price} entries onto the block grid, held flat.
 
-    Returns a dict keyed by block_start (FR-039). No interpolation (FR-030);
+    Returns a dict keyed by block_start. No interpolation;
     gaps in the source stay gaps. Blocks before the block containing
     start_time are dropped; the current block is kept.
     """

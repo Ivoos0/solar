@@ -47,7 +47,7 @@ prices:
 
 battery:
   capacity_kwh: CHANGE_ME       # REQUIRED - no sensible default (number, kWh)
-  reserve_percent: 10.0         # never planned below
+  reserve_percent: 10.0         # never export to the grid below (a limit, not a target)
   max_charge_kw: 5.0            # binds PER BLOCK, independent of capacity
   max_discharge_kw: 5.0
   round_trip_efficiency: 0.90   # gates arbitrage and the solar-hold decision
@@ -62,6 +62,17 @@ solar:
                                 # States and set the real name here.
   forecast_attribute: watt_hours_period
                                 # attribute holding {timestamp: Wh} per period
+  # Solar calibration (see the README, section "Solar calibration"): the forecast
+  # is often too high or too low for your roof, so it is multiplied by a ratio.
+  # The ratio is measured from your own energy history and needs a counter under
+  # history.sensors.solar. Until that history spans calibration_weeks weeks the
+  # configured calibration_default is used (1.0 = no correction).
+  calibration_default: 1.0      # > 0 and <= 2. Real solar is usually about 80 % of
+                                # the forecast? Use 0.8 (round DOWN: a lower ratio
+                                # counts on less solar)
+  calibration_weeks: 4          # whole number >= 1: weeks of measured history needed,
+                                # and the weeks the measured ratio is averaged over
+                                # (retention.keep_days must be at least 7 x this)
 
 # Belgian capaciteitstarief, billed on grid offtake only.
 capacity_tariff:
@@ -128,6 +139,32 @@ history:
                                 # with `load`, or with solar + battery_charge +
                                 # battery_discharge all configured.
 
+# Daily report: shortly after midnight the planner writes a readable summary
+# of the day that just ended (decisions and energy) next to the energy
+# history, as battery_planner/history/report-YYYY-MM-DD.md. See the README,
+# section "Daily report". Missing days of the last week are filled in; an
+# existing report is never rewritten.
+report:
+  enabled: true
+
+# Sensors: once per planner cycle the planner publishes sensor.battery_planner_action,
+# sensor.battery_planner_budget and binary_sensor.battery_planner_halted in Home
+# Assistant. They are created by pyscript at run time (gone after a restart until the
+# next cycle, no unique id so not editable in the UI). See the README, section "Sensors".
+sensors:
+  enabled: true
+
+# Retention: every night at 03:30 (local time) the planner deletes old files
+# from battery_planner/: decision logs (decisions-YYYY-MM-DD.log) and, in
+# battery_planner/history/, the energy history (blocks-YYYY-MM-DD.jsonl) and
+# daily reports (report-YYYY-MM-DD.md). The DATE IN THE FILE NAME decides:
+# files dated more than keep_days days ago go. Nothing else is touched (state,
+# cache, last_snapshot.json, this file).
+retention:
+  keep_days: 90                 # whole days, at least 1 and at least 7 times the larger of
+                                # usage.history_weeks and solar.calibration_weeks (both
+                                # need that much history; 4 weeks = 28 days)
+
 timing:
   block_minutes: 15
   evaluation_interval_minutes: 5
@@ -165,5 +202,10 @@ inverter:
                                    #   REAL COMMANDS to your inverter. You are responsible
                                    #   for the driver you enable. Lowercase letters,
                                    #   digits, underscore.
+  resend_minutes: 15               # the driver gets an UNCHANGED command again only after this
+                                   # many minutes (whole number, 0 or more). A changed command
+                                   # (other action, or power differing by 0.01 kW) is sent at once.
+                                   # 0 = send on every call. The decision log line is written
+                                   # every cycle regardless. No effect with the logging driver.
 
 timezone: Europe/Brussels

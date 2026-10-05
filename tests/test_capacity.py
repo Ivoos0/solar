@@ -21,7 +21,7 @@ def cfg(site_config, **kw):
     return replace(site_config, **kw)
 
 
-# ---- T053 window alignment / build_state --------------------------------
+# ---- window alignment / build_state --------------------------------
 
 @pytest.mark.parametrize("now,start,elapsed", [
     (at(14, 0, 0), at(14, 0), 0.0),
@@ -82,7 +82,7 @@ def test_opening_seconds_guard(site_config):
     assert a.window_energy_kwh == pytest.approx(0.001)
 
 
-# ---- T054 ceiling --------------------------------------------------------
+# ---- ceiling --------------------------------------------------------
 
 @pytest.mark.parametrize("peak,expected", [
     (0.0, 2.5), (1.8, 2.5), (2.5, 2.5), (6.2, 6.2)])
@@ -90,7 +90,7 @@ def test_ceiling(site_config, peak, expected):
     assert cap.ceiling_kw(state(peak=peak), site_config) == expected
 
 
-# ---- T055 budget ---------------------------------------------------------
+# ---- budget ---------------------------------------------------------
 
 def test_budget_clamped_high(site_config):
     # ceiling 4 -> allowance 1.0 ; remaining 7.5 min = 0.125 h
@@ -133,7 +133,7 @@ def test_budget_subtracts_household_draw_once(site_config):
     assert cap.budget_kw(s, site_config) == pytest.approx(0.0)
 
 
-# ---- T056 shave ----------------------------------------------------------
+# ---- shave ----------------------------------------------------------
 
 def test_shave_worked_scenario(site_config):
     # 6 kW draw, ceiling 4.0, 5 min in.
@@ -186,7 +186,7 @@ def test_arbitrage_value():
     assert cap.arbitrage_value_eur(2.0, 0.15) == pytest.approx(0.30)
 
 
-# ---- T067 detector -------------------------------------------------------
+# ---- detector -------------------------------------------------------
 
 def win(i):
     return datetime(2026, 9, 29, 8 + i, 0)

@@ -22,7 +22,8 @@ Entry point
   usage_history_available
                  True only when the usage profile rests on real history
                  (the adapter sets it from sample coverage). The default is the
-                 SAFE value False: no history -> V4 forbids grid charging.
+                 SAFE value False: no history -> V4 holds every price-driven
+                 selector (S1-S5); only peak shaving (S0) still acts.
 
 Decision fields: action (charge|discharge|export|idle), target_power_kw,
 selector ("S0".."S6"), reasoning, vetoes_fired (["V1", ...]), suppressed
@@ -39,18 +40,36 @@ whose condition simply does not hold is NOT recorded. S6 (idle) is never
 forbidden, so the loop always terminates.
 
 Action classes a veto can forbid: "discharge" (serve the house from the
-battery), "export" (discharge to the grid), "grid_charge".
-  V1  charge_percent <= reserve_percent  -> {"discharge", "export"}
+battery), "export" (discharge to the grid), "grid_charge", "solar_charge"
+(store surplus solar: a charge proposal with charge_source "solar").
+  V1  charge_percent <= reserve_percent  -> {"export"} only
   V2  injection_price < 0 (0.0 does not) -> {"export"} only
   V3  capacity budget_kw <= 0            -> {"grid_charge"} only
-  V4  no usable usage history            -> {"grid_charge"} only
+  V4  no usable usage history            -> {"grid_charge", "export",
+                                             "solar_charge"}
+  V5  battery empty (charge_percent <= 0
+      or stored_kwh <= 0)                -> {"discharge"} only
+RESERVE SEMANTICS: reserve_percent limits what the battery may EXPORT to the
+grid; it is a floor for exporting, not a target to hold. The planner never buys
+power to keep the battery up to the reserve (when the battery reaches it the
+house simply imports), and peak shaving (S0) may use charge below the reserve.
+The planner cannot know the inverter's own minimum charge (the driver / the
+inverter enforces that), so the only lower bound it applies to a discharge is V5:
+the battery is truly empty. V5 is a separate veto (not buried in S0) so an empty
+battery shows up in the record's vetoes field as V5(suppressed S0 discharge).
 V4 ("no usage profile"): without history the trajectory cannot know the
-household load, so a grid charge could land on top of an unseen peak and raise
-the capacity tariff. It fires whether or not capacity logic is active.
+household load. A grid charge could land on top of an unseen peak, and the
+"solar > usage now" test of S2 and the spill/saturation maths of S3 are
+meaningless at zero usage. So every price-driven selector (S1-S5) is held and
+the planner falls through to idle (S6), whose reasoning says "no usage history:
+planner holds". V4 does NOT forbid "discharge": the only discharge proposal is
+S0 peak shaving, which does not depend on usage history (it reads the live grid
+state) and protects the capacity tariff, so it still acts (only V5, an empty
+battery, can stop it). V4 fires whether or not capacity logic is active.
 V3 and the grid-charge cap use the budget against stay_under_percent of the
 ceiling (capacity.charging_ceiling_kw), e.g. 80 % of 2.5 kW = 2.0 kW; S0 and
 the reported ceiling still use the real ceiling.
-Solar charging is a class no veto forbids.
+Solar charging is forbidden only by V4.
 
 Resolved ambiguities / documented readings
 ------------------------------------------
@@ -60,7 +79,7 @@ Resolved ambiguities / documented readings
   now (-0.02 * 0.9 = -0.018 > -0.02); dividing would invert that.
 * S2 condition (c) is EITHER injection_price_now < 0 (storing beats paying to
   export, whatever later prices are, including the last horizon block) OR the
-  best later injection price after losses beats the price now (FR-013).
+  best later injection price after losses beats the price now.
 * "Best remaining" injection price (S2, S5) = priced blocks strictly AFTER the
   current block, to the horizon end. S3 compares against the window
   [current block, saturation_block) which includes now.
@@ -69,17 +88,27 @@ Resolved ambiguities / documented readings
   boundary is at or before the current block the window is just the current
   block (saturation/breach is imminent, so acting now is the only option).
 * S2 "solar > usage now" uses the current block's solar_kwh vs usage_kwh; the
-  charge power is min(surplus kW, max_charge_kw). It charges from solar so no
-  veto (not even V3) applies.
+  charge power is min(surplus kW, max_charge_kw). It charges from solar so V3 does not
+  apply; only V4 (no usage history, where "solar > usage" means nothing) holds it.
 * S4 shortfall = sum of grid_shortfall_kwh over the trajectory (load the grid
   must serve because the battery sits at the floor); N = max(1, ceil(shortfall
   / (max_charge_kw * block_hours))), capped at the window size. "Among the
   cheapest N" includes ties with the N-th cheapest price. S4 and S5 need
   headroom > 0.
+* S4 acts only when charging is CHEAPER than simply importing at the breach.
+  The reserve is a floor, not a target: when the battery gets there the house
+  imports at that time. Charging now costs price_now / round_trip_efficiency
+  per kWh delivered later; importing at the breach costs the energy-weighted
+  average consumption price of the blocks that have grid shortfall (weights =
+  their grid_shortfall_kwh; blocks without a published price are ignored; with
+  no priced shortfall block S4 does nothing). Every candidate, the current
+  block included, must satisfy price / efficiency < that weighted price,
+  strictly; on a tie importing wins. Otherwise S4 proposes nothing and the
+  loop falls through.
 * Every grid-charging selector (S1, S4, S5) clamps to budget_kw
   (capacity.budget_kw: charge power left after the household draw, capped there
-  at max_charge_kw) and says so when the cap bit. budget_kw is 0.0 in the last minute of a window (WP11), so V3 then
-  forbids grid charging; that is WP11 semantics, not re-derived here.
+  at max_charge_kw) and says so when the cap bit. budget_kw is 0.0 in the last minute of a window, so V3 then
+  forbids grid charging; that is capacity.budget_kw semantics, not re-derived here.
 * If the current block has no published price, every price selector (S1-S5)
   is skipped and V2 cannot fire; S0 and S6 still work.
 * A veto naming several causes is reported joined, e.g. "V1+V2" for export.
@@ -93,12 +122,15 @@ import capacity
 FORBID_DISCHARGE = "discharge"
 FORBID_EXPORT = "export"
 FORBID_GRID_CHARGE = "grid_charge"
+FORBID_SOLAR_CHARGE = "solar_charge"
 
 VETO_FORBIDS = {
-    "V1": frozenset({FORBID_DISCHARGE, FORBID_EXPORT}),
+    "V1": frozenset({FORBID_EXPORT}),
     "V2": frozenset({FORBID_EXPORT}),
     "V3": frozenset({FORBID_GRID_CHARGE}),
-    "V4": frozenset({FORBID_GRID_CHARGE}),
+    "V4": frozenset({FORBID_GRID_CHARGE, FORBID_EXPORT,
+                    FORBID_SOLAR_CHARGE}),
+    "V5": frozenset({FORBID_DISCHARGE}),
 }
 
 
@@ -115,13 +147,15 @@ class Proposal:
 
     @property
     def action_class(self):
-        """The class a veto can forbid, or None (solar charge / idle)."""
+        """The class a veto can forbid, or None (idle)."""
         if self.action == "export":
             return FORBID_EXPORT
         if self.action == "discharge":
             return FORBID_DISCHARGE
         if self.action == "charge" and self.charge_source == "grid":
             return FORBID_GRID_CHARGE
+        if self.action == "charge" and self.charge_source == "solar":
+            return FORBID_SOLAR_CHARGE
         return None
 
 
@@ -156,6 +190,8 @@ def establish_vetoes(battery_state, current_price, config, grid_state=None,
     """Return (forbidden action classes, [fired veto ids]). Data only.
 
     usage_history_available defaults to the SAFE False (V4 fires).
+    V1 (at or below the reserve) forbids only export; V5 (battery empty)
+    forbids only discharge.
 
     current_price is the PricePoint of the current block or None (no V2 then).
     Never chooses, logs or short-circuits.
@@ -170,6 +206,8 @@ def establish_vetoes(battery_state, current_price, config, grid_state=None,
         fired.append("V3")
     if not usage_history_available:
         fired.append("V4")
+    if battery_state.charge_percent <= 0 or battery_state.stored_kwh <= 0:
+        fired.append("V5")
     forbidden = frozenset()
     for v in fired:
         forbidden = forbidden | VETO_FORBIDS[v]
@@ -237,7 +275,7 @@ def _window(ctx, boundary_instant):
 
 
 def _priced(ctx, indices):
-    """[(i, PricePoint)] skipping unpriced blocks (FR-040)."""
+    """[(i, PricePoint)] skipping unpriced blocks."""
     return [(i, ctx.prices[i]) for i in indices if ctx.prices[i] is not None]
 
 
@@ -357,12 +395,41 @@ def _s3(ctx):
                      ctx.config.max_discharge_kw))
 
 
+def _breach_import_price(ctx):
+    """Energy-weighted average consumption price of the shortfall blocks.
+
+    The blocks where the projection has the grid serving load because the
+    battery sits at the reserve; weights are their grid_shortfall_kwh. Blocks
+    without a published price are ignored. None when no priced block has a
+    shortfall.
+    """
+    energy = cost = 0.0
+    for i, p in enumerate(ctx.prices):
+        kwh = ctx.traj.blocks[i].grid_shortfall_kwh
+        if p is None or kwh <= 0:
+            continue
+        energy += kwh
+        cost += kwh * p.consumption_price
+    if energy <= 0:
+        return None
+    return cost / energy
+
+
 def _s4(ctx):
     p, t, cfg = ctx.price_now, ctx.traj, ctx.config
-    if p is None or t.reserve_breach_block is None \
-            or ctx.battery.headroom_kwh <= 0:
+    if p is None or t.reserve_breach_block is None             or ctx.battery.headroom_kwh <= 0:
         return None
     cands = _priced(ctx, _window(ctx, t.reserve_breach_block))
+    if not cands:
+        return None
+    import_price = _breach_import_price(ctx)
+    if import_price is None:
+        return None
+    eff = cfg.round_trip_efficiency
+    # the reserve is a floor, not a target: charge only when cheaper than the
+    # import it would replace, every candidate block judged after losses
+    # (the current block is in the window, so it is judged here too)
+    cands = [c for c in cands if c[1].consumption_price / eff < import_price]
     if not cands:
         return None
     shortfall = sum(b.grid_shortfall_kwh for b in t.blocks)
@@ -376,11 +443,13 @@ def _s4(ctx):
     return Proposal(
         "charge", kw,
         "reserve breach at %s, shortfall %.2f kWh needs %d block(s) at "
-        "%.2f kW; consumption price now %.4f EUR/kWh is within the cheapest "
-        "%d of %d priced blocks before the breach (cutoff %.4f): charge from "
-        "grid at %.2f kW%s"
+        "%.2f kW; charging now costs %.4f EUR/kWh after losses vs %.4f "
+        "importing at the breach, and consumption price now %.4f is within "
+        "the cheapest %d of %d qualifying blocks before the breach (cutoff "
+        "%.4f): charge from grid at %.2f kW%s"
         % (_hhmm(t.reserve_breach_block), shortfall, n, cfg.max_charge_kw,
-           p.consumption_price, n, len(cands), threshold, kw, note),
+           p.consumption_price / eff, import_price, p.consumption_price, n,
+           len(cands), threshold, kw, note),
         "grid")
 
 
@@ -437,6 +506,9 @@ def _s6_reasoning(ctx, fired, suppressed):
     if suppressed:
         facts.append("suppressed: " + ", ".join(
             "%s %s blocked by %s" % s for s in suppressed))
+    if "V4" in fired:
+        return ("hold: no usage history: planner holds (only peak shaving "
+                "acts) - " + "; ".join(facts))
     return "hold: nothing applies - " + "; ".join(facts)
 
 

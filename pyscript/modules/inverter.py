@@ -1,14 +1,25 @@
 """Inverter boundary: always records intent, then hands it to the configured driver.
 
-Public surface (contracts/inverter-boundary.md):
+Public surface (documented in docs/inverter-boundary.md):
     apply(action, target_power_kw, record, log_path=None,
           inverter_type="logging", driver_dir=None,
-          log_dir=DEFAULT_LOG_DIR) -> bool
+          log_dir=DEFAULT_LOG_DIR,
+          resend_minutes=DEFAULT_RESEND_MINUTES, state_dir=None) -> bool
     log_path_for(day, log_dir=DEFAULT_LOG_DIR)
         -> "<log_dir>/decisions-YYYY-MM-DD.log"
     read_charge(inverter_type="logging", driver_dir=None)
         -> (percent, is_stub, marker)
-driver_dir=None means DEFAULT_DRIVER_DIR.
+driver_dir=None means DEFAULT_DRIVER_DIR. state_dir=None means
+<log_dir>/state.
+
+Command de-duplication: the decision log line is written on every call, but the
+driver's send() is called only when the command (action, power rounded to
+0.01 kW) differs from the last command SENT, or when that send is
+resend_minutes old (0 = send on every call). The last sent command is kept in
+<state_dir>/last_command.json, so it survives a restart and is shared by the
+planner and the peak guard (both call apply). A send that failed (exception,
+timeout, False, driver missing) is never recorded and clears the record, so the
+next call sends again. The logging driver transmits nothing and is not tracked.
 
 Everything that talks to a real inverter lives in a driver file,
 <driver_dir>/inverter_<inverter_type>.py (inverter_logging.py documents the
@@ -28,6 +39,7 @@ inverter_driver_<type>; nothing is added to sys.path and no bare alias is made.
 A loaded driver is cached until pyscript reloads this file; a failed load is
 retried on the next call, so fixing the file needs no restart.
 """
+import datetime
 import os
 
 import decision
@@ -37,6 +49,11 @@ import decision
 # decisions-YYYY-MM-DD.log, so old days can be removed by file name or age.
 DEFAULT_LOG_DIR = "/config/battery_planner"
 DEFAULT_DRIVER_DIR = "/config/pyscript/modules"
+# Command de-duplication (see the module docstring).
+DEFAULT_RESEND_MINUTES = 15
+LAST_COMMAND_FILE = "last_command.json"
+# Rounding of the commanded power when comparing commands (kW).
+POWER_DECIMALS = 2
 
 
 def log_path_for(day, log_dir=DEFAULT_LOG_DIR):
@@ -69,12 +86,17 @@ MARKER_READ_FAILED = "inverter_read_failed"
 # {driver_dir + "/" + type: loaded driver module}. Successes only.
 _drivers = {}
 
+# {state file path: (action, power_kw, sent_at)}. Fallback for when the state
+# file cannot be written: without it an unwritable state dir would send every
+# call again. The file is read on every call, so it stays the shared truth.
+_last_sent = {}
+
 
 # WHY @pyscript_executor, two things in one decorator. (1) It compiles this
 # helper to native Python, which pyscript's interpreter needs before anything
 # can run it outside itself. (2) It runs the compiled helper in an executor
 # thread, and THAT is what keeps the blocking open()/write()/fsync() off Home
-# Assistant's event loop (research.md R-02). @pyscript_compile alone only does
+# Assistant's event loop. @pyscript_compile alone only does
 # (1): the interpreted caller would still run the I/O on the loop and Home
 # Assistant would log a blocking-call warning and stall every cycle. Do not
 # downgrade the decorator or call this from a plain function. The same holds
@@ -95,6 +117,43 @@ def _append_line(path, line):
         handle.write(line + "\n")
         handle.flush()
         os.fsync(handle.fileno())
+
+
+@pyscript_executor  # noqa: F821
+def _read_state(path):
+    """Decoded JSON of a small state file, or None when missing or corrupt."""
+    import json
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return None
+
+
+@pyscript_executor  # noqa: F821
+def _write_state(path, payload):
+    """Temp file, fsync, rename over the target. Error text or None."""
+    import json
+    tmp = path + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except Exception as exc:
+        return repr(exc)
+    return None
+
+
+@pyscript_executor  # noqa: F821
+def _remove_state(path):
+    """Delete a state file; a missing file is fine."""
+    try:
+        os.remove(path)
+    except Exception:
+        pass
 
 
 @pyscript_executor  # noqa: F821
@@ -171,6 +230,9 @@ def _transmit(action, target_power_kw, inverter_type, driver_dir):
     Never raises and never changes what apply() returns: the log already
     explains the intent, whatever the driver does. A missing driver means
     nothing is sent (logging behaviour), loudly.
+
+    Returns True only when the driver accepted the command (no exception, no
+    timeout, did not return False); apply() records only those as sent.
     """
     try:
         driver, problem = _driver(inverter_type, driver_dir)
@@ -178,24 +240,119 @@ def _transmit(action, target_power_kw, inverter_type, driver_dir):
             log.error(  # noqa: F821  (pyscript global)
                 "inverter: %s; NOT transmitting %s %s kW, decision logged "
                 "only" % (problem, action, target_power_kw))
-            return
+            return False
         ok, value, err = _invoke(driver, "send", (action, target_power_kw),
                                  DRIVER_TIMEOUT_SECONDS)
         if not ok:
             log.error(  # noqa: F821
                 "inverter: driver %r send(%s, %s) failed: %s"
                 % (inverter_type, action, target_power_kw, err))
-        elif value is False:
+            return False
+        if value is False:
             log.warning(  # noqa: F821
                 "inverter: driver %r send(%s, %s) reported failure"
                 % (inverter_type, action, target_power_kw))
+            return False
+        return True
     except Exception as exc:
         log.error(  # noqa: F821
             "inverter: driver %r transmit failed: %r" % (inverter_type, exc))
+        return False
+
+
+def _state_file(state_dir, log_dir):
+    if state_dir is None:
+        state_dir = log_dir.rstrip("/") + "/state"
+    return state_dir.rstrip("/") + "/" + LAST_COMMAND_FILE
+
+
+def _utc(when):
+    return when.astimezone(datetime.timezone.utc)
+
+
+def _last_command(path):
+    """(action, power_kw, sent_at) of the last command sent, or None.
+
+    Reads the shared file; falls back to this process's own memory when the
+    file is missing, corrupt or older. Never raises.
+    """
+    found = None
+    data = _read_state(path)
+    if isinstance(data, dict):
+        action = data.get("action")
+        power = data.get("power_kw")
+        stamp = data.get("sent_at")
+        try:
+            if (isinstance(action, str) and isinstance(stamp, str)
+                    and not isinstance(power, bool)
+                    and isinstance(power, (int, float))
+                    and -1.0e9 < power < 1.0e9):
+                when = datetime.datetime.fromisoformat(stamp)
+                if when.tzinfo is not None:
+                    found = (action, float(power), when)
+        except Exception:
+            found = None
+    remembered = _last_sent.get(path)
+    if remembered is not None and (found is None or remembered[2] > found[2]):
+        found = remembered
+    return found
+
+
+def _should_send(action, target_power_kw, record, resend_minutes, path):
+    """True when the driver must be called: new command or the resend is due.
+
+    Any trouble while deciding means send: a repeated command is harmless, a
+    withheld one is not.
+    """
+    try:
+        if resend_minutes <= 0:
+            return True
+        last = _last_command(path)
+        if last is None:
+            return True
+        same = (last[0] == action
+                and round(last[1], POWER_DECIMALS)
+                == round(target_power_kw, POWER_DECIMALS))
+        if not same:
+            return True
+        age = (record.timestamp - last[2]).total_seconds()
+        return age < 0 or age >= resend_minutes * 60
+    except Exception as exc:
+        log.warning(  # noqa: F821
+            "inverter: cannot check the last sent command (%r); sending" % (exc,))
+        return True
+
+
+def _remember_sent(action, target_power_kw, record, path):
+    """Persist (and remember in memory) the command the driver accepted."""
+    try:
+        power = round(target_power_kw, POWER_DECIMALS)
+        when = _utc(record.timestamp)
+        _last_sent[path] = (action, power, when)
+        err = _write_state(path, {
+            "action": action, "power_kw": power, "sent_at": when.isoformat()})
+        if err:
+            log.warning(  # noqa: F821
+                "inverter: cannot save the last sent command to %s: %s"
+                % (path, err))
+    except Exception as exc:
+        log.warning(  # noqa: F821
+            "inverter: cannot record the last sent command: %r" % (exc,))
+
+
+def _forget_sent(path):
+    """A failed send leaves the inverter's state unknown: forget the record."""
+    try:
+        _last_sent.pop(path, None)
+        _remove_state(path)
+    except Exception as exc:
+        log.warning(  # noqa: F821
+            "inverter: cannot clear the last sent command: %r" % (exc,))
 
 
 def apply(action, target_power_kw, record, log_path=None,
-          inverter_type="logging", driver_dir=None, log_dir=DEFAULT_LOG_DIR):
+          inverter_type="logging", driver_dir=None, log_dir=DEFAULT_LOG_DIR,
+          resend_minutes=DEFAULT_RESEND_MINUTES, state_dir=None):
     """Carry out a decision: log it, then hand it to the configured driver.
 
     The decision log line is ALWAYS written, for every driver, and FIRST. The
@@ -212,6 +369,10 @@ def apply(action, target_power_kw, record, log_path=None,
                         means log_path_for(record.timestamp, log_dir), the
                         record's own local day
     inverter_type    -- selects driver file inverter_<type>.py in driver_dir
+    resend_minutes   -- the driver gets an unchanged command again only after
+                        this many minutes; 0 = every call (config key
+                        inverter.resend_minutes)
+    state_dir        -- where last_command.json lives; None = <log_dir>/state
 
     Returns True when the intent was durably recorded, False on any failure
     or mismatch (never raises into the caller; the reason goes to log.warning).
@@ -242,8 +403,17 @@ def apply(action, target_power_kw, record, log_path=None,
         return False
 
     # Ordering rule: LOG FIRST, TRANSMIT SECOND (above, then here). A command
-    # that could not be recorded is not sent.
-    _transmit(action, target_power_kw, inverter_type, driver_dir)
+    # that could not be recorded is not sent. The log line above is written on
+    # every call; only the driver call below is de-duplicated.
+    if inverter_type == "logging":
+        _transmit(action, target_power_kw, inverter_type, driver_dir)
+        return True
+    path = _state_file(state_dir, log_dir)
+    if _should_send(action, target_power_kw, record, resend_minutes, path):
+        if _transmit(action, target_power_kw, inverter_type, driver_dir):
+            _remember_sent(action, target_power_kw, record, path)
+        else:
+            _forget_sent(path)
     return True
 
 
