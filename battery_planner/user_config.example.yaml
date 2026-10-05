@@ -202,10 +202,19 @@ inverter:
                                    #   REAL COMMANDS to your inverter. You are responsible
                                    #   for the driver you enable. Lowercase letters,
                                    #   digits, underscore.
-  resend_minutes: 15               # the driver gets an UNCHANGED command again only after this
-                                   # many minutes (whole number, 0 or more). A changed command
-                                   # (other action, or power differing by 0.01 kW) is sent at once.
-                                   # 0 = send on every call. The decision log line is written
-                                   # every cycle regardless. No effect with the logging driver.
+  resend_minutes: 15               # fallback for drivers that do not declare how long the
+                                   # inverter keeps a command (COMMAND_HOLD_MINUTES): the driver
+                                   # gets an UNCHANGED command again only after this many minutes
+                                   # (whole number, 0 or more). A changed command (other action,
+                                   # or power differing by 0.01 kW) is sent at once.
+                                   # 0 = send on every call. A driver that declares a hold is
+                                   # re-sent at 80 % of it instead. The decision log line is
+                                   # written every cycle regardless. No effect with the logging
+                                   # driver.
+  dry_run: false                   # true = a driver is not allowed to act: a plan-style driver's
+                                   # service calls are logged (info level) and NOT executed, a
+                                   # send-style driver's send() is skipped and logged. The command
+                                   # still counts as sent, so repeats behave as when live. Use it
+                                   # first on real hardware.
 
 timezone: Europe/Brussels

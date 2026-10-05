@@ -9,9 +9,11 @@ text editor. Files older than `retention.keep_days` (default 90) are deleted by
 the daily cleanup at 03:30 local time.
 
 The decision is written by the inverter boundary before any driver is called
-(see [inverter-boundary.md](inverter-boundary.md)). The labels `V1` to `V5` and
+(see [inverter-boundary.md](inverter-boundary.md)). The labels `V1` to `V6` and
 `S0` to `S6` are explained in the README under
-[Labels in the decision log](../README.md#labels-in-the-decision-log).
+[Labels in the decision log](../README.md#labels-in-the-decision-log). There is
+no `S2`: storing surplus solar is the inverter's own default, so no rule is
+needed, and the other labels keep their numbers.
 
 ## Format
 
@@ -51,7 +53,7 @@ A value that does not apply is written explicitly (`none`, `n/a`, or a computed
 | `took` | `NNNms` | How long the cycle took |
 | `avg` | `N.NNkW` or `n/a` | Running quarter-hour average of grid offtake. `n/a` when capacity handling is off |
 | `ceiling` | `N.NNkW` or `n/a` | The peak level being defended: the larger of 2.5 kW and this month's peak |
-| `budget` | `N.NNkW` or `n/a` | Grid power still available for charging in this quarter-hour, after the household's own estimated draw and capped at `max_charge_kw`, measured against `capacity_tariff.stay_under_percent` of the ceiling (80 % of 2.5 kW = 2.0 kW by default). Negative when the window is already over that level |
+| `budget` | `N.NNkW` or `n/a` | Grid power still available for charging in this quarter-hour, after the household's own estimated draw and capped at `max_charge_kw`, measured against `capacity_tariff.stay_under_percent` of the ceiling (80 % of 2.5 kW = 2.0 kW by default). Negative when the window is already over that level. `0.00kW` in the last `timing.evaluation_interval_minutes` of the quarter-hour (grid charging stops one evaluation interval before it ends) |
 | `vetoes` | comma-separated or `none` | Rules that fired, and what each suppressed (see below) |
 | `selector` | `S0` to `S6` | The action that was chosen |
 | `why` | quoted text | The values that made the condition true |
@@ -74,13 +76,13 @@ vetoes=V2(suppressed S3 export) | selector=S6 |
 # several vetoes block the same proposal: joined with +
 vetoes=V1+V2(suppressed S3 export) | selector=S6 | ...
 
-# a veto fired but blocked nothing (S2 won first): written bare
-vetoes=V2 | selector=S2 |
-  why="injection -0.0043; surplus 2.4kW, headroom 3.2kWh, charging from solar"
+# a veto fired but blocked nothing: written bare
+vetoes=V2 | selector=S6 |
+  why="hold: nothing applies, the inverter keeps its default behaviour - ..."
 ```
 
 Several suppressed proposals are separate entries, for example
-`V4(suppressed S1 charge),V4(suppressed S2 charge)`. A record that shows a veto
+`V4(suppressed S1 charge),V4(suppressed S5 charge)`. A record that shows a veto
 always also shows the selector that finally fired.
 
 | Label | Forbids | Fires when |
@@ -88,8 +90,9 @@ always also shows the selector that finally fired.
 | V1 | export | Charge is at or below `battery.reserve_percent` |
 | V2 | export | The injection price is negative |
 | V3 | grid charging | No capacity budget is left in this quarter-hour |
-| V4 | grid charging, solar charging, export | There is no usable usage history |
+| V4 | grid charging, export | There is no usable usage history |
 | V5 | discharge | The battery is empty (0 % charge) |
+| V6 | grid charging, export | There is no solar forecast (`solar_zero_fallback`, no usable cache) |
 
 V4 fires on every cycle until the energy history holds a known household load
 (see the README section "Energy history"), so it appears bare on most records
@@ -104,7 +107,7 @@ only V5 can stop a peak shave, shown as `V5(suppressed S0 discharge)`.
 | Marker | Meaning |
 |---|---|
 | `soc_stubbed` | The battery charge is the 50 % placeholder of the `logging` driver |
-| `solar_zero_fallback` | The forecast was unavailable, so solar was treated as zero |
+| `solar_zero_fallback` | The forecast was unavailable and no usable cached copy exists, so solar was treated as zero. V6 then holds grid charging and export |
 | `cache_age_solar=3h12m`, `cache_age_usage=...` | A cached series was used, with its age |
 | `forecast_age=1h20m` | The forecast was used, but its sensor last refreshed 75 minutes or more ago. A stamp older than `timing.solar_cache_stale_minutes` counts as a failed forecast instead |
 | `usage_samples=N` | The usage profile rests on N days of history, fewer than `usage.history_weeks` x 7 |

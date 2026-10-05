@@ -24,21 +24,25 @@ TZ = ZoneInfo("Europe/Brussels")
 
 MODULES = SRC.parent
 ALLOWED_IMPORTS = {"os", "decision", "importlib.util", "re", "sys",
-                   "threading", "datetime", "json"}
+                   "threading", "datetime", "json", "math"}
 ALLOWED_CALL_NAMES = {"open", "abs", "_append_line", "isinstance", "callable",
                       "getattr", "bool", "float", "ValueError", "AttributeError",
                       "FileNotFoundError", "repr", "_load_driver", "_invoke",
                       "_driver", "_transmit", "run", "fn", "log_path_for",
                       "_read_state", "_write_state", "_remove_state",
                       "_state_file", "_utc", "_last_command", "_should_send",
-                      "_remember_sent", "_forget_sent", "round"}
+                      "_remember_sent", "_forget_sent", "round",
+                      "_hold_minutes", "_log_limited", "_transmit_plan",
+                      "_describe", "_check_plan", "sorted", "set", "enumerate",
+                      "type", "list", "map", "len"}
 ALLOWED_CALL_ATTRS = {"write", "flush", "fileno", "fsync", "makedirs",
                       "dirname", "format_record", "warning", "error", "get",
                       "isfile", "join", "fullmatch", "spec_from_file_location",
                       "module_from_spec", "exec_module", "pop", "append",
                       "Thread", "start", "rstrip", "load", "dumps",
                       "replace", "remove", "astimezone", "fromisoformat",
-                      "total_seconds", "isoformat"}
+                      "total_seconds", "isoformat", "items", "info", "compile",
+                      "isfinite"}
 
 
 class FakeLog:
@@ -47,6 +51,7 @@ class FakeLog:
     def __init__(self):
         self.messages = []
         self.errors = []
+        self.infos = []
 
     def warning(self, msg, *args):
         self.messages.append(msg % args if args else msg)
@@ -54,8 +59,40 @@ class FakeLog:
     def error(self, msg, *args):
         self.errors.append(msg % args if args else msg)
 
+    def info(self, msg, *args):
+        self.infos.append(msg % args if args else msg)
 
-_INJECTED = ("pyscript_executor", "log")
+
+class FakeService:
+    """Stand-in for pyscript's `service`: records calls, can fail."""
+
+    def __init__(self):
+        self.calls = []
+        self.fail_at = None            # 0-based index of the call that raises
+        self.fail_service = None       # or: every call of this service raises
+        self.error = RuntimeError("boom")
+
+    def call(self, domain, service, **data):
+        index = len(self.calls)
+        self.calls.append((domain, service, data))
+        if (self.fail_at is not None and index == self.fail_at)                 or (self.fail_service is not None
+                    and service == self.fail_service):
+            raise self.error
+
+
+class FakeState:
+    """Stand-in for pyscript's `state`: get() of a known entity or NameError."""
+
+    def __init__(self):
+        self.values = {}
+
+    def get(self, entity):
+        if entity not in self.values:
+            raise NameError("name %s is not defined" % entity)
+        return self.values[entity]
+
+
+_INJECTED = ("pyscript_executor", "log", "service", "state")
 
 
 @pytest.fixture
@@ -63,6 +100,8 @@ def inverter():
     saved = {n: getattr(builtins, n) for n in _INJECTED if hasattr(builtins, n)}
     builtins.pyscript_executor = lambda fn: fn
     builtins.log = FakeLog()
+    builtins.service = FakeService()
+    builtins.state = FakeState()
     try:
         spec = importlib.util.spec_from_file_location("inverter_under_test", SRC)
         mod = importlib.util.module_from_spec(spec)
@@ -289,6 +328,12 @@ def test_write_helper_is_decorated_with_exactly_pyscript_executor():
     assert isinstance(dec, ast.Name) and dec.id == "pyscript_executor"
 
 
+def _is_service_call(func):
+    """Exactly `service.call(...)`: pyscript's service global, nothing else."""
+    return (isinstance(func, ast.Attribute) and func.attr == "call"
+            and isinstance(func.value, ast.Name) and func.value.id == "service")
+
+
 def _violations(source):
     """Everything in `source` outside the import/call allowlist."""
     tree = ast.parse(source)
@@ -303,6 +348,8 @@ def _violations(source):
             f = node.func
             if isinstance(f, ast.Name) and f.id not in ALLOWED_CALL_NAMES:
                 found.add("call:%s" % f.id)
+            elif _is_service_call(f):
+                pass       # the one place a plan-style driver's calls run
             elif isinstance(f, ast.Attribute) and f.attr not in ALLOWED_CALL_ATTRS:
                 found.add("call:.%s" % f.attr)
             elif not isinstance(f, (ast.Name, ast.Attribute)):
@@ -330,6 +377,8 @@ def test_source_is_within_import_and_call_allowlist():
     "eval('1')",
     "getattr(os, 'system')('true')",
     "hass.services.call('a', 'b')",
+    "self.service.call('a', 'b')",
+    "service.other('a')",
 ])
 def test_allowlist_rejects_mutated_source(extra):
     """Prove the allowlist bites: mutate a scratch COPY of the source text."""
@@ -354,6 +403,8 @@ def test_public_surface_is_exactly_three_functions_plus_constants(inverter):
     assert funcs == {"apply", "read_charge", "log_path_for"}
     assert public == {"os", "decision", "datetime", "apply", "read_charge",
                       "DEFAULT_RESEND_MINUTES", "LAST_COMMAND_FILE",
+                      "HOLD_ATTRIBUTE", "RESEND_FRACTION", "HOLD_LIMIT_MINUTES",
+                      "MAX_PLAN_CALLS", "LOG_REPEAT_MINUTES",
                       "POWER_DECIMALS",
                       "DEFAULT_LOG_DIR", "DEFAULT_DRIVER_DIR", "log_path_for",
                       "STUBBED_CHARGE_PERCENT", "POWER_TOLERANCE_KW",
@@ -711,14 +762,15 @@ T_BASE = datetime(2026, 9, 29, 14, 0, tzinfo=TZ)
 
 
 def _send(inverter, tmp_path, minutes=0, action="export", power=2.5,
-          kind="toggle", resend=15, source="planner", state=None, seconds=0):
+          kind="toggle", resend=15, source="planner", state=None, seconds=0,
+          dry_run=False):
     """One apply() call `minutes` after T_BASE; returns the decision-log path."""
     ts = T_BASE + timedelta(minutes=minutes, seconds=seconds)
     record = make_record(timestamp=ts, action=action, target_power_kw=power,
                          source=source)
     ok = inverter.apply(
         action, power, record, inverter_type=kind, resend_minutes=resend,
-        log_dir=str(tmp_path / "logs"),
+        dry_run=dry_run, log_dir=str(tmp_path / "logs"),
         state_dir=str(state if state is not None else tmp_path / "state"))
     assert ok is True
     return tmp_path / "logs" / ("decisions-%s.log" % ts.date())
@@ -824,13 +876,12 @@ def test_state_survives_a_restart(inverter, drivers, tmp_path):
     fresh = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fresh)
     fresh.DEFAULT_DRIVER_DIR = inverter.DEFAULT_DRIVER_DIR
+    fresh._drivers = inverter._drivers               # one driver, to count sends
     assert fresh._last_sent == {}
     _send(fresh, tmp_path, 5)
     assert len(_sent()) == 1                         # not re-sent
-    before = _sent()
     _send(fresh, tmp_path, 16)                       # window elapsed: re-sent
-    assert _sent() is not before                     # (by the freshly loaded driver)
-    assert _sent() == [("export", 2.5)]
+    assert _sent() == [("export", 2.5), ("export", 2.5)]
 
 
 def test_planner_and_guard_share_the_state(inverter, drivers, tmp_path):
@@ -852,6 +903,7 @@ def test_state_is_shared_between_module_instances(inverter, drivers, tmp_path):
     other = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(other)
     other.DEFAULT_DRIVER_DIR = inverter.DEFAULT_DRIVER_DIR
+    other._drivers = inverter._drivers               # one driver, to count sends
     _send(inverter, tmp_path, 0)
     _send(other, tmp_path, 1)
     assert len(_sent()) == 1
@@ -963,3 +1015,589 @@ def test_apply_signature_is_backwards_compatible(inverter, drivers, tmp_path):
     assert inverter.apply("export", 2.5, record, str(tmp_path / "d.log"),
                           "logging", None, str(tmp_path)) is True
     assert inverter.DEFAULT_RESEND_MINUTES == 15
+
+
+# ---- idle: clear every command we sent, sent once ---------------------------------
+
+def _idle(inverter, tmp_path, minutes, **kw):
+    return _send(inverter, tmp_path, minutes, action="idle", power=0.0, **kw)
+
+
+def _restarted(inverter):
+    spec = importlib.util.spec_from_file_location("inverter_restarted", SRC)
+    fresh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh)
+    fresh.DEFAULT_DRIVER_DIR = inverter.DEFAULT_DRIVER_DIR
+    fresh._drivers = inverter._drivers               # one driver, to count sends
+    assert fresh._last_sent == {}
+    return fresh
+
+
+def test_repeated_idle_cycles_send_idle_once(inverter, drivers, tmp_path):
+    for i in range(0, 120, 5):                       # far beyond resend_minutes
+        _idle(inverter, tmp_path, i)
+    assert _sent() == [("idle", 0.0)]
+
+
+def test_forced_to_idle_sends_idle_immediately_then_never_again(
+        inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0, action="charge", power=2.0)
+    _send(inverter, tmp_path, 1, action="charge", power=2.0)
+    _idle(inverter, tmp_path, 2)                     # one minute later
+    assert _sent() == [("charge", 2.0), ("idle", 0.0)]
+    for i in range(3, 60):
+        _idle(inverter, tmp_path, i)
+    assert _sent() == [("charge", 2.0), ("idle", 0.0)]
+
+
+def test_each_forced_mode_is_released_by_one_idle(inverter, drivers, tmp_path):
+    for n, action in enumerate(("charge", "export", "discharge")):
+        _send(inverter, tmp_path, 4 * n, action=action, power=1.5)
+        _idle(inverter, tmp_path, 4 * n + 1)
+        _idle(inverter, tmp_path, 4 * n + 2)
+    assert [a for a, _ in _sent()] == [
+        "charge", "idle", "export", "idle", "discharge", "idle"]
+
+
+def test_first_idle_with_no_command_on_record_is_sent_once(
+        inverter, drivers, tmp_path):
+    _idle(inverter, tmp_path, 0)
+    _idle(inverter, tmp_path, 5)
+    assert _sent() == [("idle", 0.0)]
+
+
+def test_idle_record_survives_a_restart_and_is_not_resent(
+        inverter, drivers, tmp_path):
+    _idle(inverter, tmp_path, 0)
+    fresh = _restarted(inverter)
+    _idle(fresh, tmp_path, 60)                       # hours later, same file
+    assert _sent() == [("idle", 0.0)]
+
+
+def test_forced_record_survives_a_restart_and_idle_then_releases_it(
+        inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0, action="charge", power=2.0)
+    fresh = _restarted(inverter)
+    _idle(fresh, tmp_path, 5)
+    _idle(fresh, tmp_path, 10)
+    assert _sent() == [("charge", 2.0), ("idle", 0.0)]
+
+
+def test_first_idle_after_a_restart_without_a_state_file_is_sent_once(
+        inverter, drivers, tmp_path):
+    fresh = _restarted(inverter)
+    _idle(fresh, tmp_path, 0)
+    _idle(fresh, tmp_path, 5)
+    assert _sent() == [("idle", 0.0)]
+
+
+@pytest.mark.parametrize("mode", ["false", "raise", "slow"])
+def test_failed_idle_send_is_not_recorded_and_is_retried(
+        inverter, drivers, tmp_path, monkeypatch, mode):
+    monkeypatch.setattr(inverter, "DRIVER_TIMEOUT_SECONDS", 0.2)
+    _send(inverter, tmp_path, 0, action="charge", power=2.0)
+    _driver_module("toggle").MODE[0] = mode
+    _idle(inverter, tmp_path, 1)                     # fails
+    assert not (tmp_path / "state" / "last_command.json").exists()
+    _idle(inverter, tmp_path, 2)                     # tried again, fails again
+    _driver_module("toggle").MODE[0] = "ok"
+    _idle(inverter, tmp_path, 3)                     # accepted
+    assert _state_json(tmp_path)["action"] == "idle"
+    _idle(inverter, tmp_path, 4)                     # now de-duplicated
+    assert [a for a, _ in _sent()] == ["charge", "idle", "idle", "idle"]
+
+
+def test_idle_after_idle_is_sent_every_call_when_resend_minutes_is_zero(
+        inverter, drivers, tmp_path):
+    for i in range(3):
+        _idle(inverter, tmp_path, i, resend=0)
+    assert len(_sent()) == 3
+
+
+def test_idle_log_line_is_still_written_every_call(inverter, drivers, tmp_path):
+    for i in range(4):
+        log = _idle(inverter, tmp_path, i)
+    assert len(log.read_text().splitlines()) == 4
+    assert len(_sent()) == 1
+
+
+def test_non_idle_commands_still_resend_after_the_window(
+        inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0, action="charge", power=2.0)
+    _send(inverter, tmp_path, 15, action="charge", power=2.0)
+    assert len(_sent()) == 2
+
+
+# ---- COMMAND_HOLD_MINUTES: refresh a forced command before the inverter drops it --
+
+def _hold_driver(drivers, name, declaration):
+    """A recording driver that declares (or not) COMMAND_HOLD_MINUTES."""
+    src = _DRIVERS["toggle"]
+    if declaration is not None:
+        src += "COMMAND_HOLD_MINUTES = %s\n" % declaration
+    (drivers / ("inverter_%s.py" % name)).write_text(src, encoding="utf-8")
+    return name
+
+
+def _sent_by(name):
+    return _driver_module(name).SENT
+
+
+def test_hold_10_minutes_resends_at_eight_minutes_and_not_before(
+        inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "hold10", "10")
+    _send(inverter, tmp_path, 0, kind=kind)
+    _send(inverter, tmp_path, 7, seconds=59, kind=kind)
+    assert len(_sent_by(kind)) == 1
+    _send(inverter, tmp_path, 8, kind=kind)          # exactly 0.8 x 10
+    assert len(_sent_by(kind)) == 2
+    _send(inverter, tmp_path, 15, kind=kind)         # new window began at 8
+    assert len(_sent_by(kind)) == 2
+    _send(inverter, tmp_path, 16, kind=kind)
+    assert len(_sent_by(kind)) == 3
+
+
+def test_declared_hold_overrides_resend_minutes(inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "hold10", "10")
+    for resend in (60, 15, 0):                        # 0 would mean every call
+        tag = tmp_path / ("s%d" % resend)
+        _send(inverter, tmp_path, 0, kind=kind, resend=resend, state=tag)
+        _send(inverter, tmp_path, 4, kind=kind, resend=resend, state=tag)
+        _send(inverter, tmp_path, 8, kind=kind, resend=resend, state=tag)
+    # per state dir: sent at 0, not at 4, again at 8 = 2 sends; three dirs
+    assert len(_sent_by(kind)) == 6
+
+
+def test_hold_may_be_fractional_and_changes_the_window(
+        inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "hold25", "2.5")     # window 2 minutes
+    _send(inverter, tmp_path, 0, kind=kind)
+    _send(inverter, tmp_path, 1, kind=kind)
+    assert len(_sent_by(kind)) == 1
+    _send(inverter, tmp_path, 2, kind=kind)
+    assert len(_sent_by(kind)) == 2
+
+
+@pytest.mark.parametrize("declaration", [None, "None"])
+def test_no_declaration_falls_back_to_resend_minutes(
+        inverter, drivers, tmp_path, declaration):
+    kind = _hold_driver(drivers, "nohold", declaration)
+    _send(inverter, tmp_path, 0, kind=kind, resend=5)
+    _send(inverter, tmp_path, 4, kind=kind, resend=5)
+    assert len(_sent_by(kind)) == 1
+    _send(inverter, tmp_path, 5, kind=kind, resend=5)
+    assert len(_sent_by(kind)) == 2
+    assert builtins.log.messages == []                # unknown is not an error
+
+
+def test_fallback_zero_still_sends_every_call(inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "nohold", None)
+    for i in range(3):
+        _send(inverter, tmp_path, i, kind=kind, resend=0)
+    assert len(_sent_by(kind)) == 3
+
+
+@pytest.mark.parametrize("declaration", [
+    "0", "-5", "'10'", "True", "float('nan')", "float('inf')", "[10]", "1e12",
+])
+def test_invalid_hold_is_ignored_with_one_warning(
+        inverter, drivers, tmp_path, declaration):
+    kind = _hold_driver(drivers, "badhold", declaration)
+    for i in range(0, 16):
+        _send(inverter, tmp_path, i, kind=kind, resend=15)
+    # fell back to resend_minutes = 15: sent at 0 and again at 15
+    assert len(_sent_by(kind)) == 2
+    warned = [m for m in builtins.log.messages if "COMMAND_HOLD_MINUTES" in m]
+    assert len(warned) == 1 and "badhold" in warned[0]
+
+
+def _plant_record(tmp_path, minutes_before, action="export", power=2.5):
+    state = tmp_path / "state"
+    state.mkdir(exist_ok=True)
+    when = (T_BASE - timedelta(minutes=minutes_before)).astimezone(
+        ZoneInfo("UTC"))
+    (state / "last_command.json").write_text(json.dumps({
+        "action": action, "power_kw": power, "sent_at": when.isoformat()}),
+        encoding="utf-8")
+
+
+def test_expired_record_after_a_restart_does_not_block_the_send(
+        inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "hold10", "10")
+    _plant_record(tmp_path, minutes_before=180)       # left by an old run
+    fresh = _restarted(inverter)
+    _send(fresh, tmp_path, 0, kind=kind)
+    assert len(_sent_by(kind)) == 1
+
+
+def test_expired_record_after_a_restart_with_fallback_window(
+        inverter, drivers, tmp_path):
+    _plant_record(tmp_path, minutes_before=30)
+    fresh = _restarted(inverter)
+    _send(fresh, tmp_path, 0, resend=15)              # toggle declares nothing
+    assert len(_sent()) == 1
+
+
+def test_fresh_record_after_a_restart_still_blocks_a_duplicate(
+        inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "hold10", "10")
+    _plant_record(tmp_path, minutes_before=3)         # younger than 8 minutes
+    fresh = _restarted(inverter)
+    _send(fresh, tmp_path, 0, kind=kind)
+    assert _sent_by(kind) == []
+    _send(fresh, tmp_path, 5, kind=kind)              # now 8 minutes old
+    assert len(_sent_by(kind)) == 1
+
+
+def test_identical_commands_inside_the_hold_window_are_not_resent(
+        inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "hold10", "10")
+    for i in range(8):                                # one a minute, 0..7
+        _send(inverter, tmp_path, i, kind=kind)
+    assert len(_sent_by(kind)) == 1
+
+
+def test_hold_does_not_make_idle_repeat(inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "hold10", "10")
+    for i in range(0, 60, 5):
+        _idle(inverter, tmp_path, i, kind=kind)
+    assert _sent_by(kind) == [("idle", 0.0)]
+
+
+def test_a_changed_command_is_sent_at_once_whatever_the_hold(
+        inverter, drivers, tmp_path):
+    kind = _hold_driver(drivers, "hold10", "10")
+    _send(inverter, tmp_path, 0, kind=kind, power=2.0)
+    _send(inverter, tmp_path, 1, kind=kind, power=3.0)
+    assert _sent_by(kind) == [("export", 2.0), ("export", 3.0)]
+
+
+# ---- plan-style drivers: service calls executed by the boundary -------------------
+
+_PLAN_BASE = '''
+SOC_ENTITY = "sensor.my_soc"
+CALLS = []
+SEND = []
+def send(action, target_power_kw):
+    SEND.append((action, target_power_kw))
+    return True
+def plan(action, target_power_kw):
+    CALLS.append((action, target_power_kw))
+    if action == "idle":
+        return [{"domain": "input_boolean", "service": "turn_off",
+                 "data": {"entity_id": "input_boolean.my_force_charge"}}]
+    return [
+        {"domain": "input_number", "service": "set_value",
+         "data": {"entity_id": "input_number.my_power", "value": target_power_kw}},
+        {"domain": "input_boolean", "service": "turn_on",
+         "data": {"entity_id": "input_boolean.my_force_charge"}},
+    ]
+'''
+
+
+def _plan_driver(drivers, name="planner1", source=None):
+    (drivers / ("inverter_%s.py" % name)).write_text(
+        source if source is not None else _PLAN_BASE, encoding="utf-8")
+    return name
+
+
+def _service_calls():
+    return builtins.service.calls
+
+
+def _plan_send(inverter, tmp_path, minutes=0, kind="planner1", **kw):
+    return _send(inverter, tmp_path, minutes, kind=kind, action=kw.pop("action", "charge"),
+                 power=kw.pop("power", 2.0), **kw)
+
+
+def test_plan_calls_run_in_order_through_service_call(inverter, drivers, tmp_path):
+    kind = _plan_driver(drivers)
+    _plan_send(inverter, tmp_path, kind=kind)
+    assert _service_calls() == [
+        ("input_number", "set_value",
+         {"entity_id": "input_number.my_power", "value": 2.0}),
+        ("input_boolean", "turn_on",
+         {"entity_id": "input_boolean.my_force_charge"}),
+    ]
+    assert _state_json(tmp_path)["action"] == "charge"
+    assert builtins.log.errors == []
+
+
+def test_send_is_not_used_when_plan_exists(inverter, drivers, tmp_path):
+    kind = _plan_driver(drivers)
+    _plan_send(inverter, tmp_path, kind=kind)
+    assert _driver_module(kind).SEND == []
+
+
+def test_the_log_line_comes_first_and_is_unchanged_by_plan_failure(
+        inverter, drivers, tmp_path):
+    kind = _plan_driver(drivers)
+    builtins.service.fail_at = 0
+    log = _plan_send(inverter, tmp_path, kind=kind)
+    assert len(log.read_text().splitlines()) == 1
+    assert "action=charge" in log.read_text()
+
+
+def test_plan_runs_only_when_apply_decides_to_send(inverter, drivers, tmp_path):
+    kind = _plan_driver(drivers, source=_PLAN_BASE + "COMMAND_HOLD_MINUTES = 10\n")
+    for i in range(0, 8):                             # 0..7 minutes: unchanged
+        _plan_send(inverter, tmp_path, i, kind=kind)
+    assert _driver_module(kind).CALLS == [("charge", 2.0)]
+    assert len(_service_calls()) == 2
+    _plan_send(inverter, tmp_path, 8, kind=kind)       # 0.8 x hold
+    assert len(_driver_module(kind).CALLS) == 2
+    assert len(_service_calls()) == 4
+
+
+def test_plan_resends_by_the_fallback_when_no_hold_is_declared(
+        inverter, drivers, tmp_path):
+    kind = _plan_driver(drivers)
+    _plan_send(inverter, tmp_path, 0, kind=kind)
+    _plan_send(inverter, tmp_path, 14, kind=kind)
+    assert len(_driver_module(kind).CALLS) == 1
+    _plan_send(inverter, tmp_path, 15, kind=kind)
+    assert len(_driver_module(kind).CALLS) == 2
+
+
+def test_idle_plan_runs_on_the_transition_and_once(inverter, drivers, tmp_path):
+    kind = _plan_driver(drivers)
+    _plan_send(inverter, tmp_path, 0, kind=kind)
+    _plan_send(inverter, tmp_path, 1, kind=kind, action="idle", power=0.0)
+    _plan_send(inverter, tmp_path, 2, kind=kind, action="idle", power=0.0)
+    _plan_send(inverter, tmp_path, 40, kind=kind, action="idle", power=0.0)
+    assert _driver_module(kind).CALLS == [("charge", 2.0), ("idle", 0.0)]
+    assert _service_calls()[-1] == (
+        "input_boolean", "turn_off",
+        {"entity_id": "input_boolean.my_force_charge"})
+    assert len(_service_calls()) == 3
+
+
+def test_failure_mid_sequence_stops_is_not_recorded_and_retries(
+        inverter, drivers, tmp_path):
+    kind = _plan_driver(drivers)
+    _plan_send(inverter, tmp_path, 0, kind=kind, power=1.0)       # ok, recorded
+    builtins.service.fail_at = 1                      # second call of the next plan
+    del builtins.service.calls[:]
+    _plan_send(inverter, tmp_path, 1, kind=kind, power=3.0)
+    assert len(_service_calls()) == 2                 # stopped at the failing one
+    assert not (tmp_path / "state" / "last_command.json").exists()
+    assert any("stopped at call 2 of 2" in m for m in builtins.log.errors)
+    builtins.service.fail_at = None
+    del builtins.service.calls[:]
+    _plan_send(inverter, tmp_path, 2, kind=kind, power=3.0)       # retried at once
+    assert len(_service_calls()) == 2
+    assert _state_json(tmp_path)["power_kw"] == 3.0
+
+
+def test_service_not_found_counts_as_a_failed_send(inverter, drivers, tmp_path):
+    kind = _plan_driver(drivers)
+    builtins.service.fail_at = 0
+    builtins.service.error = KeyError("ServiceNotFound")
+    assert _plan_send(inverter, tmp_path, kind=kind)
+    assert not (tmp_path / "state" / "last_command.json").exists()
+
+
+def test_repeated_failures_are_logged_once_per_window(inverter, drivers, tmp_path):
+    kind = _plan_driver(drivers)
+    builtins.service.fail_service = "set_value"
+    for i in range(5):                                # every minute, all failing
+        _plan_send(inverter, tmp_path, i, kind=kind)
+    assert len(builtins.log.errors) == 1
+    _plan_send(inverter, tmp_path, 31, kind=kind)
+    assert len(builtins.log.errors) == 2
+
+
+def test_dry_run_executes_nothing_logs_the_plan_and_records_the_command(
+        inverter, drivers, tmp_path):
+    kind = _plan_driver(drivers)
+    _plan_send(inverter, tmp_path, 0, kind=kind, dry_run=True)
+    assert _service_calls() == []
+    assert len(builtins.log.infos) == 1
+    info = builtins.log.infos[0]
+    assert "dry run" in info and "input_boolean.turn_on" in info
+    assert "input_number.set_value" in info
+    assert _state_json(tmp_path)["action"] == "charge"        # recorded as sent
+    assert builtins.log.errors == []
+
+
+def test_dry_run_dedupes_and_resends_like_a_live_run(inverter, drivers, tmp_path):
+    kind = _plan_driver(drivers)
+    for i in range(14):
+        _plan_send(inverter, tmp_path, i, kind=kind, dry_run=True)
+    assert len(builtins.log.infos) == 1
+    _plan_send(inverter, tmp_path, 15, kind=kind, dry_run=True)
+    assert len(builtins.log.infos) == 2
+    assert _service_calls() == []
+
+
+def test_dry_run_with_a_send_style_driver_sends_nothing(
+        inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0, dry_run=True)
+    assert _sent() == []
+    assert any("would be sent" in m for m in builtins.log.infos)
+    assert _state_json(tmp_path)["action"] == "export"
+
+
+def test_send_style_driver_is_unaffected_by_the_plan_machinery(
+        inverter, drivers, tmp_path):
+    _send(inverter, tmp_path, 0)
+    assert _sent() == [("export", 2.5)]
+    assert _service_calls() == []
+    assert builtins.log.infos == []
+
+
+_GOOD_CALL = {"domain": "input_boolean", "service": "turn_on",
+              "data": {"entity_id": "input_boolean.my_x"}}
+
+
+@pytest.mark.parametrize("plan", [
+    "None", "'turn_on'", "{'domain': 'a', 'service': 'b', 'data': {}}",
+    "[1]", "['x']", "[{'service': 'b', 'data': {}}]",
+    "[{'domain': 'a', 'data': {}}]",
+    "[{'domain': 'A', 'service': 'b', 'data': {}}]",
+    "[{'domain': 'a-b', 'service': 'b', 'data': {}}]",
+    "[{'domain': 'a', 'service': 'b.c', 'data': {}}]",
+    "[{'domain': 'a', 'service': '', 'data': {}}]",
+    "[{'domain': 1, 'service': 'b', 'data': {}}]",
+    "[{'domain': 'a', 'service': 'b', 'data': []}]",
+    "[{'domain': 'a', 'service': 'b', 'data': None}]",
+    "[{'domain': 'a', 'service': 'b', 'data': {1: 2}}]",
+    "[{'domain': 'a', 'service': 'b', 'data': {'k': {'n': 1}}}]",
+    "[{'domain': 'a', 'service': 'b', 'data': {'k': None}}]",
+    "[{'domain': 'a', 'service': 'b', 'data': {'k': [[1]]}}]",
+    "[{'domain': 'a', 'service': 'b', 'data': {'k': object()}}]",
+    "[{'domain': 'a', 'service': 'b', 'data': {'k': float('nan')}}]",
+    "[{'domain': 'a', 'service': 'b', 'data': {'k': float('inf')}}]",
+    "[{'domain': 'a', 'service': 'b', 'data': {'k': [1, float('nan')]}}]",
+    "[{'domain': 'a', 'service': 'b', 'data': {'blocking': True}}]",
+    "[{'domain': 'a', 'service': 'b', 'data': {'return_response': True}}]",
+    "[{'domain': 'a', 'service': 'b', 'data': {}, 'extra': 1}]",
+    "[{'domain': 'a', 'service': 'b', 'data': {}}] * 13",
+])
+def test_invalid_plans_execute_nothing_and_count_as_failed(
+        inverter, drivers, tmp_path, plan):
+    kind = _plan_driver(drivers, source=(
+        "SOC_ENTITY = 'sensor.my_soc'\ndef plan(a, p):\n    return %s\n" % plan))
+    log = _plan_send(inverter, tmp_path, kind=kind)
+    assert _service_calls() == []
+    assert not (tmp_path / "state" / "last_command.json").exists()
+    assert len(builtins.log.errors) == 1 and "invalid" in builtins.log.errors[0]
+    assert len(log.read_text().splitlines()) == 1             # the line stays
+
+
+@pytest.mark.parametrize("plan,count", [
+    ("[]", 0),
+    ("[{'domain': 'a', 'service': 'b'}]", 1),                 # data is optional
+    ("[{'domain': 'a1_x', 'service': 'b_2', 'data': {'k': [1, 2.5, 'x', True]}}]", 1),
+    ("[{'domain': 'a', 'service': 'b', 'data': {'k': 'v'}}] * 12", 12),
+    ("({'domain': 'a', 'service': 'b', 'data': {'k': False}},)", 1),
+])
+def test_valid_plans_run(inverter, drivers, tmp_path, plan, count):
+    kind = _plan_driver(drivers, source=(
+        "SOC_ENTITY = 'sensor.my_soc'\ndef plan(a, p):\n    return %s\n" % plan))
+    _plan_send(inverter, tmp_path, kind=kind)
+    assert len(_service_calls()) == count
+    assert builtins.log.errors == []
+    assert _state_json(tmp_path)["action"] == "charge"
+
+
+def test_plan_that_raises_is_a_failed_send(inverter, drivers, tmp_path):
+    kind = _plan_driver(drivers, source=(
+        "SOC_ENTITY = 'sensor.my_soc'\ndef plan(a, p):\n    raise ValueError('bad mapping')\n"))
+    _plan_send(inverter, tmp_path, kind=kind)
+    assert _service_calls() == []
+    assert not (tmp_path / "state" / "last_command.json").exists()
+    assert any("bad mapping" in m for m in builtins.log.errors)
+
+
+def test_plan_that_hangs_times_out(inverter, drivers, tmp_path, monkeypatch):
+    monkeypatch.setattr(inverter, "DRIVER_TIMEOUT_SECONDS", 0.2)
+    kind = _plan_driver(drivers, source=(
+        "SOC_ENTITY = 'sensor.my_soc'\nimport time\n"
+        "def plan(a, p):\n    time.sleep(1.5)\n    return []\n"))
+    _plan_send(inverter, tmp_path, kind=kind)
+    assert _service_calls() == []
+    assert any("timed out" in m for m in builtins.log.errors)
+    assert not (tmp_path / "state" / "last_command.json").exists()
+
+
+def test_a_driver_with_neither_send_nor_plan_is_unusable(
+        inverter, drivers, tmp_path):
+    kind = _plan_driver(drivers, source="SOC_ENTITY = 'sensor.my_soc'\n")
+    _plan_send(inverter, tmp_path, kind=kind)
+    assert any("send() or plan()" in m for m in builtins.log.errors)
+    assert _service_calls() == []
+
+
+def test_the_calls_are_copies_not_the_drivers_own_objects(
+        inverter, drivers, tmp_path):
+    kind = _plan_driver(drivers, source=_PLAN_BASE)
+    _plan_send(inverter, tmp_path, kind=kind)
+    first = _service_calls()[0][2]
+    first["value"] = 99.0                             # caller mutates its copy
+    _plan_send(inverter, tmp_path, 20, kind=kind)
+    assert _service_calls()[2][2]["value"] == 2.0
+
+
+# ---- SOC_ENTITY ----------------------------------------------------------------------
+
+def _soc(inverter, drivers, value, source=_PLAN_BASE, entity="sensor.my_soc"):
+    kind = _plan_driver(drivers, source=source)
+    if value is not None:
+        builtins.state.values[entity] = value
+    return inverter.read_charge(kind, str(drivers))
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("63.5", 63.5), ("0", 0.0), ("100", 100.0), (42, 42.0), ("  7.25 ", 7.25)])
+def test_soc_entity_good_value(inverter, drivers, raw, expected):
+    assert _soc(inverter, drivers, raw) == (expected, False, None)
+    assert builtins.log.messages == []
+
+
+@pytest.mark.parametrize("raw", [
+    "unavailable", "unknown", "abc", "150", "-1", "100.5", "nan", "inf", "", None])
+def test_soc_entity_bad_value_gives_placeholder_and_marker(
+        inverter, drivers, raw):
+    percent, is_stub, marker = _soc(inverter, drivers, raw)
+    assert (percent, is_stub, marker) == (50.0, True, "inverter_read_failed")
+    assert builtins.log.messages          # said why
+
+
+def test_soc_entity_wins_over_a_reading_function_and_over_the_stub_flag(
+        inverter, drivers):
+    src = _PLAN_BASE + "SOC_IS_STUB = True\ndef read_charge_percent():\n    return 11.0\n"
+    assert _soc(inverter, drivers, "80", source=src) == (80.0, False, None)
+
+
+@pytest.mark.parametrize("entity", [
+    "'Sensor.X'", "'nodot'", "'a.b.c'", "5", "''", "['sensor.x']"])
+def test_invalid_soc_entity_makes_the_driver_unusable(inverter, drivers, entity):
+    src = _PLAN_BASE.replace('SOC_ENTITY = "sensor.my_soc"',
+                             "SOC_ENTITY = %s" % entity)
+    percent, is_stub, marker = inverter.read_charge(
+        _plan_driver(drivers, source=src), str(drivers))
+    assert (percent, is_stub, marker) == (50.0, True, "inverter_driver_unavailable")
+
+
+def test_plan_driver_may_omit_read_charge_percent_only_with_soc_entity(
+        inverter, drivers):
+    src = "def plan(a, p):\n    return []\n"
+    percent, is_stub, marker = inverter.read_charge(
+        _plan_driver(drivers, source=src), str(drivers))
+    assert marker == "inverter_driver_unavailable"
+
+
+def test_send_style_read_charge_is_unchanged(inverter, drivers):
+    assert inverter.read_charge("recording", str(drivers)) == (42.5, False, None)
+
+
+def test_list_values_in_the_calls_are_copies_too(inverter, drivers, tmp_path):
+    kind = _plan_driver(drivers, source=(
+        "SOC_ENTITY = 'sensor.my_soc'\nSHARED = ['a', 'b']\n"
+        "def plan(a, p):\n    return [{'domain': 'x', 'service': 'y', "
+        "'data': {'names': SHARED}}]\n"))
+    _plan_send(inverter, tmp_path, kind=kind)
+    sent_list = _service_calls()[0][2]["names"]
+    assert sent_list == ["a", "b"]
+    assert sent_list is not _driver_module(kind).SHARED

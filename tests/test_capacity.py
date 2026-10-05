@@ -117,10 +117,63 @@ def test_budget_final_minute_zero(site_config):
                          site_config) == 0.0
 
 
-def test_budget_last_allowed_minute(site_config):
+def test_budget_last_allowed_minute_with_a_one_minute_interval(site_config):
     # elapsed 13 -> remaining 2 min = 1/30 h ; (1.0-0.9)*30 = 3.0
+    c = cfg(site_config, evaluation_interval_minutes=1)
     assert cap.budget_kw(state(energy=0.9, elapsed=13.0, peak=4.0),
-                         site_config) == pytest.approx(3.0)
+                         c) == pytest.approx(3.0)
+    assert cap.budget_kw(state(energy=0.9, elapsed=13.99, peak=4.0), c) > 0
+    assert cap.budget_kw(state(energy=0.9, elapsed=14.01, peak=4.0), c) == 0.0
+
+
+def test_default_interval_is_five_minutes(site_config):
+    assert site_config.evaluation_interval_minutes == 5
+
+
+def test_budget_is_zero_in_the_last_evaluation_interval(site_config):
+    # interval 5: with 5 min left the budget exists, with less it is 0, so a
+    # charge never runs past the quarter-hour boundary until the next decision.
+    last_ok = state(energy=0.5, elapsed=10.0, peak=4.0)      # remaining 5.0
+    assert cap.budget_kw(last_ok, site_config) > 0
+    for elapsed in (10.01, 11.0, 13.0, 14.0, 14.5):
+        s = state(offtake=1.5, energy=0.5, elapsed=elapsed, peak=4.0)
+        assert cap.budget_kw(s, site_config) == 0.0, elapsed
+        assert cap.allowed_offtake_kw(s, site_config) == 0.0, elapsed
+
+
+@pytest.mark.parametrize("interval,elapsed,zero", [
+    (1, 13.9, False), (1, 14.0, False), (1, 14.01, True),
+    (5, 9.9, False), (5, 10.0, False), (5, 10.01, True),
+    (10, 5.0, False), (10, 5.01, True),
+    (15, 0.01, True),
+])
+def test_cutoff_is_the_evaluation_interval(site_config, interval, elapsed, zero):
+    c = cfg(site_config, evaluation_interval_minutes=interval)
+    s = state(energy=0.1, elapsed=elapsed, peak=4.0)
+    assert (cap.budget_kw(s, c) == 0.0) is zero
+
+
+def test_no_budget_minutes_never_below_the_fixed_minimum(site_config):
+    assert cap.no_budget_minutes(cfg(site_config, evaluation_interval_minutes=1)) == 1.0
+    assert cap.no_budget_minutes(site_config) == 5.0
+    assert cap.no_budget_minutes(cfg(site_config, evaluation_interval_minutes=0)) == 1.0
+    assert cap.NO_BUDGET_MINUTES == 1.0
+
+
+def test_peak_shaving_is_not_cut_by_the_interval(site_config):
+    s = cap.GridState(4.0, at(14, 0), 0.9, 12.0, 4.5, 2.5, False)
+    five = cap.shave_kw(s, site_config)
+    one = cap.shave_kw(s, cfg(site_config, evaluation_interval_minutes=1))
+    assert five > 0 and five == one
+
+
+def test_peak_warning_keeps_the_one_minute_margin(site_config):
+    # 3 minutes left, interval 5: the guard still warns (it re-evaluates every
+    # 30 s and sizes no charge), unlike the grid-charge budget.
+    s = cap.GridState(6.0, at(14, 0), 0.9, 12.0, 4.5, 2.5, False)
+    mem = {}
+    assert cap.peak_warning_due(mem, s, site_config, 0.0) is False
+    assert cap.peak_warning_due(mem, s, site_config, 30.0) is True
 
 
 def test_budget_subtracts_household_draw_once(site_config):

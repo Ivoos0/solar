@@ -69,7 +69,8 @@ import math
 from datetime import timezone
 
 ACTIONS = ("charge", "discharge", "export", "idle")
-SELECTORS = ("S0", "S1", "S2", "S3", "S4", "S5", "S6")
+# There is no S2 (see rules.py); the labels keep their numbers.
+SELECTORS = ("S0", "S1", "S3", "S4", "S5", "S6")
 SOURCES = ("planner", "guard")
 
 NONE = "none"
@@ -144,7 +145,7 @@ class DecisionRecord:
         if self.action not in ACTIONS:
             raise ValueError("action %r not in %r" % (self.action, ACTIONS))
         if self.selector not in SELECTORS:
-            raise ValueError("selector %r not in S0-S6" % (self.selector,))
+            raise ValueError("selector %r not in %r" % (self.selector, SELECTORS))
         if self.source not in SOURCES:
             raise ValueError("source %r not in %r" % (self.source, SOURCES))
         for name in ("vetoes_applied", "degraded_inputs"):

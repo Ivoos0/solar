@@ -182,9 +182,9 @@ def test_round_trip_split():
 # ---- vetoes and degraded --------------------------------------------------------
 
 def dec(**over):
-    base = dict(action="charge", target_power_kw=3.0, selector="S2",
+    base = dict(action="charge", target_power_kw=3.0, selector="S1",
                 reasoning="r", vetoes_fired=[], suppressed=[],
-                charge_source="solar", block_start=T0)
+                block_start=T0)
     base.update(over)
     return rules.Decision(**base)
 
@@ -203,12 +203,12 @@ def test_render_vetoes_single_joined_bare_and_empty():
 
 def test_veto_line_names_selector_action_and_veto():
     line = decision.format_record(rec(
-        vetoes_applied=["V1+V2(suppressed S3 export)"], selector="S2",
+        vetoes_applied=["V1+V2(suppressed S3 export)"], selector="S1",
         action="charge"))
     kv = fields_of(line)
     assert kv["vetoes"] == "V1+V2(suppressed S3 export)"
-    assert kv["selector"] == "S2"
-    assert "vetoes=V1+V2(suppressed S3 export) | selector=S2 | why=" in line
+    assert kv["selector"] == "S1"
+    assert "vetoes=V1+V2(suppressed S3 export) | selector=S1 | why=" in line
 
 
 def test_degraded_markers_all_kinds():
@@ -253,8 +253,8 @@ def test_halt_never_alerted_is_explicit():
 #   b2 15:00 deficit 0.1 -> 9.90 ; b3 15:15 -> 9.80 (end)
 #   total spill 0.80, leftover 9.80-1.0 = 8.80, no breach.
 #   forecast_remaining = 2.00, usage_remaining = 0.40 (from current block).
-# Prices: b0 cons 0.2140 inj 0.1890; later injection 0.05 (S2 finds no better
-# later price, S3: spill>0, now is the best injection in window [b0,b1) -> export
+# Prices: b0 cons 0.2140 inj 0.1890; later injection 0.05 (no better
+# later price; S3: spill>0, now is the best injection in window [b0,b1) -> export
 # at max_discharge 5.00 kW). Grid: peak 5.0, energy 0.1, 5 min elapsed:
 #   ceiling 5.00, budget (1.25-0.1)*6 = 6.9 capped at max_charge 5.00,
 #   avg 1.2 (as given).

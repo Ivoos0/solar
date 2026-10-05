@@ -486,3 +486,24 @@ def test_guard_passes_the_resend_window_and_state_dir(make_guard):
     g.tick(**PEAK_ARGS)
     assert g.inv.kwargs["resend_minutes"] == 0
     assert g.inv.kwargs["state_dir"] == g.mod.STATE_DIR
+
+
+def test_planner_passes_dry_run_to_the_boundary(env, monkeypatch):
+    seen = {}
+    real = env.mod.inverter.apply
+
+    def spy(action, power, record, **kw):
+        seen.update(kw)
+        return real(action, power, record, **kw)
+    monkeypatch.setattr(env.mod.inverter, "apply", spy)
+    env.run(T0)
+    assert seen["dry_run"] is False
+    env.write_config("inverter:\n  dry_run: true\n")
+    env.run(T0 + timedelta(minutes=5))
+    assert seen["dry_run"] is True
+
+
+def test_guard_passes_dry_run_to_the_boundary(make_guard):
+    g = make_guard(extra="inverter:\n  dry_run: true\n").at(12, 7, 30)
+    g.tick(**PEAK_ARGS)
+    assert g.inv.kwargs["dry_run"] is True

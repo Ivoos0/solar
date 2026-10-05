@@ -418,3 +418,26 @@ def test_removed_keys_are_not_validated():
     raw["solar"] = {"azimuth": 999, "declination": -5, "kwp": "lots"}
     raw["capacity_tariff"] = {"peak_averaging_months": 0}
     from_dict(raw)
+
+
+# ---- inverter.dry_run -----------------------------------------------------------
+
+def test_inverter_dry_run_defaults_to_false(site_config):
+    assert site_config.inverter_dry_run is False
+
+
+def test_inverter_dry_run_accepts_booleans():
+    assert from_dict(base(inverter__dry_run=True)).inverter_dry_run is True
+    assert from_dict(base(inverter__dry_run=False)).inverter_dry_run is False
+
+
+@pytest.mark.parametrize("value", ["yes", "true", 1, 0, [True]])
+def test_inverter_dry_run_rejects_non_booleans(value):
+    with pytest.raises(ConfigError) as exc:
+        from_dict(base(inverter__dry_run=value))
+    assert "dry_run" in str(exc.value)
+
+
+def test_inverter_dry_run_is_not_in_the_cache_fingerprint():
+    ref = from_dict(base()).fingerprint()
+    assert from_dict(base(inverter__dry_run=True)).fingerprint() == ref

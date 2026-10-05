@@ -463,6 +463,9 @@ def _guard_note(cfg, shave, vetoed, batt, charge_is_stub):
     if cfg.inverter_type == "logging":
         note += (" The inverter driver is 'logging': a shave is recorded but "
                  "nothing is sent to the battery.")
+    elif cfg.inverter_dry_run:
+        note += (" Dry run is on: a shave is recorded but nothing is sent to "
+                 "the battery.")
     return note
 
 
@@ -526,7 +529,8 @@ def _commanded_discharge_kw(cfg, at):
     is configured, the guard is shaving, and that shave was last affirmed at
     most 2 guard intervals ago. Clamped to 0..max_discharge_kw. The metered
     offtake includes this discharge; the caller adds it back."""
-    if cfg.inverter_type == "logging" or not _flags["shaving"]:
+    if (cfg.inverter_type == "logging" or cfg.inverter_dry_run
+            or not _flags["shaving"]):
         return 0.0
     when = _flags["command_at"]
     if when is None:
@@ -644,7 +648,8 @@ def _emit(action, power_kw, record, cfg):
                           inverter_type=cfg.inverter_type,
                           driver_dir=CORE_DIR,
                           resend_minutes=cfg.inverter_resend_minutes,
-                          state_dir=STATE_DIR):
+                          state_dir=STATE_DIR,
+                          dry_run=cfg.inverter_dry_run):
         _warn("apply", "inverter.apply did not record the %s decision" % action)
 
 

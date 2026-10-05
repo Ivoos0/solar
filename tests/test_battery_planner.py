@@ -556,7 +556,7 @@ def _force_grid_charge(env, monkeypatch):
     def decide(traj, price_map, bat, grid, cfg, now, **kw):
         d = real(traj, price_map, bat, grid, cfg, now, **kw)
         return mod.rules.Decision(
-            "charge", 3.0, "S1", "cheapest block", [], [], "grid",
+            "charge", 3.0, "S1", "cheapest block", [], [],
             d.block_start)
 
     monkeypatch.setattr(mod.rules, "decide", decide)
@@ -578,19 +578,6 @@ def test_grid_charge_downgraded_while_guard_shaving(env, monkeypatch):
     assert keys["selector"] == "S6"
     assert "GUARD(suppressed S1 charge)" in keys["vetoes"]
     assert "peak guard is shaving" in keys["why"]
-
-
-def test_solar_charge_is_not_downgraded_by_guard(env, monkeypatch):
-    mod = env.mod
-    real = mod.rules.decide
-    monkeypatch.setattr(
-        mod.rules, "decide",
-        lambda *a, **kw: mod.rules.Decision(
-            "charge", 2.0, "S2", "solar surplus", [], [], "solar",
-            real(*a, **kw).block_start))
-    _flag(env, 10)
-    env.run()
-    assert fields_of(env.decisions()[0])["action"] == "charge"
 
 
 def test_grid_charge_downgraded_when_grid_sensors_unreadable(env, monkeypatch):
@@ -1063,8 +1050,8 @@ def test_empty_history_vetoes_grid_charge_in_the_record(env):
     _negative_prices(env)
     env.run()
     keys = fields_of(env.decisions()[0])
-    # Without usage history the planner holds: S1 is vetoed, S2 (solar
-    # storage) too, and the record is an idle one that says why.
+    # Without usage history the planner holds: S1 is vetoed and the
+    # record is an idle one that says why.
     assert keys["selector"] == "S6" and keys["action"] == "idle"
     assert "V4(suppressed S1 charge)" in keys["vetoes"]
     assert "no usage history: planner holds" in keys["why"]
@@ -1395,7 +1382,7 @@ def _charge_at_budget(env):
             return d
         from dataclasses import replace
         return replace(d, action="charge", target_power_kw=kwh,
-                       selector="S1", charge_source="grid", reasoning="forced")
+                       selector="S1", reasoning="forced")
     rules.decide = fake
     return seen
 
@@ -1441,8 +1428,7 @@ def test_non_grid_decision_clears_own_grid_charge(env):
     env.mod.rules.decide = env.mod.rules.decide.__closure__[0].cell_contents \
         if False else env.mod.rules.decide
     env.mod._remember_grid_charge(
-        type("D", (), {"action": "idle", "charge_source": None,
-                       "target_power_kw": 0.0})(), T0)
+        type("D", (), {"action": "idle", "target_power_kw": 0.0})(), T0)
     assert env.mod._last_grid_charge is None
 
 
@@ -1628,3 +1614,97 @@ def test_unavailable_sensor_path_unchanged_with_old_stamp(env):
     env.run(T0)
     assert "solar_zero_fallback" in _degraded(env)
     assert _age_warnings(env) == []              # plain failure, no age log
+
+
+# ---- idle releases a forced mode once ---------------------------------------------
+
+def test_forced_charge_then_idle_cycles_send_idle_exactly_once(
+        env, tmp_path, monkeypatch, _clean_drivers):
+    _use_driver(env, tmp_path, "idlerel")
+    mod = env.mod
+    real = mod.rules.decide
+    forced = {"on": True}
+
+    def decide(traj, price_map, bat, grid, cfg, now, **kw):
+        d = real(traj, price_map, bat, grid, cfg, now, **kw)
+        if forced["on"]:
+            return mod.rules.Decision(
+                "charge", 2.0, "S1", "forced", [], [], d.block_start)
+        return mod.rules.Decision(
+            "idle", 0.0, "S6", "hold", [], [], d.block_start)
+
+    monkeypatch.setattr(mod.rules, "decide", decide)
+    env.run(T0)
+    env.run(T0 + STEP)
+    forced["on"] = False
+    for i in range(2, 9):
+        env.run(T0 + i * STEP)
+    sent = sys.modules["inverter_driver_idlerel"].SENT
+    assert sent == [("charge", 2.0), ("idle", 0.0)]
+    assert len(env.decisions()) == 9                      # every cycle logged
+
+
+# ---- V6: no forecast means no cost-bearing action ----------------------------------
+
+def _with_history_and_cheap_power(env, monkeypatch):
+    monkeypatch.setattr(env.mod, "read_usage_history",
+                        lambda cfg, local: _history(3))
+    _negative_prices(env)                  # S1 would grid-charge
+
+
+def test_forecast_available_flag_follows_the_zero_fallback(env, monkeypatch):
+    seen = []
+    real = env.mod.rules.decide
+
+    def spy(*a, **kw):
+        seen.append(kw.get("forecast_available"))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(env.mod.rules, "decide", spy)
+    env.run(T0)
+    env.state.set(FORECAST_ENTITY, "unavailable", {},
+                  last_reported=T0 - timedelta(hours=5))
+    (env.cache_dir / "solar.json").unlink()            # no usable cache either
+    env.run(T0 + STEP)
+    assert seen == [True, False]
+
+
+def test_lost_forecast_with_no_cache_holds_and_shows_v6(env, monkeypatch):
+    _with_history_and_cheap_power(env, monkeypatch)
+    env.state.set(FORECAST_ENTITY, "unavailable", {})
+    env.run(T0)
+    keys = fields_of(env.decisions()[0])
+    assert "solar_zero_fallback" in keys["degraded"]
+    assert keys["action"] == "idle" and keys["selector"] == "S6"
+    assert "V6(suppressed S1 charge)" in keys["vetoes"]
+    assert "no solar forecast" in keys["why"]
+
+
+def test_a_forecast_still_lets_the_same_prices_charge(env, monkeypatch):
+    _with_history_and_cheap_power(env, monkeypatch)
+    env.run(T0)
+    keys = fields_of(env.decisions()[0])
+    assert keys["action"] == "charge" and "V6" not in keys["vetoes"]
+
+
+def test_stale_but_usable_cached_series_does_not_trigger_v6(env, monkeypatch):
+    _with_history_and_cheap_power(env, monkeypatch)
+    env.run(T0)                                        # builds the cache
+    env.state.set(FORECAST_ENTITY, "unavailable", {})
+    env.run(T0 + STEP)
+    keys = fields_of(env.decisions()[1])
+    assert any(m.startswith("cache_age_solar") for m in keys["degraded"].split(","))
+    assert "solar_zero_fallback" not in keys["degraded"]
+    assert "V6" not in keys["vetoes"] and keys["action"] == "charge"
+
+
+def test_dry_run_gives_no_own_grid_charge_correction(env):
+    _real_driver(env)
+    env.write_config("inverter:\n  type: fakeinv\n  dry_run: true\n"
+                     "capacity_tariff:\n  quarter_hour_average_mode: running\n"
+                     "  stay_under_percent: 80\n")
+    seen = _charge_at_budget(env)
+    env.state.set(OFFTAKE_ENTITY, "1.5", {"unit_of_measurement": "kW"})
+    env.run(T0)
+    env.run(T0 + STEP)
+    assert seen[1].own_grid_charge_kw == 0.0          # nothing was really charged
