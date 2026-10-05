@@ -290,7 +290,7 @@ and the HALT / RECOVERED / SKIP lines all write to it. Old files are deleted aut
 
 A normal record is one line of `|`-separated fields: timestamp, `action`, `power`, `soc`, `cons` and
 `inj` (prices), forecast and usage remaining, `saturation`, `spill`, `breach`, `end_soc`, `took`,
-`avg`, `ceiling`, `budget`, `vetoes`, `selector`, `why` (the reason in words; `vetoes` and `selector` use the labels explained under [Labels in the decision log](#labels-in-the-decision-log)), `degraded` and
+`avg`, `ceiling`, `budget`, `vetoes`, `selector`, `why` (the reason in words; `vetoes` and `selector` use the labels explained under [Labels in the decision log](docs/decision-log.md#labels-in-the-decision-log)), `degraded` and
 `source` (`planner` or `guard`). Fields that do not apply show `n/a`.
 
 Markers you can expect in `degraded=` on a fresh install:
@@ -335,46 +335,13 @@ materially, is blocked or stops, not once per 30-second tick.
 The planner builds a projection of the battery over the coming hours (as far as the price list
 reaches) from the price list, the solar forecast and your usage profile. Then it checks a few
 rules that forbid certain actions, and tries the possible actions in a fixed order. The first action
-that none of the rules forbids is the decision. The log records the reason in words (`why`).
+that none of the rules forbids is the decision. The log records the reason in words (`why`). The short labels it also prints for the rules and
+actions are explained in [Labels in the decision log](docs/decision-log.md#labels-in-the-decision-log).
 
 The reserve (`battery.reserve_percent`) limits exporting to the grid. It never makes the planner buy
 power to keep the battery up: when the battery reaches the reserve the house simply imports at that
 time. Peak shaving may use charge below the reserve, and the inverter's own minimum charge still
 applies.
-
-### Labels in the decision log
-
-The decision log prints short labels for the rules and actions. These are the labels the log prints,
-and nothing else in this README uses them. The full field-by-field format of a log line, including every `degraded=` marker, is in [docs/decision-log.md](docs/decision-log.md). A rule that forbids an action is called a veto and shows
-under `vetoes=`; an action the planner can pick is called a selector and shows under `selector=`.
-
-Vetoes:
-
-| Label | Forbids | When |
-|---|---|---|
-| V1 | export | Charge is at or below `battery.reserve_percent`. Only exporting to the grid is forbidden; peak shaving may still use charge below it |
-| V2 | export | The injection price is negative |
-| V3 | grid charging | No capacity budget is left in this quarter-hour |
-| V4 | grid charging, export | There is no usable usage history. Peak shaving (S0) is not affected |
-| V5 | discharge | The battery is empty (0 % charge). The planner cannot know your inverter's own minimum charge, so this is the only lower limit it applies to peak shaving |
-| V6 | grid charging, export | There is no solar forecast: it is missing or too old and there is no usable cached copy (`degraded=solar_zero_fallback`). Peak shaving (S0) is not affected. A stale but usable cached forecast does not trigger it |
-| V7 | grid charging, export | `battery.soc_sensor` is set but unreadable (`degraded=soc_unavailable`): there is no battery reading, so nothing is bought or exported. Peak shaving (S0) is not affected. V1 and V5 need a reading and are not checked meanwhile, so the peak guard may still shave |
-
-Selectors, in the order they are tried:
-
-| Label | Action |
-|---|---|
-| S0 | Peak shave: discharge to the house when the quarter-hour is heading above the ceiling. Mostly relevant when the planner is holding energy back (see [Peak guard](#peak-guard)) |
-| S1 | Charge from the grid while the consumption price is negative |
-| S3 | Export when the battery would otherwise overflow and now is the best injection price in the window |
-| S4 | Charge from the grid in the cheapest blocks when that is cheaper than importing later, ahead of the battery reaching the reserve. The comparison is the price now divided by `battery.round_trip_efficiency` against the average buying price (weighted by energy) of the blocks where the house would otherwise import. It needs usage history, like the other price-driven choices |
-| S5 | Charge from the grid when a later injection price, after round-trip losses, beats the price now |
-| S6 | Idle: nothing applies, so the planner cancels any forced mode and the inverter does what it does by default (see below) |
-
-There is no S2. Storing surplus solar needs no rule: the inverter's own default does it. By default
-the inverter charges the battery from solar surplus until it is full and then exports, and drains it to
-serve the house until it is empty and then uses grid power. The planner only steps in when it wants
-something different (peak shaving, charging from the grid, exporting); the rest of the time it idles.
 
 Idle is a command, not silence: it cancels every forced mode the planner or the guard set (forced
 grid charge, forced export, forced discharge) and returns the inverter to that default. It is sent
