@@ -5,13 +5,22 @@ is the mean of the last N monthly peaks, floored at billing_floor_kw.
 """
 import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 WINDOW_MINUTES = 15.0
 WINDOW_HOURS = 0.25
 MIN_ELAPSED_MINUTES = 1.0     # opening-seconds guard for divisions by elapsed
 NO_BUDGET_MINUTES = 1.0       # least remaining at which a budget exists, whatever
                               # the evaluation interval (see no_budget_minutes)
+
+# Stale quarter-hour average (same rule as the peak guard's): the figure must
+# have been written at least this long after the window start to be fresh.
+BOUNDARY_MARGIN_S = 2
+STALE_FALLBACK_S = 15.0       # no timestamp at all: not trusted this early
+STALE_IGNORE_MINUTES = 5.0    # a stale figure this early in a window is ignored
+STALE_WARN_FRACTION = 0.5     # of the billing floor: a higher stale figure
+                              # later in the window cannot be trusted
+
 
 @dataclass(frozen=True)
 class GridState:
@@ -46,6 +55,40 @@ def window_start_of(now):
     """Floor a datetime to its clock-aligned quarter-hour."""
     return now.replace(minute=now.minute - now.minute % 15,
                        second=0, microsecond=0)
+
+
+def average_staleness(stamp, now, start):
+    """None = fresh, "stale" = measured stale, "unknown" = no timestamp yet.
+
+    stamp: when the quarter-hour sensor was last written (aware datetime), or
+    None. start: the window start. A figure written before the window start
+    plus a small margin belongs to the previous window.
+    """
+    if stamp is not None:
+        earliest = start + timedelta(seconds=BOUNDARY_MARGIN_S)
+        return "stale" if stamp < earliest else None
+    if (now - start).total_seconds() < STALE_FALLBACK_S:
+        return "unknown"
+    return None
+
+
+def stale_average_verdict(staleness, reported_kw, elapsed_minutes, config):
+    """What to do with the reported average: "use", "ignore" or "unusable".
+
+    A fresh figure is used. A stale one is ignored (treated as no energy used
+    yet) early in the window, where the accumulating mode would multiply the
+    previous window's value by 15 / elapsed and invent a peak. Later in the
+    window a stale low figure is still used (a quiet house on a meter that
+    only publishes changes looks like this), but a stale figure of at least
+    STALE_WARN_FRACTION of the billing floor cannot be trusted: "unusable".
+    """
+    if not staleness:
+        return "use"
+    if elapsed_minutes < STALE_IGNORE_MINUTES:
+        return "ignore"
+    if reported_kw >= config.billing_floor_kw * STALE_WARN_FRACTION:
+        return "unusable"
+    return "use"
 
 
 def normalise_average(reported_kw, elapsed_minutes, mode):

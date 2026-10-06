@@ -34,6 +34,7 @@ Markers you can expect in `degraded=` on a fresh install:
 | `solar_ratio_configured=0.80` | The same, but the ratio is `solar.calibration_default` because there is not enough measured history yet. Absent when it is 1.00 |
 | `solar_zero_fallback` | The forecast was unavailable (or older than `timing.solar_cache_stale_minutes`) and no usable cached copy exists, so solar was treated as zero. The planner holds (no grid charging, no export) until a forecast is back, retries, and does not halt |
 | `grid_sensors_unavailable` | Capacity logic is on but the grid sensors are unreadable. Grid charging is suppressed |
+| `quarter_hour_average_stale` | The quarter-hour average sensor has not been written since the previous quarter-hour and shows a high value (at least half the billing floor), more than 5 minutes into the window. The planner cannot trust it, so it behaves as with `grid_sensors_unavailable`. Check the meter and the sensor |
 | `inverter_driver_unavailable`, `inverter_read_failed` | The configured driver is missing or its charge reading failed |
 
 When the peak guard is shaving a peak it writes its own records: when a shave starts, changes

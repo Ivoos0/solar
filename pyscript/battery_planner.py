@@ -1090,11 +1090,13 @@ def _own_grid_charge_kw(cfg, local):
     return kw
 
 
-def _grid_state(cfg, local, battery_discharge_kw=None):
+def _grid_state(cfg, local, battery_discharge_kw=None, markers=None):
     """capacity.GridState, or None (capacity off, or a sensor is unreadable).
 
     battery_discharge_kw: battery power (kW, discharge positive) from
     battery.power_sensor, or None to estimate the household draw instead.
+    markers: list that gets quarter_hour_average_stale when a stale average
+    cannot be trusted (the grid state is then None).
     """
     if not cfg.capacity_enabled:
         return None
@@ -1103,6 +1105,17 @@ def _grid_state(cfg, local, battery_discharge_kw=None):
     peak = _sensor_kw(cfg.month_peak_sensor)
     if offtake is None or reported is None or peak is None:
         return None
+    start = capacity.window_start_of(local)
+    staleness = capacity.average_staleness(
+        _state_stamp(cfg.quarter_hour_average_sensor), local, start)
+    verdict = capacity.stale_average_verdict(
+        staleness, reported, (local - start).total_seconds() / 60.0, cfg)
+    if verdict == "unusable":
+        if markers is not None:
+            markers.append("quarter_hour_average_stale")
+        return None
+    if verdict == "ignore":
+        reported = None               # no energy counted yet in this window
     return capacity.build_state(
         offtake, 0.0, local, peak, cfg, reported_average_kw=reported,
         own_grid_charge_kw=_own_grid_charge_kw(cfg, local),
@@ -1311,7 +1324,7 @@ def _cycle(now):
     battery_kw = _battery_discharge_kw(cfg)
     if cfg.power_sensor is not None and battery_kw is None:
         markers.append("battery_power_unavailable")
-    grid = _grid_state(cfg, local, battery_kw)
+    grid = _grid_state(cfg, local, battery_kw, markers)
     d = rules.decide(traj, price_map, bat, grid, cfg, local,
                      usage_history_available=history_days >= cfg.usage_min_history_days,
                      forecast_available=not zero_fallback,
