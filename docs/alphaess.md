@@ -156,6 +156,15 @@ its register definitions; the register list itself comes from the AlphaESS Modbu
          data_type: uint16
          state_class: measurement
          scan_interval: 10
+
+       - name: AlphaESS Discharging Cutoff SoC      # optional, informational
+         unique_id: AlphaESS_Discharging_Cutoff_SoC
+         slave: !secret alphaess_modbus_slaveId
+         address: 0x0850
+         data_type: uint16
+         unit_of_measurement: "%"
+         state_class: measurement
+         scan_interval: 60
    ```
 
 5. Restart Home Assistant. Home Assistant builds the entity ids from the sensor names. Check them in
@@ -181,6 +190,7 @@ is left out.
 | `sensor.alphaess_power_grid` | Grid power in W. Not read by the planner; handy to compare with your meter and to check signs | none |
 | `sensor.alphaess_battery_capacity` | Battery size in kWh. Not read by the planner; use it to choose `battery.capacity_kwh` (usable capacity, rounded down) | none |
 | `sensor.alphaess_inverter_work_mode` | Work mode number, informational | none |
+| `sensor.alphaess_discharging_cutoff_soc` | The discharge cut-off charge in percent (register `0x0850`, read only here). Not read by the planner yet; compare it with the lowest charge your battery really reaches to learn the inverter's own floor | none |
 
 The matching lines in `user_config.yaml`:
 
