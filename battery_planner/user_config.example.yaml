@@ -56,10 +56,12 @@ battery:
                                 # (no grid charging, no export). See
                                 # docs/alphaess.md.
   # power_sensor: sensor.alphaess_power_battery
-                                # OPTIONAL. Battery power, in W or kW (the unit
-                                # attribute is read). With it the grid charge
-                                # budget counts the house load the battery is
-                                # covering. Unreadable: the older estimate is used.
+                                # REQUIRED while capacity_tariff.enabled is true.
+                                # Battery power, in W or kW (the unit attribute is
+                                # read). The grid charge budget counts the house
+                                # load the battery is covering. Not set or
+                                # unreadable: the planner holds (no charging, no
+                                # exporting; peak shaving still acts).
   # power_positive: discharge   # which sign means what in power_sensor:
                                 # discharge (positive = battery gives power, the
                                 # AlphaESS case) or charge

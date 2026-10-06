@@ -29,6 +29,9 @@ PRICE_ATTRIBUTE = "prices"
 FORECAST_ENTITY = "sensor.forecast_solar_estimate"
 FORECAST_ATTRIBUTE = "watt_hours_period"
 QUARTER_AVG_ENTITY = "sensor.slimmelezer_huidig_kwartiervermogen"
+# The planner holds without a battery power reading while the capacity
+# tariff is on, so every default test config names one.
+POWER_ENTITY = "sensor.test_battery_power"
 MONTH_PEAK_ENTITY = "sensor.slimmelezer_maandpiek"
 
 CONTRACT_FIELDS = [
@@ -154,7 +157,8 @@ class Env:
 
     def write_config(self, extra=""):
         self.config_path.write_text(
-            "battery:\n  capacity_kwh: 10.0\nalerts:\n"
+            "battery:\n  capacity_kwh: 10.0\n"
+            "  power_sensor: sensor.test_battery_power\nalerts:\n"
             "  address: owner@example.com\n"
             "  notify_service: test_notifier\n"
             "  peak_enabled: %s\n" % ("true" if self.peak_alerts else "false")
@@ -229,6 +233,7 @@ def env(tmp_path):
                {"unit_of_measurement": "kW"})
         st.set(QUARTER_AVG_ENTITY, "0.7", {"unit_of_measurement": "kW"})
         st.set(MONTH_PEAK_ENTITY, "3.0", {"unit_of_measurement": "kW"})
+        st.set(POWER_ENTITY, "0", {"unit_of_measurement": "W"})
         yield e
     finally:
         if restore_decide is not None:      # the core module outlives the test
@@ -1446,52 +1451,6 @@ def test_non_grid_decision_clears_own_grid_charge(env):
     env.mod._remember_grid_charge(
         type("D", (), {"action": "idle", "target_power_kw": 0.0})(), T0)
     assert env.mod._last_grid_charge is None
-
-
-def test_real_driver_budget_is_stable_across_cycles(env):
-    # Constant household 1.5 kW. With a real driver the metered offtake is
-    # household + the charge commanded last cycle; the budget must come out
-    # exactly as if only the household were drawing (no every-other-cycle
-    # oscillation), and the planner keeps charging every cycle.
-    _real_driver(env)
-    seen = _charge_at_budget(env)
-    cap = env.mod.capacity
-    house = 1.5
-    powers = []
-    for i in range(3):
-        own = env.mod._last_grid_charge[1] if env.mod._last_grid_charge else 0.0
-        env.state.set(OFFTAKE_ENTITY, str(house + own),
-                      {"unit_of_measurement": "kW"})
-        env.run(T0 + i * STEP)
-        g = seen[-1]
-        reference = cap.GridState(
-            house, g.window_start, g.window_energy_kwh, g.elapsed_minutes,
-            g.running_average_kw, g.month_peak_kw, g.is_restored)
-        cfg = env.mod._config
-        assert cap.budget_kw(g, cfg) == pytest.approx(
-            cap.budget_kw(reference, cfg))
-        powers.append(env.mod._last_grid_charge[1])
-    assert all(p > 0 for p in powers)
-
-
-def test_real_driver_without_own_correction_would_oscillate(env):
-    # Documents the failure the correction prevents: household 1.5 kW only,
-    # budget with the raw (charge-inclusive) offtake is strictly smaller.
-    _real_driver(env)
-    seen = _charge_at_budget(env)
-    cap = env.mod.capacity
-    env.state.set(OFFTAKE_ENTITY, "1.5", {"unit_of_measurement": "kW"})
-    env.run(T0)
-    first_kw = env.mod._last_grid_charge[1]
-    env.state.set(OFFTAKE_ENTITY, str(1.5 + first_kw),
-                  {"unit_of_measurement": "kW"})
-    env.run(T0 + STEP)
-    g = seen[-1]
-    naive = cap.GridState(
-        g.offtake_kw, g.window_start, g.window_energy_kwh, g.elapsed_minutes,
-        g.running_average_kw, g.month_peak_kw, g.is_restored)
-    cfg = env.mod._config
-    assert cap.budget_kw(naive, cfg) < cap.budget_kw(g, cfg)
 
 
 # ---- forecast sensor age ------------------------------------------------------------

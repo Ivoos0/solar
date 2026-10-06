@@ -1325,10 +1325,17 @@ def _cycle(now):
     if cfg.power_sensor is not None and battery_kw is None:
         markers.append("battery_power_unavailable")
     grid = _grid_state(cfg, local, battery_kw, markers)
+    inputs_known = True
+    if cfg.capacity_enabled:
+        # the budget and the household draw need the grid sensors and the
+        # battery power: without them the planner holds (V8)
+        if cfg.power_sensor is None:
+            markers.append("battery_power_not_configured")
+        inputs_known = (grid is not None and battery_kw is not None)
     d = rules.decide(traj, price_map, bat, grid, cfg, local,
                      usage_history_available=history_days >= cfg.usage_min_history_days,
                      forecast_available=not zero_fallback,
-                     soc_known=soc_known)
+                     soc_known=soc_known, inputs_known=inputs_known)
 
     if d.action == "charge":
         if _guard_is_shaving(cfg, local):
