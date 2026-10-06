@@ -88,6 +88,8 @@ def test_grid_power_clamps_to_post_household_budget(c80):
     class Ctx:
         grid = hstate(offtake=3.0)
         config = c80
+        battery = type("B", (), {"headroom_kwh": 5.0})()
+        hours = 0.25
     kw, note = rules._grid_power(Ctx, c80.max_charge_kw)
     assert kw == pytest.approx(TOTAL - 3.0)
     assert "capped by grid budget %.2f kW" % (TOTAL - 3.0) in note

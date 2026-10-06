@@ -160,9 +160,9 @@ Selectors, in the order they are tried:
 | Label | Action |
 |---|---|
 | S0 | Peak shave: discharge to the house when the quarter-hour is heading above the ceiling. Mostly relevant when the planner is holding energy back (see [Peak guard](how-it-works.md#peak-guard)) |
-| S1 | Charge from the grid while the consumption price is negative |
-| S3 | Export only the energy the projection does not need before the battery refills, when the battery would otherwise overflow (or has charge left over) and now is the best injection price in the window. With no refill ahead, only when the price beats what the kept energy avoids buying, after losses |
-| S4 | Charge from the grid in the cheapest blocks when that is cheaper than importing later, ahead of the battery reaching the reserve. The comparison is the price now divided by `battery.round_trip_efficiency` against the average buying price (weighted by energy) of the blocks where the house would otherwise import. It needs usage history, like the other price-driven choices |
+| S1 | Charge from the grid while the consumption price is negative. Never more than the room left in the battery (S4 and S5 too) |
+| S3 | Export only the energy the projection does not need before the battery refills, when the battery would otherwise overflow (or has charge left over) and now beats every other priced block in the window after round-trip losses (equal prices do not qualify). With no refill ahead, only when the price beats what the kept energy avoids buying, after losses |
+| S4 | Charge from the grid in the cheapest blocks when that is cheaper than importing later, ahead of the battery reaching the reserve. The comparison is the price now divided by `battery.round_trip_efficiency` against the average buying price (weighted by energy) of the blocks where the house would otherwise import. It needs usage history (`usage.min_history_days` days), like the other price-driven choices |
 | S5 | Charge from the grid when a later injection price, after round-trip losses, beats the price now |
 | S6 | Idle: nothing applies, so the planner cancels any forced mode and the inverter does what it does by default (see [What the planner does](how-it-works.md#what-the-planner-does)) |
 
