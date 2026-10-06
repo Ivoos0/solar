@@ -173,6 +173,7 @@ MAX_FETCHES_PER_HOUR = 12             # shared with the hourly poll
 FORECAST_FAILURES_BEFORE_RETRY = 2
 FORECAST_AGE_MARKER_MINUTES = 75      # older than a normal hourly refresh: mark it
 SLOW_CYCLE_MS = 5000                  # a cycle slower than this is logged
+SEND_FAILURE_ALERT_AFTER = 3          # consecutive refused commands before the e-mail
 HISTORY_WARN_MINUTES = 60             # per warning kind, energy history
 
 # ---- module state -----------------------------------------------------------
@@ -195,6 +196,8 @@ _peak_alert_loaded = False            # peak_alert.json read once per process
 _peak_alert_last = None               # (YYYY-MM, kW) of the last notified peak
 _sensor_first_down = {}               # entity -> when first seen unavailable
 _stale_minutes = 15                   # timing.sensor_stale_minutes of the running cycle
+_sensors_down = []                    # entities currently unavailable (health attribute)
+_send_alert_at = None                 # when the send-failure mail last went out
 _last_good = {}                       # key -> (value, when) for the short debounce
 _sensor_last_alert = None             # when the last sensor outage mail went out
 _calibration = None                   # history.solar_calibration result, per clock hour
@@ -597,7 +600,9 @@ def _read_prices(cfg, local):
 
 def _notify(cfg, title, message):
     """Send one e-mail via the configured notify service. True when sent;
-    a failure is logged and returns False so the caller retries later."""
+    a failure is logged and returns False so the caller retries later. A
+    failed send is also shown in Home Assistant as a persistent notification
+    (a second channel; the fixed id keeps a retry from piling them up)."""
     try:
         service.call(  # noqa: F821
             "notify", cfg.notify_service,
@@ -605,6 +610,14 @@ def _notify(cfg, title, message):
         return True
     except Exception as exc:
         log.error(f"battery_planner: alert send failed: {exc!r}")  # noqa: F821
+        try:
+            service.call(  # noqa: F821
+                "persistent_notification", "create", title=title,
+                message=message,
+                notification_id="battery_planner_" + title.replace(" ", "_").lower())
+        except Exception as exc2:
+            log.error(  # noqa: F821
+                f"battery_planner: persistent notification failed: {exc2!r}")
         return False
 
 
@@ -784,6 +797,31 @@ def _check_peak_alert(cfg, local):
         log.error(f"battery_planner: peak alert failed: {exc!r}")  # noqa: F821
 
 
+def _check_send_failures(cfg, local):
+    """E-mail when the inverter keeps refusing commands (3 in a row), then
+    every alerts.realert_minutes while it does. Never raises."""
+    global _send_alert_at
+    try:
+        streak = inverter.send_failure_streak()
+        if streak < SEND_FAILURE_ALERT_AFTER:
+            _send_alert_at = None
+            return
+        if (_send_alert_at is not None and (local - _send_alert_at).total_seconds()
+                < cfg.realert_minutes * 60):
+            return
+        if _notify(cfg, "Battery planner: the inverter does not accept commands",
+                   "%d commands in a row were not accepted by the inverter "
+                   "driver (%s). Decisions are still logged, but nothing "
+                   "reaches the inverter, which keeps its default behaviour "
+                   "or the last command until it times out. Check the "
+                   "connection to the inverter and the driver log. Re-alert "
+                   "every %d min." % (streak, cfg.inverter_type,
+                                      cfg.realert_minutes)):
+            _send_alert_at = local
+    except Exception as exc:
+        log.error(f"battery_planner: send failure alert failed: {exc!r}")  # noqa: F821
+
+
 def _check_sensor_outage(cfg, local):
     """E-mail when configured sensors stay unavailable.
 
@@ -793,12 +831,14 @@ def _check_sensor_outage(cfg, local):
     during an outage starts the count again. Never raises, never touches a
     decision; a failed send is retried next cycle.
     """
-    global _sensor_first_down, _sensor_last_alert
+    global _sensor_first_down, _sensor_last_alert, _sensors_down
     try:
         if not cfg.sensor_alert_enabled:
+            _sensors_down = []
             return
         sensors = decision.required_sensors(cfg)
         down = [e for e, _ in sensors if _state_value(e) is None]
+        _sensors_down = down
         first, last, due = decision.outage_step(
             _sensor_first_down, _sensor_last_alert, down, local,
             cfg.sensor_outage_minutes, cfg.realert_minutes)
@@ -1267,6 +1307,7 @@ def _publish_sensors(cfg, local, record, grid, stubbed, solar_ratio=None):
             "vetoes": ", ".join(record.vetoes_applied) or "none",
             "why": decision.one_line(record.reasoning),
             "degraded": ", ".join(record.degraded_inputs) or "none",
+            "inputs_down": ", ".join(_sensors_down) or "none",
             "soc_percent": soc,
             "decided_at": record.timestamp.isoformat(timespec="seconds"),
             "source": record.source}, local)
@@ -1306,6 +1347,7 @@ def _publish_halt_sensors(cfg, local):
             "icon": "mdi:battery-sync",
             "power_kw": None, "selector": None, "vetoes": "none",
             "why": "halted: %s" % cause, "degraded": "none",
+            "inputs_down": ", ".join(_sensors_down) or "none",
             "soc_percent": None,
             "decided_at": local.isoformat(timespec="seconds"),
             "source": "planner"}, local)
@@ -1427,9 +1469,13 @@ def _cycle(now):
     if not soc_known and cfg.soc_sensor is not None:
         # soc_unavailable says it already
         degraded = [m for m in degraded if m != "soc_stubbed"]
+    streak = inverter.send_failure_streak()
+    if streak:
+        degraded = degraded + ["inverter_send_failed=%d" % streak]
     took = int((_now() - started).total_seconds() * 1000)
     record = decision.build(d, traj, bat, price_now, degraded, now=local,
                             duration_ms=took, grid_state=grid, config=cfg)
+    _check_send_failures(cfg, local)
     if not inverter.apply(d.action, d.target_power_kw, record,
                           log_dir=DECISIONS_LOG_DIR,
                           inverter_type=cfg.inverter_type,

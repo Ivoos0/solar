@@ -16,6 +16,12 @@ Price outage (halt). Sent when prices become unavailable, then at most once per
 
 Sensor outage (`alerts.sensor_enabled`). Sent when configured sensors stay unavailable (unknown, unavailable or missing) for `alerts.sensor_outage_minutes` (default 15). It covers the inputs the planner reads each cycle: `battery.soc_sensor`, `battery.power_sensor`, the limit and reserve sensors, the forecast entity, the three meter sensors while the capacity tariff is on, and the `history.sensors` counters. The price sensor is not included: it has the price outage alert above. One e-mail lists every sensor that has been down long enough, how long, and what the planner does meanwhile (for example "battery charge unknown: the planner holds"). It repeats every `alerts.realert_minutes` while any of them stays down, and stops when all are back. It works during a price outage. When you get one, check the integration behind the sensor (a Modbus bridge that lost its IP, an integration that needs a reload). The count lives in memory, so a restart during an outage starts it again. A failed send is retried on the next cycle.
 
+Inverter refuses commands. Sent when the driver has not accepted 3 commands in a row (an exception, a timeout, `False` or a missing driver), then every `alerts.realert_minutes` while it keeps refusing. Decisions are still logged, but nothing reaches the inverter, which keeps its default or the last command until that times out. Records carry `inverter_send_failed=N` while it lasts. It never fires with the `logging` driver or in a dry run.
+
+Configuration invalid. Sent once when `user_config.yaml` stops validating after the planner had been running, using the last good configuration to send it and to release any forced command.
+
+Second channel. When a mail cannot be sent, the same text is shown as a Home Assistant persistent notification (one per kind, so a retry does not pile them up).
+
 Peak warning, before (`alerts.peak_warning_enabled`). The peak guard projects the current
 quarter-hour's average from the energy so far and the current offtake. If the projection is above the
 ceiling on `alerts.peak_warning_ticks` consecutive evaluations (default 2), it sends a prediction: the
@@ -37,6 +43,23 @@ The last mailed month and peak are kept in `<ha-config>/battery_planner/state/pe
 that file is lost, you may get one extra e-mail for an old peak after a restart.
 
 ## Sensors
+
+Health: the action sensor carries `inputs_down` (the configured sensors that are unavailable right now, or `none`) and `decided_at` (the time of the last cycle). The planner cannot alert when it is not running, so watch the heartbeat from Home Assistant, for example:
+
+```yaml
+automation:
+  - alias: Battery planner silent
+    trigger:
+      - platform: template
+        value_template: >
+          {{ (now() - states.sensor.battery_planner_action.last_updated).total_seconds() > 900 }}
+    action:
+      - service: notify.mobile_app_yourphone
+        data:
+          message: The battery planner has not updated for 15 minutes
+```
+
+When the planner stops, the inverter returns to its default once the last command's own duration runs out.
 
 Once per planner cycle (every `timing.evaluation_interval_minutes`) the planner publishes its latest
 state as four Home Assistant entities. Publishing never changes a decision; if it fails, the

@@ -465,6 +465,13 @@ def _notify(cfg, title, message):
         return True
     except Exception as exc:
         _warn("alert", "alert send failed: %r" % (exc,))
+        try:
+            service.call(  # noqa: F821
+                "persistent_notification", "create", title=title,
+                message=message,
+                notification_id="battery_planner_" + title.replace(" ", "_").lower())
+        except Exception as exc2:
+            _warn("alert2", "persistent notification failed: %r" % (exc2,))
         return False
 
 

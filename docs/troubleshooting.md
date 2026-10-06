@@ -25,6 +25,7 @@ Markers you can expect in `degraded=` on a fresh install:
 | `battery_reserve_fallback` | `battery.reserve_sensor` is set but cannot be read. `battery.reserve_percent` applies |
 | `battery_limits_fallback` | `battery.max_charge_sensor` or `battery.max_discharge_sensor` is set but cannot be read (or reads 0 or less). The numeric `battery.max_charge_kw` / `max_discharge_kw` apply for that direction |
 | `battery_power_not_configured` | The capacity tariff is on but `battery.power_sensor` is not set. The planner holds (no charging, no exporting) because the household draw cannot be measured. Set the sensor, or turn the capacity tariff off if you have none |
+| `inverter_send_failed=N` | The inverter driver has not accepted the last N commands. After 3 you also get an e-mail. Check the connection to the inverter and the driver messages in the log |
 | `soc_last_good` | `battery.soc_sensor` could not be read this cycle; the last good reading (at most two evaluation intervals old) was used instead. A longer outage gives `soc_unavailable` |
 | `battery_power_last_good` | The same for `battery.power_sensor` |
 | `battery_power_unavailable` | `battery.power_sensor` is set but cannot be read (or its unit is not W or kW). The household draw cannot be measured (the meter alone undercounts while the battery covers the house), so the planner holds (V8) while the capacity tariff is on |

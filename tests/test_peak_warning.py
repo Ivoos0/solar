@@ -54,7 +54,7 @@ def go(g, h, m, s, **kw):
 
 
 def warned(g):
-    return [c for c in g.svc.calls if c[2]["title"].startswith(
+    return [c for c in g.svc.calls if c[0] == "notify" and c[2]["title"].startswith(
         "Capacity peak warning")]
 
 
@@ -392,3 +392,13 @@ def test_counter_resets_at_a_window_boundary(wg):
     go(g2, 12, 16, 0, **HIGH)                        # new window: counting restarts
     go(g2, 12, 16, 30, **HIGH)
     assert len(warned(g2)) == 1                      # the shared fake: only g's
+
+
+def test_a_failed_mail_is_also_shown_as_a_persistent_notification(wg):
+    g = wg()
+    g.svc.fail = True
+    two_ticks(g, **HIGH)
+    pn = [c for c in g.svc.calls if c[0] == "persistent_notification"]
+    assert pn and pn[0][1] == "create"
+    assert pn[0][2]["title"].startswith("Capacity peak warning")
+    assert pn[0][2]["notification_id"].startswith("battery_planner_")

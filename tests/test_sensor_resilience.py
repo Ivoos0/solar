@@ -168,3 +168,74 @@ def test_guard_ignores_an_implausible_battery_power(make_guard, monkeypatch):
     g.st.units[PWR] = "W"
     g.tick(**PEAK_ARGS, **{PWR: "900000"})
     assert built[-1].battery_discharge_kw is None
+
+
+# ---- the inverter refuses commands ------------------------------------------------------
+
+from alphaess_support import bump_mtime  # noqa: E402
+from test_battery_planner import NOTIFY, PRICE_ENTITY  # noqa: E402,F401
+
+
+def _failing_driver(env, ok=False):
+    _real_driver(env)
+    (env.tmp / "drivers" / "inverter_fakeinv.py").write_text(
+        "SOC_IS_STUB = False\n"
+        "def send(action, target_power_kw):\n    return %s\n"
+        "def read_charge_percent():\n    return 40.0\n" % ok, encoding="utf-8")
+
+
+def _negative_prices(env):
+    from test_battery_planner import price_entries
+    entries = [dict(e, price=-0.20) for e in price_entries()]
+    env.state.set(PRICE_ENTITY, "-0.20", {"prices": entries})
+
+
+def test_three_refused_commands_send_one_mail_and_mark_the_record(env, monkeypatch):
+    _failing_driver(env)
+    from test_battery_planner import _history
+    monkeypatch.setattr(env.mod, "read_usage_history", lambda cfg, local: _history(3))
+    _negative_prices(env)
+    for k in range(6):
+        env.run(T0 + k * STEP)
+    mails = [m for m in env.service.of("notify", NOTIFY)
+             if "does not accept commands" in m[2]["title"]]
+    assert len(mails) == 1
+    assert "inverter_send_failed" in fields_of(env.decisions()[-1])["degraded"]
+
+
+def test_a_working_driver_has_no_failure_streak(env, monkeypatch):
+    _failing_driver(env, ok=True)
+    from test_battery_planner import _history
+    monkeypatch.setattr(env.mod, "read_usage_history", lambda cfg, local: _history(3))
+    _negative_prices(env)
+    for k in range(4):
+        env.run(T0 + k * STEP)
+    assert not [m for m in env.service.of("notify", NOTIFY)
+                if "does not accept commands" in m[2]["title"]]
+    assert "inverter_send_failed" not in fields_of(env.decisions()[-1])["degraded"]
+
+
+def test_a_failed_planner_mail_is_also_a_persistent_notification(env):
+    env.write_config()
+    env.state.set(PRICE_ENTITY, "unavailable", {})
+    env.service.fail = {("notify", "test_notifier")}
+    env.run(T0)
+    pn = env.service.of("persistent_notification", "create")
+    assert pn and pn[0][2]["notification_id"].startswith("battery_planner_")
+
+
+# ---- health attributes -------------------------------------------------------------------
+
+def test_the_action_sensor_lists_the_inputs_that_are_down(env):
+    battery_config(env.config_path, ["soc_sensor: %s" % SOC],
+                   extra="capacity_tariff:\n  enabled: false\nhistory:\n  enabled: false\n",
+                   alert_lines=("sensor_enabled: true",))
+    env.run(T0)                                  # the charge sensor does not exist
+    attrs = [a for e, _, a in env.state.published if e == "sensor.battery_planner_action"]
+    assert attrs and SOC in attrs[-1]["inputs_down"]
+
+
+def test_the_action_sensor_says_none_when_all_inputs_are_up(env):
+    env.run(T0)
+    attrs = [a for e, _, a in env.state.published if e == "sensor.battery_planner_action"]
+    assert attrs and "inputs_down" in attrs[-1]

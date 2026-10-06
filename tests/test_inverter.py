@@ -396,7 +396,7 @@ def test_no_transmission_vocabulary_in_source():
         assert not re.search(word, text, re.IGNORECASE), word
 
 
-def test_public_surface_is_exactly_four_functions_plus_constants(inverter):
+def test_public_surface_is_exactly_five_functions_plus_constants(inverter):
     public = {n for n in vars(inverter) if not n.startswith("_")}
     funcs = {n for n in public
              if callable(getattr(inverter, n))
@@ -405,9 +405,9 @@ def test_public_surface_is_exactly_four_functions_plus_constants(inverter):
     # last_sent_action is read-only: the guard asks what is still on record
     # after a reload, so it never reaches into a private helper
     assert funcs == {"apply", "read_charge", "log_path_for",
-                     "last_sent_action"}
+                     "last_sent_action", "send_failure_streak"}
     assert public == {"os", "decision", "datetime", "apply", "read_charge",
-                      "last_sent_action",
+                      "last_sent_action", "send_failure_streak",
                       "DEFAULT_RESEND_MINUTES", "LAST_COMMAND_FILE",
                       "HOLD_ATTRIBUTE", "RESEND_FRACTION", "HOLD_LIMIT_MINUTES",
                       "MAX_PLAN_CALLS", "LOG_REPEAT_MINUTES",

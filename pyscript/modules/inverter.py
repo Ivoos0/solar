@@ -455,6 +455,9 @@ def _transmit(action, target_power_kw, inverter_type, driver_dir,
         return False
 
 
+_send_streak = [0]        # consecutive failed sends (see send_failure_streak)
+
+
 def _state_file(state_dir, log_dir):
     if state_dir is None:
         state_dir = log_dir.rstrip("/") + "/state"
@@ -592,6 +595,13 @@ def _forget_sent(path):
             "inverter: cannot clear the last sent command: %r" % (exc,))
 
 
+def send_failure_streak():
+    """Number of driver commands in a row that were not accepted (an
+    exception, a timeout, False, a missing driver). 0 after any accepted
+    command; the logging driver and a dry run never count. Read-only."""
+    return _send_streak[0]
+
+
 def last_sent_action(log_dir=DEFAULT_LOG_DIR, state_dir=None):
     """Action of the last command a driver accepted ("charge", "discharge",
     "export" or "idle"), or None when nothing is on record. Reads the shared
@@ -676,8 +686,10 @@ def apply(action, target_power_kw, record, log_path=None,
                     hold):
         if _transmit(action, target_power_kw, inverter_type, driver_dir,
                      dry_run, record.timestamp):
+            _send_streak[0] = 0
             _remember_sent(action, target_power_kw, record, path)
         else:
+            _send_streak[0] = _send_streak[0] + 1
             _forget_sent(path)
     return True
 
