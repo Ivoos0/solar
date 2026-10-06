@@ -14,7 +14,7 @@ from test_peak_guard import (  # noqa: F401  (make_guard is a fixture)
     PEAK_ARGS, SHAVING, make_guard)
 
 SOC = "sensor.alphaess_soc_battery"
-SOC_LINES = ("soc_sensor: %s" % SOC,)
+SOC_LINES = ("soc_sensor: %s" % SOC, "power_sensor: sensor.test_battery_power")
 
 
 def planner_with_soc(env, reading, attrs=None):

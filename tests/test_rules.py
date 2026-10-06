@@ -86,7 +86,8 @@ def price(i, cons, inj):
 
 def go(cfg, plist, now_i=0, pct=50.0, g=CALM, sat=None, breach=None,
        spill=0.0, leftover=0.0, solar=None, usage=None, shortfall=None,
-       hide=(), history=True, forecast=True, soc_known=True, charges=None):
+       hide=(), history=True, forecast=True, soc_known=True, charges=None,
+       inputs_known=True):
     # history: True/False -> usage_history_available; None -> omit the kwarg
     """Build trajectory + price_map by hand and decide.
 
@@ -114,6 +115,8 @@ def go(cfg, plist, now_i=0, pct=50.0, g=CALM, sat=None, breach=None,
     kw = {} if history is None else {"usage_history_available": history}
     if soc_known is not True:
         kw["soc_known"] = soc_known
+    if inputs_known is not True:
+        kw["inputs_known"] = inputs_known
     if forecast is not True:
         kw["forecast_available"] = forecast
     return _rules.decide(traj, pmap, battery.from_percent(pct, cfg), g, cfg,
@@ -1230,3 +1233,34 @@ def test_s4_sale_ignores_cheaper_blocks_after_the_sell_block(site_config):
     # b5 (.01) is cheaper but arrives after the sell block: not a candidate
     d = go(site_config, SALE, now_i=1, pct=90.0)
     assert d.selector == "S4" and "cheapest 1 of 3" in d.reasoning
+
+
+# ---- V8: a sensor the calculation needs is missing -------------------------------
+
+def test_v8_forbids_grid_charge_and_export(site_config):
+    forbidden, fired = establish_vetoes(
+        battery.from_percent(50.0, site_config), price(0, 0.2, 0.05),
+        site_config, inputs_known=False)
+    assert "V8" in fired
+    assert {"grid_charge", "export"} <= set(forbidden)
+    assert "discharge" not in forbidden
+
+
+def test_v8_quiet_when_the_inputs_are_known(site_config):
+    _, fired = establish_vetoes(
+        battery.from_percent(50.0, site_config), price(0, 0.2, 0.05),
+        site_config)
+    assert "V8" not in fired
+
+
+def test_v8_turns_a_grid_charge_into_a_hold(site_config):
+    d = go(site_config, NEG_NOW, inputs_known=False)
+    assert (d.selector, d.action) == ("S6", "idle")
+    assert "V8" in d.vetoes_fired
+    assert d.suppressed[0][:2] == ("S1", "charge")
+    assert "required sensor missing" in d.reasoning
+
+
+def test_v8_does_not_stop_peak_shaving(site_config):
+    d = go(site_config, [FLAT] * 3, g=SHAVE, inputs_known=False)
+    assert (d.selector, d.action) == ("S0", "discharge")

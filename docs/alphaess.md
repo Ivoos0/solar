@@ -24,9 +24,9 @@ its register definitions; the register list itself comes from the AlphaESS Modbu
 1. Connect the bridge to the inverter and your network. Give the bridge a **static IP address**:
    a DHCP reservation in your router, or a fixed address in the bridge's own network settings. Home
    Assistant addresses the bridge by that IP (`alphaess_modbus_host_ip`). If the address changes, every
-   AlphaESS sensor goes `unavailable` and the planner falls back: it holds because it has no battery
-   reading (`soc_unavailable`) and estimates the household draw without the battery sensor
-   (`battery_power_unavailable`).
+   AlphaESS sensor goes `unavailable` and the planner holds: it has no battery reading
+   (`soc_unavailable`) and no battery power for the household draw (`battery_power_unavailable`), so
+   nothing is bought or exported until the bridge is back.
 2. Find the Modbus slave id of your inverter (see [Finding the slave id](#finding-the-slave-id)).
 3. Add three keys to Home Assistant's `secrets.yaml` (placeholders are in `secrets.example.yaml`):
 

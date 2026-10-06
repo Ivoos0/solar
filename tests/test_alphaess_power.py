@@ -197,13 +197,25 @@ def test_missing_entity_falls_back_and_is_marked(env):
         env.decisions()[0])["degraded"]
 
 
-def test_no_sensor_configured_means_no_marker_and_no_reading(env):
-    seen = _charge_at_budget(env)
+def test_no_sensor_configured_holds_and_says_so(env):
+    battery_config(env.config_path, [])          # no battery.power_sensor
+    seen = []
+    real = env.mod.rules.decide
+
+    def spy(traj, price_map, bat, grid, cfg, now, **kw):
+        seen.append(grid)
+        return real(traj, price_map, bat, grid, cfg, now, **kw)
+
+    env.mod.rules.decide = spy
     env.state.set(PWR, "3000", {"unit_of_measurement": "W"})
     env.run(T0)
     assert seen[0].battery_discharge_kw is None
-    assert "battery_power_unavailable" not in fields_of(
-        env.decisions()[0])["degraded"]
+    keys = fields_of(env.decisions()[0])
+    assert keys["action"] == "idle"
+    assert "battery_power_not_configured" in keys["degraded"]
+    assert "battery_power_unavailable" not in keys["degraded"]
+    assert "V8" in keys["vetoes"]
+    assert "required sensor missing" in keys["why"]
 
 
 def test_household_draw_does_not_flip_while_the_planner_charges(env):
@@ -311,3 +323,31 @@ def test_guard_unreadable_with_inverted_sign_still_falls_back(
     g.st.units[PWR] = "A"
     g.tick(**PEAK_ARGS, **{PWR: "3000"})
     assert built[-1].battery_discharge_kw is None
+
+
+def test_unreadable_power_sensor_holds(env):
+    battery_config(env.config_path, ["power_sensor: %s" % PWR], extra=RUNNING)
+    env.state.set(PWR, "unavailable", {"unit_of_measurement": "W"})
+    env.run(T0)
+    keys = fields_of(env.decisions()[0])
+    assert keys["action"] == "idle" and "V8" in keys["vetoes"]
+    assert "battery_power_unavailable" in keys["degraded"]
+
+
+def test_unreadable_grid_sensors_hold(env):
+    battery_config(env.config_path, ["power_sensor: %s" % PWR], extra=RUNNING)
+    env.state.set(PWR, "0", {"unit_of_measurement": "W"})
+    env.state.set(OFFTAKE_ENTITY, "unavailable", {})
+    env.run(T0)
+    keys = fields_of(env.decisions()[0])
+    assert keys["action"] == "idle" and "V8" in keys["vetoes"]
+    assert "grid_sensors_unavailable" in keys["degraded"]
+
+
+def test_without_the_capacity_tariff_no_power_sensor_is_needed(env):
+    battery_config(env.config_path, [],
+                   extra="capacity_tariff:\n  enabled: false\n")
+    env.run(T0)
+    keys = fields_of(env.decisions()[0])
+    assert "V8" not in keys["vetoes"]
+    assert "battery_power_not_configured" not in keys["degraded"]

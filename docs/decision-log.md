@@ -20,7 +20,7 @@ text editor. Files older than `retention.keep_days` (default 90) are deleted by
 the daily cleanup at 03:30 local time.
 
 The decision is written by the inverter boundary before any driver is called
-(see [inverter-boundary.md](inverter-boundary.md)). The labels `V1` to `V7` and
+(see [inverter-boundary.md](inverter-boundary.md)). The labels `V1` to `V8` and
 `S0` to `S6` are explained under
 [Labels in the decision log](#labels-in-the-decision-log) below.
 
@@ -62,7 +62,7 @@ A value that does not apply is written explicitly (`none`, `n/a`, or a computed
 | `took` | `NNNms` | How long the cycle took |
 | `avg` | `N.NNkW` or `n/a` | Running quarter-hour average of grid offtake. `n/a` when capacity handling is off |
 | `ceiling` | `N.NNkW` or `n/a` | The peak level being defended: the larger of 2.5 kW and this month's peak |
-| `budget` | `N.NNkW` or `n/a` | Grid power still available for charging in this quarter-hour, after the household's draw (measured with `battery.power_sensor`: offtake plus battery discharge; else offtake minus the planner's own grid charge) and capped at the charge limit (`battery.max_charge_sensor` when readable, else `battery.max_charge_kw`), measured against `capacity_tariff.stay_under_percent` of the ceiling (80 % of 2.5 kW = 2.0 kW by default). Negative when the window is already over that level. `0.00kW` in the last `timing.evaluation_interval_minutes` of the quarter-hour (grid charging stops one evaluation interval before it ends) |
+| `budget` | `N.NNkW` or `n/a` | Grid power still available for charging in this quarter-hour, after the household's draw (measured with `battery.power_sensor`: offtake plus battery discharge) and capped at the charge limit (`battery.max_charge_sensor` when readable, else `battery.max_charge_kw`), measured against `capacity_tariff.stay_under_percent` of the ceiling (80 % of 2.5 kW = 2.0 kW by default). Negative when the window is already over that level. `0.00kW` in the last `timing.evaluation_interval_minutes` of the quarter-hour (grid charging stops one evaluation interval before it ends) |
 | `vetoes` | comma-separated or `none` | Rules that fired, and what each suppressed (see below) |
 | `selector` | `S0` to `S6` | The action that was chosen |
 | `why` | quoted text | The values that made the condition true |
@@ -112,7 +112,8 @@ only V5 can stop a peak shave, shown as `V5(suppressed S0 discharge)`.
 | `soc_stubbed` | The battery charge is the 50 % placeholder of the `logging` driver. Absent when `battery.soc_sensor` supplies the charge |
 | `battery_reserve_fallback` | `battery.reserve_sensor` is set but cannot be read (unknown, unavailable, not a number, or outside 0 to below 100). `battery.reserve_percent` applies on that record |
 | `battery_limits_fallback` | `battery.max_charge_sensor` or `battery.max_discharge_sensor` is set but cannot be read (unknown, unavailable, not a number, a unit other than W or kW, or 0 or less). The numeric `battery.max_charge_kw` / `max_discharge_kw` apply for that direction on that record |
-| `battery_power_unavailable` | `battery.power_sensor` is set but cannot be read (unknown, unavailable, not a number, or a unit other than W or kW). The budget then uses the older estimate: meter offtake minus the planner's own grid charge |
+| `battery_power_not_configured` | The capacity tariff is on but `battery.power_sensor` is not set. V8 holds grid charging and export |
+| `battery_power_unavailable` | `battery.power_sensor` is set but cannot be read (unknown, unavailable, not a number, or a unit other than W or kW). While the capacity tariff is on, V8 holds grid charging and export |
 | `soc_unavailable` | `battery.soc_sensor` is set but cannot be read (unknown, unavailable, not a number or outside 0 to 100). The charge is not guessed: V7 holds grid charging and export. Replaces `soc_stubbed` on that record |
 | `solar_zero_fallback` | The forecast was unavailable and no usable cached copy exists, so solar was treated as zero. V6 then holds grid charging and export |
 | `cache_age_solar=3h12m`, `cache_age_usage=...` | A cached series was used, with its age |
@@ -155,6 +156,7 @@ Vetoes:
 | V4 | grid charging, export | There is no usable usage history. Peak shaving (S0) is not affected |
 | V5 | discharge | The battery is empty (0 % charge). The planner cannot know your inverter's own minimum charge, so this is the only lower limit it applies to peak shaving |
 | V6 | grid charging, export | There is no solar forecast: it is missing or too old and there is no usable cached copy (`degraded=solar_zero_fallback`). Peak shaving (S0) is not affected. A stale but usable cached forecast does not trigger it |
+| V8 | grid charging, export | A sensor the budget needs is missing while the capacity tariff is on: the grid sensors are unreadable (or the quarter-hour average is stale), `battery.power_sensor` is not set (`degraded=battery_power_not_configured`) or cannot be read (`degraded=battery_power_unavailable`). Without the household draw the budget cannot be completed, so nothing is bought or exported. Peak shaving (S0) is not affected |
 | V7 | grid charging, export | `battery.soc_sensor` is set but unreadable (`degraded=soc_unavailable`): there is no battery reading, so nothing is bought or exported. Peak shaving (S0) is not affected. V1 and V5 need a reading and are not checked meanwhile, so the peak guard may still shave. V7 forbids neither discharge nor peak shaving |
 
 Selectors, in the order they are tried:

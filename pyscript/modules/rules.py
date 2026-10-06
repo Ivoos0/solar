@@ -6,7 +6,7 @@ Entry point
 -----------
     decide(trajectory, price_map, battery_state, grid_state, config, now,
            usage_history_available=False, forecast_available=True,
-           soc_known=True) -> Decision
+           soc_known=True, inputs_known=True) -> Decision
 
   trajectory     trajectory.Trajectory from trajectory.project()
   price_map      {block_start: prices.PricePoint}; keys may be aware or
@@ -77,6 +77,12 @@ grid).
       fallback)                          -> {"grid_charge", "export"}
   V7  battery charge unreadable
       (soc_known False)                  -> {"grid_charge", "export"}
+  V8  a sensor the calculation needs is
+      missing (inputs_known False)       -> {"grid_charge", "export"}
+V8 ("required input missing"): with the capacity tariff on, the budget and the
+household draw need the grid sensors and battery.power_sensor. Without them
+the numbers cannot be completed, so the planner falls back to idle (nothing
+bought or exported); like V7 it does not stop peak shaving (S0).
 V7 ("no battery reading"): a configured charge sensor that cannot be read is
 not replaced by a guess. Buying or exporting energy needs the real charge, so
 both are held; the battery keeps serving the house (the default) and peak
@@ -182,6 +188,7 @@ VETO_FORBIDS = {
     "V5": frozenset({FORBID_DISCHARGE}),
     "V6": frozenset({FORBID_GRID_CHARGE, FORBID_EXPORT}),
     "V7": frozenset({FORBID_GRID_CHARGE, FORBID_EXPORT}),
+    "V8": frozenset({FORBID_GRID_CHARGE, FORBID_EXPORT}),
 }
 
 
@@ -234,7 +241,7 @@ def _capacity_active(grid_state, config):
 
 def establish_vetoes(battery_state, current_price, config, grid_state=None,
                      usage_history_available=False, forecast_available=True,
-                     soc_known=True):
+                     soc_known=True, inputs_known=True):
     """Return (forbidden action classes, [fired veto ids]). Data only.
 
     usage_history_available defaults to the SAFE False (V4 fires).
@@ -264,6 +271,8 @@ def establish_vetoes(battery_state, current_price, config, grid_state=None,
         fired.append("V6")
     if not soc_known:
         fired.append("V7")
+    if not inputs_known:
+        fired.append("V8")
     forbidden = frozenset()
     for v in fired:
         forbidden = forbidden | VETO_FORBIDS[v]
@@ -607,12 +616,18 @@ def _s6_reasoning(ctx, fired, suppressed):
     if "V7" in fired:
         facts.append("battery charge unreadable: nothing is bought or "
                      "exported without a reading")
+    if "V8" in fired:
+        facts.append("a required sensor is missing (see degraded): nothing is "
+                     "bought or exported without it")
     if "V6" in fired:
         facts.append("no solar forecast: nothing is bought or exported on a "
                      "guess")
     if "V7" in fired:
         return ("hold: no battery reading: planner holds (only peak shaving "
                 "acts) - " + "; ".join(facts))
+    if "V8" in fired:
+        return ("hold: required sensor missing: planner holds (only peak "
+                "shaving acts) - " + "; ".join(facts))
     if "V4" in fired:
         return ("hold: no usage history: planner holds (only peak shaving "
                 "acts) - " + "; ".join(facts))
@@ -631,13 +646,14 @@ _SELECTORS = (("S0", _s0), ("S1", _s1), ("S3", _s3), ("S4", _s4))
 
 def decide(trajectory, price_map, battery_state, grid_state, config, now,
            usage_history_available=False, forecast_available=True,
-           soc_known=True):
+           soc_known=True, inputs_known=True):
     """Establish vetoes, then try S0..S6 in order; see module docstring."""
     ctx = _build_ctx(trajectory, price_map, battery_state, grid_state,
                      config, now)
     forbidden, fired = establish_vetoes(battery_state, ctx.price_now, config,
                                         grid_state, usage_history_available,
-                                        forecast_available, soc_known)
+                                        forecast_available, soc_known,
+                                        inputs_known)
     suppressed = []
     for name, selector in _SELECTORS:
         proposal = selector(ctx)
