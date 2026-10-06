@@ -120,6 +120,7 @@ only V5 can stop a peak shave, shown as `V5(suppressed S0 discharge)`.
 | `usage_samples=N` | The usage profile rests on N days of history, fewer than `usage.history_weeks` x 7 |
 | `solar_ratio=0.83` | The forecast of the current or next block that has solar was multiplied by this ratio, measured from your own history. Absent when it rounds to 1.00 |
 | `solar_ratio_configured=0.80` | The same with `solar.calibration_default`, used while the history is too short or too thin around that time of day. Absent at 1.00 |
+| `quarter_hour_average_stale` | The quarter-hour average has not been written in this window and is high; see the table under [Check that it works](troubleshooting.md#check-that-it-works) |
 | `usage_history_unavailable`, `grid_sensors_unavailable`, `inverter_driver_unavailable`, `inverter_read_failed` | See the marker table under [Check that it works](troubleshooting.md#check-that-it-works) |
 
 The daily report counts the two `solar_ratio` markers under their name without
