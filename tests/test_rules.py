@@ -1152,3 +1152,50 @@ def test_v6_joins_the_block_list_in_the_record_text(site_config):
     d = go(site_config, [NEG] * 3, forecast=False)
     assert decision.render_vetoes(d) == [
         "V6(suppressed S1 charge)", "V6(suppressed S5 charge)"]
+
+
+# ---- L1: never charge more than the room left in the battery ---------------
+
+NEG_NOW = [(-0.05, 0.02), (0.20, 0.02)]
+
+
+def test_s1_does_not_charge_a_full_battery(site_config):
+    d = go(site_config, NEG_NOW, pct=100.0)
+    assert d.selector == "S6" and d.action == "idle"
+
+
+def test_s1_charge_limited_to_the_room_left(site_config):
+    # 97.5 % of 10 kWh: 0.25 kWh of room in a 0.25 h block = 1.0 kW, not 5 kW
+    d = go(site_config, NEG_NOW, pct=97.5)
+    assert (d.selector, d.action) == ("S1", "charge")
+    assert d.target_power_kw == pytest.approx(1.0)
+    assert "room left in the battery" in d.reasoning
+
+
+def test_s1_full_power_when_there_is_room(site_config):
+    d = go(site_config, NEG_NOW, pct=50.0)
+    assert d.target_power_kw == 5.0 and "room left" not in d.reasoning
+
+
+def test_s5_charge_limited_to_the_room_left(site_config):
+    d = go(site_config, ARB, pct=97.5)
+    assert (d.selector, d.action) == ("S5", "charge")
+    assert d.target_power_kw == pytest.approx(1.0)
+
+
+# ---- M4: now must beat the other blocks by the round-trip loss ---------------
+
+def test_s3_equal_prices_do_not_export(site_config):
+    flat = [(0.40, 0.15)] * 4
+    d = go(site_config, flat, now_i=1, sat=3, spill=2.0)
+    assert d.selector == "S6"
+
+
+def test_s3_needs_the_round_trip_margin(site_config):
+    # efficiency 0.9: 0.15 * 0.9 = 0.135 must beat the best other block
+    just_short = [(0.40, 0.15), (0.40, 0.15), (0.40, 0.14), (0.40, 0.10)]
+    d = go(site_config, just_short, now_i=1, sat=3, spill=2.0)
+    assert d.selector == "S6"                       # 0.135 < 0.14
+    enough = [(0.40, 0.15), (0.40, 0.15), (0.40, 0.13), (0.40, 0.10)]
+    d = go(site_config, enough, now_i=1, sat=3, spill=2.0)
+    assert d.selector == "S3"                       # 0.135 > 0.13

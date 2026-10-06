@@ -342,18 +342,25 @@ def _later_best_injection(ctx):
     return best
 
 
-_MIN_EXPORT_KWH = 0.01     # less than this is not worth an export command
+_MIN_ENERGY_KWH = 0.01     # less than this is not worth a charge or export command
 
 
 def _grid_power(ctx, wanted_kw):
     """Clamp a grid charge to the budget. Returns (kw, note or '')."""
+    note = ""
+    room_kw = ctx.battery.headroom_kwh / ctx.hours
+    if room_kw < wanted_kw:
+        note = (" (limited to the %.2f kWh of room left in the battery, "
+                "inverter allows %.2f kW)" % (ctx.battery.headroom_kwh,
+                                              wanted_kw))
+        wanted_kw = room_kw
     if not _capacity_active(ctx.grid, ctx.config):
-        return wanted_kw, ""
+        return wanted_kw, note
     budget = capacity.budget_kw(ctx.grid, ctx.config)
     if budget < wanted_kw:
         return budget, (" (capped by grid budget %.2f kW, inverter allows "
                         "%.2f kW)" % (budget, wanted_kw))
-    return wanted_kw, ""
+    return wanted_kw, note
 
 
 # ---- selectors ------------------------------------------------------------
@@ -376,6 +383,8 @@ def _s1(ctx):
     p = ctx.price_now
     if p is None or p.consumption_price >= 0:
         return None
+    if ctx.battery.headroom_kwh <= _MIN_ENERGY_KWH:
+        return None                       # full: nothing to charge into
     kw, note = _grid_power(ctx, ctx.config.max_charge_kw)
     return Proposal(
         "charge", kw,
@@ -423,11 +432,16 @@ def _s3(ctx):
     cands = _priced(ctx, _window(ctx, t.saturation_block))
     if not cands:
         return None
-    best = max(c[1].injection_price for c in cands)
-    if p.injection_price < best:
+    # Energy exported now is refilled from solar that would otherwise have
+    # been exported at another price in the window, and the round trip loses
+    # a share of it. So now must beat every other block after losses:
+    # equal prices do not qualify.
+    others = [c[1].injection_price for c in cands if c[0] != ctx.idx]
+    if others and not _after_losses(
+            p.injection_price, ctx.config.round_trip_efficiency) > max(others):
         return None
     spare = _exportable_kwh(ctx)
-    if spare <= _MIN_EXPORT_KWH:
+    if spare <= _MIN_ENERGY_KWH:
         return None
     if t.saturation_block is None:
         # nothing refills the battery, so a kept kWh avoids a purchase later:
@@ -443,10 +457,11 @@ def _s3(ctx):
     return Proposal(
         "export", kw,
         "spill ahead %.2f kWh, leftover %.2f kWh, %s; injection now %.4f "
-        "EUR/kWh is the best of %d priced blocks in the window; %.2f kWh is "
+        "EUR/kWh beats the other %d priced blocks in the window after "
+        "round-trip losses; %.2f kWh is "
         "not needed before the battery refills: export at %.2f kW"
         % (t.total_spill_kwh, t.leftover_kwh, sat, p.injection_price,
-           len(cands), spare, kw))
+           len(others), spare, kw))
 
 
 def _breach_import_price(ctx):
@@ -471,7 +486,7 @@ def _breach_import_price(ctx):
 
 def _s4(ctx):
     p, t, cfg = ctx.price_now, ctx.traj, ctx.config
-    if p is None or t.reserve_breach_block is None             or ctx.battery.headroom_kwh <= 0:
+    if p is None or t.reserve_breach_block is None             or ctx.battery.headroom_kwh <= _MIN_ENERGY_KWH:
         return None
     cands = _priced(ctx, _window(ctx, t.reserve_breach_block))
     if not cands:
@@ -508,7 +523,7 @@ def _s4(ctx):
 
 def _s5(ctx):
     p, cfg = ctx.price_now, ctx.config
-    if p is None or ctx.battery.headroom_kwh <= 0:
+    if p is None or ctx.battery.headroom_kwh <= _MIN_ENERGY_KWH:
         return None
     best = _later_best_injection(ctx)
     if best is None:

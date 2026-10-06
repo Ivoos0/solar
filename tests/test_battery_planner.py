@@ -1046,6 +1046,22 @@ def test_empty_history_passes_false_and_history_passes_true(env, monkeypatch):
     assert seen == [False, True]
 
 
+def test_history_shorter_than_the_minimum_counts_as_none(env, monkeypatch):
+    mod = env.mod
+    seen = []
+    real = mod.rules.decide
+
+    def spy(*a, **kw):
+        seen.append(kw.get("usage_history_available"))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(mod.rules, "decide", spy)
+    monkeypatch.setattr(mod, "read_usage_history",
+                        lambda cfg, local: _history(2))      # minimum is 3
+    env.run()
+    assert seen == [False]
+
+
 def test_empty_history_vetoes_grid_charge_in_the_record(env):
     _negative_prices(env)
     env.run()

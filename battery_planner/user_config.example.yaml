@@ -126,6 +126,10 @@ capacity_tariff:
 # Expected household consumption per block, averaged from recent history.
 usage:
   history_weeks: 4              # trailing window
+  min_history_days: 3           # days of recorded history needed before any
+                                # price-driven action (charging, exporting); until
+                                # then the planner only peak-shaves and idles.
+                                # At least 1, at most 7 x history_weeks
   grouping: same_weekday        # same_weekday | day_type
                                 # same_weekday: a Wednesday block = mean of the
                                 #   last 4 Wednesdays (faithful to routines)

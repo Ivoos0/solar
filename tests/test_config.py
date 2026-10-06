@@ -441,3 +441,21 @@ def test_inverter_dry_run_rejects_non_booleans(value):
 def test_inverter_dry_run_is_not_in_the_cache_fingerprint():
     ref = from_dict(base()).fingerprint()
     assert from_dict(base(inverter__dry_run=True)).fingerprint() == ref
+
+
+def test_min_history_days_default_and_parsed(site_config):
+    assert site_config.usage_min_history_days == 3
+    assert from_dict(base(usage__min_history_days=7)).usage_min_history_days == 7
+
+
+@pytest.mark.parametrize("bad_value", [0, -1, 2.5, "three", True, 29])
+def test_min_history_days_rejects(bad_value):
+    # 29 > 7 * the default 4 weeks
+    with pytest.raises(ConfigError) as e:
+        from_dict(base(usage__min_history_days=bad_value))
+    assert "usage_min_history_days" in str(e.value)
+
+
+def test_min_history_days_limit_follows_history_weeks():
+    c = from_dict(base(usage__history_weeks=5, usage__min_history_days=29))
+    assert c.usage_min_history_days == 29

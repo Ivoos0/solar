@@ -46,6 +46,7 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `capacity_tariff.quarter_hour_average_sensor` | `sensor.slimmelezer_huidig_kwartiervermogen` | entity id | Meter register 1-0:1.4.0 |
 | `capacity_tariff.month_peak_sensor` | `sensor.slimmelezer_maandpiek` | entity id | Meter register 1-0:1.6.0 |
 | `usage.history_weeks` | `4` | weeks | How many weeks are averaged into the usage profile |
+| `usage.min_history_days` | `3` | days | Days of recorded history needed before the planner charges from the grid or exports. Until then it only peak-shaves and idles (`usage_history_unavailable` while there is none, `usage_samples=N` while the profile is still short). At least 1, at most 7 x `usage.history_weeks` |
 | `usage.grouping` | `same_weekday` | `same_weekday`, `day_type` | `same_weekday` averages the same weekday; `day_type` pools weekdays and weekend days |
 | `usage.recency_weighting` | `linear` | `linear`, `none` | `linear` weights newer weeks more (4 weeks: 4, 3, 2, 1). Changing it discards the cached profile |
 | `history.enabled` | `true` | true/false | Records the energy history |

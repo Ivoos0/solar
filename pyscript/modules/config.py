@@ -35,6 +35,7 @@ _MAP = [
     ("timing", "solar_cache_stale_minutes", "solar_cache_stale_minutes"),
     ("timing", "usage_cache_stale_minutes", "usage_cache_stale_minutes"),
     ("usage", "history_weeks", "usage_history_weeks"),
+    ("usage", "min_history_days", "usage_min_history_days"),
     ("usage", "grouping", "usage_grouping"),
     ("usage", "recency_weighting", "usage_recency_weighting"),
     ("alerts", "address", "alert_address"),
@@ -154,6 +155,7 @@ class SiteConfig:
     offtake_sensor: str = "sensor.slimmelezer_power_consumed"
     stay_under_percent: float = 80.0
     usage_history_weeks: int = 4
+    usage_min_history_days: int = 3
     usage_grouping: str = "same_weekday"
     usage_recency_weighting: str = "linear"
     # Solar calibration: the ratio applied to the forecast until
@@ -344,6 +346,15 @@ def _errors(cfg):
     if isinstance(cfg.usage_history_weeks, float) or cfg.usage_history_weeks < 1:
         bad("usage_history_weeks", cfg.usage_history_weeks,
             "must be an integer >= 1")
+    if (isinstance(cfg.usage_min_history_days, float)
+            or cfg.usage_min_history_days < 1):
+        bad("usage_min_history_days", cfg.usage_min_history_days,
+            "must be an integer >= 1")
+    elif (isinstance(cfg.usage_history_weeks, int)
+            and cfg.usage_min_history_days > 7 * cfg.usage_history_weeks):
+        bad("usage_min_history_days", cfg.usage_min_history_days,
+            "must be at most 7 * usage.history_weeks (%d days)"
+            % (7 * cfg.usage_history_weeks))
     if not 0 < cfg.solar_calibration_default <= 2:
         bad("solar.calibration_default", cfg.solar_calibration_default,
             "must be > 0 and <= 2")

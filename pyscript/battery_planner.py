@@ -1305,7 +1305,7 @@ def _cycle(now):
         markers.append("battery_power_unavailable")
     grid = _grid_state(cfg, local, battery_kw)
     d = rules.decide(traj, price_map, bat, grid, cfg, local,
-                     usage_history_available=history_days > 0,
+                     usage_history_available=history_days >= cfg.usage_min_history_days,
                      forecast_available=not zero_fallback,
                      soc_known=soc_known)
 
