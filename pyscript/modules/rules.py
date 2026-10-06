@@ -123,6 +123,14 @@ Resolved ambiguities / documented readings
   reserve_breach_block (S4), or the horizon end when that is None. If the
   boundary is at or before the current block the window is just the current
   block (saturation/breach is imminent, so acting now is the only option).
+* S3 exports only the spare energy: the lowest projected charge above the
+  reserve from now to saturation (or the horizon end), capped by the charge
+  now, so it never exports into a coming shortage. The power is the spare
+  energy over the block, up to max_discharge_kw. With no saturation nothing
+  refills the battery, so a kept kWh is worth the buying price it avoids
+  (energy-weighted import price of the shortfall blocks, else the last
+  published consumption price) times the round-trip efficiency; S3 exports
+  only when the injection price now beats that.
 * S4 shortfall = sum of grid_shortfall_kwh over the trajectory (load the grid
   must serve because the battery sits at the floor); N = max(1, ceil(shortfall
   / (max_charge_kw * block_hours))), capped at the window size. "Among the
@@ -334,6 +342,9 @@ def _later_best_injection(ctx):
     return best
 
 
+_MIN_EXPORT_KWH = 0.01     # less than this is not worth an export command
+
+
 def _grid_power(ctx, wanted_kw):
     """Clamp a grid charge to the budget. Returns (kw, note or '')."""
     if not _capacity_active(ctx.grid, ctx.config):
@@ -372,6 +383,37 @@ def _s1(ctx):
         "charge from grid at %.2f kW%s" % (p.consumption_price, kw, note))
 
 
+def _exportable_kwh(ctx):
+    """Energy the projection says is not needed before the battery refills.
+
+    The lowest charge above the reserve over the window from now to the
+    saturation block (inclusive) or the horizon end, also capped by the charge
+    now. Exporting more than that would be bought back at the next shortage.
+    """
+    t = ctx.traj
+    sat = _index_of(t, t.saturation_block)
+    hi = len(t.blocks) if sat is None else max(sat + 1, ctx.idx + 1)
+    reserve = ctx.config.capacity_kwh * ctx.config.reserve_percent / 100.0
+    low = min(b.projected_charge_kwh for b in t.blocks[ctx.idx:hi])
+    return max(0.0, min(low, ctx.battery.stored_kwh) - reserve)
+
+
+def _avoided_buy_price(ctx):
+    """Price paid for the energy a kept kWh would later replace.
+
+    The energy-weighted import price of the projected shortfall blocks; when
+    the horizon has none, the last published consumption price (the best
+    guess for the first purchase beyond the horizon). None without prices.
+    """
+    price = _breach_import_price(ctx)
+    if price is not None:
+        return price
+    for p in reversed(ctx.prices):
+        if p is not None:
+            return p.consumption_price
+    return None
+
+
 def _s3(ctx):
     p, t = ctx.price_now, ctx.traj
     if p is None:
@@ -384,16 +426,27 @@ def _s3(ctx):
     best = max(c[1].injection_price for c in cands)
     if p.injection_price < best:
         return None
+    spare = _exportable_kwh(ctx)
+    if spare <= _MIN_EXPORT_KWH:
+        return None
+    if t.saturation_block is None:
+        # nothing refills the battery, so a kept kWh avoids a purchase later:
+        # it is worth the buying price it avoids, after round-trip losses
+        avoided = _avoided_buy_price(ctx)
+        if avoided is not None and not p.injection_price > _after_losses(
+                avoided, ctx.config.round_trip_efficiency):
+            return None
+    kw = min(ctx.config.max_discharge_kw, spare / ctx.hours)
     sat = ("saturation at %s" % _hhmm(t.saturation_block)
            if t.saturation_block is not None
            else "no saturation (whole horizon)")
     return Proposal(
-        "export", ctx.config.max_discharge_kw,
+        "export", kw,
         "spill ahead %.2f kWh, leftover %.2f kWh, %s; injection now %.4f "
-        "EUR/kWh is the best of %d priced blocks in the window: export at "
-        "%.2f kW" % (t.total_spill_kwh, t.leftover_kwh, sat,
-                     p.injection_price, len(cands),
-                     ctx.config.max_discharge_kw))
+        "EUR/kWh is the best of %d priced blocks in the window; %.2f kWh is "
+        "not needed before the battery refills: export at %.2f kW"
+        % (t.total_spill_kwh, t.leftover_kwh, sat, p.injection_price,
+           len(cands), spare, kw))
 
 
 def _breach_import_price(ctx):
