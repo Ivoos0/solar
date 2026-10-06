@@ -34,7 +34,7 @@ Key-value pairs on a single line, separated by ` | `. Wrapped here for reading:
   saturation=2026-09-29T12:45:00+02:00 | spill=2.40kWh | breach=none |
   end_soc=2.10kWh | took=84ms | avg=1.20kW | ceiling=2.50kW | budget=1.95kW |
   vetoes=none | selector=S3 |
-  why="leftover 4.1kWh with saturation at 12:45; best injection price before saturation" |
+  why="spill ahead 2.40 kWh, saturation at 12:45; injection now 0.1890 EUR/kWh beats the other 6 priced blocks in the window after round-trip losses; 0.60 kWh is not needed before the battery refills: export at 2.50 kW" |
   degraded=soc_stubbed | source=planner
 ```
 
@@ -91,7 +91,7 @@ vetoes=V2 | selector=S6 |
 ```
 
 Several suppressed proposals are separate entries, for example
-`V4(suppressed S1 charge),V4(suppressed S5 charge)`. A record that shows a veto
+`V4(suppressed S1 charge),V4(suppressed S3 export)`. A record that shows a veto
 always also shows the selector that finally fired.
 
 What each label forbids, and when it fires, is listed under
@@ -99,8 +99,8 @@ What each label forbids, and when it fires, is listed under
 
 V4 fires on every cycle until the energy history holds a known household load
 (see [Energy history](history-and-reports.md#energy-history)), so it appears bare on most records
-until then, and as `V4(suppressed ...)` whenever a price-driven selector (S1 to
-S5) would have acted. V4 does not stop the S0 peak shave, and neither does V1:
+until then, and as `V4(suppressed ...)` whenever a price-driven selector (S1, S3 or
+S4) would have acted. V4 does not stop the S0 peak shave, and neither does V1:
 only V5 can stop a peak shave, shown as `V5(suppressed S0 discharge)`.
 
 ## Degraded markers
@@ -160,10 +160,9 @@ Selectors, in the order they are tried:
 | Label | Action |
 |---|---|
 | S0 | Peak shave: discharge to the house when the quarter-hour is heading above the ceiling. Mostly relevant when the planner is holding energy back (see [Peak guard](how-it-works.md#peak-guard)) |
-| S1 | Charge from the grid while the consumption price is negative. Never more than the room left in the battery (S4 and S5 too) |
-| S3 | Export only the energy the projection does not need before the battery refills, when the battery would otherwise overflow (or has charge left over) and now beats every other priced block in the window after round-trip losses (equal prices do not qualify). With no refill ahead, only when the price beats what the kept energy avoids buying, after losses |
-| S4 | Charge from the grid in the cheapest blocks when that is cheaper than importing later, ahead of the battery reaching the reserve. The comparison is the price now divided by `battery.round_trip_efficiency` against the average buying price (weighted by energy) of the blocks where the house would otherwise import. It needs usage history (`usage.min_history_days` days), like the other price-driven choices |
-| S5 | Charge from the grid when a later injection price, after round-trip losses, beats the price now |
+| S1 | Charge from the grid while the consumption price is negative. Never more than the room left in the battery (S4 too) |
+| S3 | Export when a spill is projected (the battery would be full and solar lost), only the energy not needed before the battery refills, and only when the injection price now, after round-trip losses, beats every other priced block in the window (equal prices do not qualify). Charge left over at the horizon end is never sold |
+| S4 | Charge from the grid when a stored kWh is worth more than it costs, in the cheapest blocks only. Two uses, tried in this order. (1) Import avoided: charging now, price divided by `battery.round_trip_efficiency`, is cheaper than the average buying price (weighted by energy) of the blocks where the house would otherwise import between the first reserve breach and the next refill. The cheapest blocks before the breach that cover that shortage charge. (2) Sale: the best later injection price after round-trip losses beats the price now. The cheapest blocks before that sell block that fill the room left in the battery charge. It needs usage history (`usage.min_history_days` days), like the other price-driven choices. Older logs may show this second use as `S5` |
 | S6 | Idle: nothing applies, so the planner cancels any forced mode and the inverter does what it does by default (see [What the planner does](how-it-works.md#what-the-planner-does)) |
 
 There is no S2, and the other labels keep their numbers. Storing surplus solar needs no rule: the inverter's own default does it. By default

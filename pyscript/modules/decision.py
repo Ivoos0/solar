@@ -70,6 +70,7 @@ from datetime import timezone
 
 ACTIONS = ("charge", "discharge", "export", "idle")
 # There is no S2 (see rules.py); the labels keep their numbers.
+# S5 was merged into S4; older logs still carry it.
 SELECTORS = ("S0", "S1", "S3", "S4", "S5", "S6")
 SOURCES = ("planner", "guard")
 
