@@ -182,6 +182,8 @@ _last_run = None
 _config = None
 _config_mtime = None
 _config_error = None
+_last_good_config = None              # the last config that validated (for a release)
+_config_release_done = False          # idle already sent for this config failure
 _halt_state = None
 _halt_loaded = False                  # halt.json read once per process
 _forecast_failures = 0
@@ -508,13 +510,16 @@ def _counter_kwh(entity):
 
 def _load_config():
     """Current SiteConfig, reloaded when the file's mtime changes; else None."""
-    global _config, _config_mtime, _config_error
+    global _config, _config_mtime, _config_error, _last_good_config
+    global _config_release_done
     result = _load_yaml(CONFIG_PATH, _config_mtime)
     if result["status"] == "loaded":
         _config_mtime = result["mtime"]
         try:
             _config = config.from_dict(result["data"])
             _config_error = None
+            _last_good_config = _config
+            _config_release_done = False
         except config.ConfigError as exc:
             _config, _config_error = None, str(exc)
     elif result["status"] == "error":
@@ -611,6 +616,42 @@ def _load_halt():
         _halt_state = None
 
 
+def _release(cfg, local, reasoning):
+    """Send `idle` once when a command may still be in force.
+
+    Only when the last command on record is not idle (with the logging driver
+    nothing is ever recorded, so nothing is sent). Never raises.
+    """
+    try:
+        if cfg.inverter_type == "logging":
+            return                          # transmits nothing, nothing to release
+        if inverter.last_sent_action(state_dir=STATE_DIR) in (None, "idle"):
+            return
+        record = decision.release_record(
+            local, decision.one_line(reasoning), "planner")
+        inverter.apply("idle", 0.0, record, log_dir=DECISIONS_LOG_DIR,
+                       inverter_type=cfg.inverter_type, driver_dir=CORE_DIR,
+                       resend_minutes=cfg.inverter_resend_minutes,
+                       state_dir=STATE_DIR, dry_run=cfg.inverter_dry_run)
+    except Exception as exc:
+        log.error(f"battery_planner: release failed: {exc!r}")  # noqa: F821
+
+
+def _release_on_config_failure(now):
+    """Invalid or unreadable configuration: release once, using the last good one."""
+    global _config_release_done
+    if _config_release_done or _last_good_config is None:
+        return
+    _config_release_done = True
+    cfg = _last_good_config
+    local = now.astimezone(ZoneInfo(cfg.timezone))
+    _release(cfg, local, "configuration invalid (%s): releasing any forced "
+             "command" % (_config_error or "unknown"))
+    _notify(cfg, "Battery planner stopped: configuration invalid",
+            "No decisions are being made. Cause: %s" % (
+                decision.one_line(_config_error or "unknown")))
+
+
 def _halt(cfg, local, cause):
     """Price outage: no decision; alert on entry, then per realert_minutes."""
     global _halt_state
@@ -620,6 +661,8 @@ def _halt(cfg, local, cause):
         log.error(f"battery_planner: HALT, {cause}")  # noqa: F821
         _halt_state = decision.HaltState(True, cause, local, None)
         _save_halt()
+        _release(cfg, local, "price outage (%s): releasing any forced "
+                 "command, the inverter returns to its default" % cause)
     last = _halt_state.last_alert_at
     if last is None or (local - last).total_seconds() >= cfg.realert_minutes * 60:
         if _send_alert(cfg, _halt_state.cause, _halt_state.entered_at):
@@ -1239,6 +1282,7 @@ def _cycle(now):
     started = _now()
     cfg = _load_config()
     if cfg is None:
+        _release_on_config_failure(now)
         return
     local = now.astimezone(ZoneInfo(cfg.timezone))
     _check_peak_alert(cfg, local)        # before prices: also works in a halt

@@ -1498,3 +1498,41 @@ def test_reload_that_needs_shaving_sends_the_discharge_not_idle(make_guard):
     g.inv.last_action = "discharge"
     g.tick(**PEAK_ARGS)
     assert [c[0] for c in g.inv.calls] == ["discharge"]
+
+
+# ---- sensor failure policy: a dead meter releases the discharge ----------------------
+
+def test_meter_lost_while_shaving_releases_the_discharge_once(make_guard):
+    g = make_guard().at(12, 7, 30)
+    g.tick(**PEAK_ARGS)
+    assert [c[0] for c in g.inv.calls] == ["discharge"]
+    g.tick(offtake="unavailable", advance=30.0)
+    assert [c[0] for c in g.inv.calls] == ["discharge"]       # inside the grace
+    g.tick(advance=g.mod.GRACE_SECONDS + 1)
+    assert [c[0] for c in g.inv.calls] == ["discharge", "idle"]
+    rec = g.inv.calls[1][2]
+    assert rec.source == "guard" and "released" in rec.reasoning
+    assert "unreadable" in rec.reasoning
+    g.tick(advance=30.0)                                      # still dead
+    assert len(g.inv.calls) == 2
+
+
+def test_meter_lost_while_not_shaving_sends_nothing(make_guard):
+    g = make_guard().at(12, 7, 30)
+    g.tick(offtake="0.3", avg="0.4", peak="2.5")
+    g.tick(offtake="unavailable", advance=30.0)
+    g.tick(advance=g.mod.GRACE_SECONDS + 1)
+    assert g.inv.calls == []
+
+
+def test_failing_ticks_while_shaving_release_the_discharge(make_guard, monkeypatch):
+    g = make_guard().at(12, 7, 30)
+    g.tick(**PEAK_ARGS)
+
+    def boom():
+        raise ValueError("config broke")
+    monkeypatch.setattr(g.mod, "_get_config", boom)
+    g.tick(advance=30.0)
+    g.tick(advance=g.mod.GRACE_SECONDS + 1)
+    assert [c[0] for c in g.inv.calls] == ["discharge", "idle"]
+    assert "failing" in g.inv.calls[1][2].reasoning

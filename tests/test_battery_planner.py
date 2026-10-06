@@ -9,6 +9,7 @@ constants; the clock is a mutable test value patched over `_now`.
 import ast
 import builtins
 import importlib.util
+import json
 import os
 import re
 import sys
@@ -1652,3 +1653,69 @@ def test_a_full_offset_has_no_marker(env):
     env.write_config("prices:\n  consumption_offset: 0.1366\n")
     env.run(T0)
     assert "consumption_offset_low" not in fields_of(env.decisions()[0])["degraded"]
+
+
+# ---- sensor failure policy: release a forced command on halt / bad config ----------------
+
+def _command_on_record(env, action="charge"):
+    env.state_dir.mkdir(parents=True, exist_ok=True)
+    env.command_path.write_text(
+        json.dumps({"action": action, "power_kw": 3.0,
+                    "sent_at": "2026-09-30T23:00:00+00:00"}), encoding="utf-8")
+
+
+def _last_action(env):
+    return json.loads(env.command_path.read_text(encoding="utf-8"))["action"]
+
+
+def test_a_price_halt_releases_a_forced_command_once(env):
+    _real_driver(env)
+    _command_on_record(env, "charge")
+    env.state.set(PRICE_ENTITY, "unavailable", {})
+    env.run(T0)
+    assert _last_action(env) == "idle"
+    idle_lines = [l for l in env.lines() if " | action=idle" in l]
+    assert len(idle_lines) == 1 and "price outage" in idle_lines[0]
+    assert "soc=n/a" in idle_lines[0]
+    env.run(T0 + STEP)                                  # still halted
+    assert len([l for l in env.lines() if " | action=idle" in l]) == 1
+
+
+@pytest.mark.parametrize("last", [None, "idle"])
+def test_a_price_halt_sends_nothing_without_a_command_in_force(env, last):
+    _real_driver(env)
+    if last:
+        _command_on_record(env, last)
+    env.state.set(PRICE_ENTITY, "unavailable", {})
+    env.run(T0)
+    assert [l for l in env.lines() if " | action=idle" in l] == []
+
+
+def test_a_price_halt_with_the_logging_driver_sends_nothing(env):
+    _command_on_record(env, "charge")
+    env.state.set(PRICE_ENTITY, "unavailable", {})
+    env.run(T0)
+    assert [l for l in env.lines() if " | action=idle" in l] == []
+
+
+def test_a_broken_config_releases_once_and_mails_once(env):
+    _real_driver(env)
+    env.run(T0)                                           # a good cycle first
+    _command_on_record(env, "export")
+    env.config_path.write_text("battery: [not, a, mapping", encoding="utf-8")
+    bump_mtime(env.config_path, 30)
+    env.run(T0 + STEP)
+    env.run(T0 + 2 * STEP)
+    assert _last_action(env) == "idle"
+    released = [l for l in env.lines()
+                if " | action=idle" in l and "configuration invalid" in l]
+    assert len(released) == 1
+    mails = [m for m in env.service.of("notify", NOTIFY)
+             if "configuration invalid" in m[2]["title"]]
+    assert len(mails) == 1
+
+
+def test_a_broken_config_before_any_good_one_sends_nothing(env):
+    env.config_path.write_text("battery: [not, a, mapping", encoding="utf-8")
+    env.run(T0)
+    assert env.service.of("notify", NOTIFY) == []

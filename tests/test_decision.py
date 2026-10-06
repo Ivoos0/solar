@@ -444,3 +444,13 @@ def test_none_remaining_and_spill_render_na_and_keep_field_order():
     # a real zero is still a zero
     kv0 = fields_of(decision.format_record(rec(spill_kwh=0.0)))
     assert kv0["spill"] == "0.00kWh"
+
+
+def test_release_record_is_a_valid_idle_line_with_na_fields():
+    from datetime import datetime, timezone
+    rec = decision.release_record(
+        datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc), "price outage: releasing")
+    line = decision.format_record(rec)
+    assert "action=idle" in line and "soc=n/a" in line and "end_soc=n/a" in line
+    assert "selector=S6" in line and "degraded=none" in line
+    assert "\n" not in line

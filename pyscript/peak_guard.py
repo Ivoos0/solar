@@ -665,6 +665,22 @@ def _clear_shaving(window_start, why):
     _set_shaving_entity(False, window_start, 0.0)
 
 
+def _release_discharge(why):
+    """The guard has lost its inputs while a shave it started may still be in
+    force: send one `idle` (the planner would only do so on its next cycle).
+    Never raises."""
+    try:
+        cfg = _cfg["config"]
+        if cfg is None:
+            return
+        record = decision.release_record(
+            _now(cfg), "peak shave (guard): %s, so the discharge is "
+            "released" % why, "guard")
+        _emit("idle", 0.0, record, cfg)
+    except Exception as exc:
+        _warn("release", "cannot release the discharge: %r" % (exc,))
+
+
 def _handle_unreadable(missing):
     """Unreadable meter: log, do nothing, never discharge on a guess."""
     if _flags["unreadable_since"] is None:
@@ -674,7 +690,10 @@ def _handle_unreadable(missing):
           % ", ".join(missing))
     waited = _monotonic() - _flags["unreadable_since"]
     if _flags["shaving"] is not False and waited >= GRACE_SECONDS:
+        was_shaving = _flags["shaving"] is True
         _clear_shaving(None, "meter unreadable for %.0f s" % waited)
+        if was_shaving:
+            _release_discharge("the meter has been unreadable for %.0f s" % waited)
 
 
 def _handle_error():
@@ -683,7 +702,10 @@ def _handle_error():
         _flags["unreadable_since"] = _monotonic()
     waited = _monotonic() - _flags["unreadable_since"]
     if _flags["shaving"] is not False and waited >= GRACE_SECONDS:
+        was_shaving = _flags["shaving"] is True
         _clear_shaving(None, "ticks failing for %.0f s" % waited)
+        if was_shaving:
+            _release_discharge("the guard has been failing for %.0f s" % waited)
 
 
 def _avg_staleness(stamp, now, start):
