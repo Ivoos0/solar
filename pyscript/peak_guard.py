@@ -46,8 +46,7 @@ offtake before projecting: unshaved offtake = metered offtake + commanded
 discharge. shave_kw then stays stable while the unshaved load persists and falls
 to 0 only when that load no longer threatens the ceiling. The window energy
 comes from the meter average (already actual, includes the discharge), so it is
-not touched: no double counting. Rules, same pattern as
-battery_planner._own_grid_charge_kw: nothing is added with the "logging" driver
+not touched: no double counting. Rules: nothing is added with the "logging" driver
 (it transmits nothing, so the meter shows no effect); the figure counts only
 while the guard is shaving and has re-affirmed it within 2 x guard interval (a
 skipped tick or a killed run must not leave a stale figure behind); it is

@@ -193,7 +193,6 @@ _peak_alert_loaded = False            # peak_alert.json read once per process
 _peak_alert_last = None               # (YYYY-MM, kW) of the last notified peak
 _sensor_first_down = {}               # entity -> when first seen unavailable
 _sensor_last_alert = None             # when the last sensor outage mail went out
-_last_grid_charge = None              # (local time, kW) of the last recorded grid-charge decision
 _calibration = None                   # history.solar_calibration result, per clock hour
 _calibration_key = None               # what it was computed for (date, hour, settings)
 
@@ -1070,26 +1069,6 @@ def _usage(cfg, local, span_start, span_end, markers):
 
 # ---- grid state ----------------------------------------------------------------
 
-def _own_grid_charge_kw(cfg, local):
-    """Grid power this planner is itself drawing right now (kW), else 0.0.
-
-    Non-zero only when a real driver (not "logging", which transmits nothing)
-    was handed the previous decision, that decision was a grid charge, and it
-    is at most 2 evaluation intervals old (a skipped cycle or halt must not
-    leave a stale figure behind). The metered offtake includes this charge;
-    capacity.budget_kw subtracts it to get household draw, so the budget does
-    not shrink by the planner's own charging (no every-other-cycle flapping).
-    """
-    if (cfg.inverter_type == "logging" or cfg.inverter_dry_run
-            or _last_grid_charge is None):
-        return 0.0
-    when, kw = _last_grid_charge
-    age = (local - when).total_seconds()
-    if age < 0 or age > 2 * cfg.evaluation_interval_minutes * 60:
-        return 0.0
-    return kw
-
-
 def _grid_state(cfg, local, battery_discharge_kw=None, markers=None):
     """capacity.GridState, or None (capacity off, or a sensor is unreadable).
 
@@ -1118,7 +1097,6 @@ def _grid_state(cfg, local, battery_discharge_kw=None, markers=None):
         reported = None               # no energy counted yet in this window
     return capacity.build_state(
         offtake, 0.0, local, peak, cfg, reported_average_kw=reported,
-        own_grid_charge_kw=_own_grid_charge_kw(cfg, local),
         battery_discharge_kw=battery_discharge_kw)
 
 
@@ -1148,15 +1126,6 @@ def _guard_is_shaving(cfg, local):
         "treating the guard as stopped" % (
             "missing" if age is None else "%.0f s old" % age))
     return False
-
-
-def _remember_grid_charge(d, local):
-    """Note a recorded decision's grid-charge power for the next cycle."""
-    global _last_grid_charge
-    if d.action == "charge":
-        _last_grid_charge = (local, d.target_power_kw)
-    else:
-        _last_grid_charge = None
 
 
 def _suppress_grid_charge(d, veto, why):
@@ -1372,8 +1341,6 @@ def _cycle(now):
                           state_dir=STATE_DIR,
                           dry_run=cfg.inverter_dry_run):
         log.error("battery_planner: decision could not be recorded")  # noqa: F821
-    else:
-        _remember_grid_charge(d, local)
     _publish_sensors(cfg, local, record, grid, bat.is_stubbed, solar_ratio)
     if took > SLOW_CYCLE_MS:
         log.warning(f"battery_planner: slow cycle {took}ms")  # noqa: F821

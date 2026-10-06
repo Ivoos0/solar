@@ -32,11 +32,6 @@ class GridState:
     month_peak_kw: float
     is_restored: bool
     average_mode: str = "accumulating"
-    # Grid power the planner itself is currently drawing to charge (kW): the
-    # last decision's grid-charge power, set by the adapter ONLY when a real
-    # (non-logging) driver transmits it and it is still in effect; else 0.0.
-    # offtake_kw includes it, so budget_kw subtracts it to find household draw.
-    own_grid_charge_kw: float = 0.0
     # Battery power measured by a sensor (kW, discharge positive, charge
     # negative), or None when there is no usable sensor. See household_draw_kw.
     battery_discharge_kw: object = None
@@ -101,7 +96,7 @@ def normalise_average(reported_kw, elapsed_minutes, mode):
 
 def build_state(offtake_kw, window_energy_kwh, now, month_peak_kw, config,
                 is_restored=False, reported_average_kw=None,
-                own_grid_charge_kw=0.0, battery_discharge_kw=None):
+                battery_discharge_kw=None):
     """Build a GridState.
 
     If reported_average_kw (the meter 1-0:1.4.0 figure) is given it is
@@ -120,7 +115,7 @@ def build_state(offtake_kw, window_energy_kwh, now, month_peak_kw, config,
         running = energy / (eff / 60.0)
     return GridState(offtake_kw, start, energy, elapsed, running,
                      month_peak_kw, is_restored, mode,
-                     own_grid_charge_kw, battery_discharge_kw)
+                     battery_discharge_kw)
 
 
 def ceiling_kw(state, config):
@@ -169,12 +164,13 @@ def household_draw_kw(state):
     both terms, so it needs no bookkeeping and the budget cannot flip between
     cycles.
 
-    Without a sensor: offtake_kw minus the planner's own grid charge
-    (own_grid_charge_kw, set only for a real driver), a fallback that cannot
-    see the battery covering the house."""
+    Without a sensor the draw is the meter reading alone, which cannot see the
+    battery covering the house. The planner does not decide on that figure
+    (it holds without the sensor, veto V8); only the peak guard's record uses
+    it."""
     if state.battery_discharge_kw is not None:
         return max(0.0, state.offtake_kw + state.battery_discharge_kw)
-    return max(0.0, state.offtake_kw - state.own_grid_charge_kw)
+    return max(0.0, state.offtake_kw)
 
 
 def allowed_offtake_kw(state, config):

@@ -34,10 +34,10 @@ def c80(site_config):
     return replace(site_config, stay_under_percent=80.0)
 
 
-def gstate(offtake, discharge=None, own=0.0, energy=0.0, elapsed=8.0):
+def gstate(offtake, discharge=None, energy=0.0, elapsed=8.0):
     return cap.GridState(offtake, at(14, 0), energy, elapsed,
                          energy / (elapsed / 60.0), 0.0, False,
-                         own_grid_charge_kw=own, battery_discharge_kw=discharge)
+                         battery_discharge_kw=discharge)
 
 
 # ---- capacity -------------------------------------------------------------------
@@ -58,11 +58,6 @@ def test_grid_charging_does_not_change_the_household_draw(c80):
         cap.budget_kw(covered, c80))
 
 
-def test_own_grid_charge_is_not_subtracted_again_with_a_sensor(c80):
-    s = gstate(5.14, discharge=-2.14, own=2.14)
-    assert cap.household_draw_kw(s) == pytest.approx(3.0)
-
-
 def test_result_is_clamped_at_zero():
     assert cap.household_draw_kw(gstate(1.0, discharge=-3.0)) == 0.0
 
@@ -72,9 +67,9 @@ def test_pv_surplus_is_not_household_draw():
     assert cap.household_draw_kw(gstate(0.0, discharge=0.0)) == 0.0
 
 
-def test_without_a_sensor_the_old_formula_applies():
-    s = gstate(3.0, discharge=None, own=2.0)
-    assert cap.household_draw_kw(s) == pytest.approx(1.0)
+def test_without_a_sensor_the_draw_is_the_meter_reading():
+    s = gstate(3.0, discharge=None)
+    assert cap.household_draw_kw(s) == pytest.approx(3.0)
     assert gstate(1.0).battery_discharge_kw is None
 
 
@@ -228,8 +223,7 @@ def test_household_draw_does_not_flip_while_the_planner_charges(env):
     set_pwr(env, "3000")
     env.state.set(OFFTAKE_ENTITY, "0.0", {"unit_of_measurement": "kW"})
     env.run(T0)
-    charge_kw = env.mod._last_grid_charge[1]
-    assert charge_kw > 0
+    charge_kw = 2.0                      # what the planner charges next cycle
     # cycle 2: the planner now charges: battery takes charge_kw, the meter
     # shows house + charge_kw (the battery no longer covers the house)
     set_pwr(env, str(-1000 * charge_kw))
@@ -239,7 +233,6 @@ def test_household_draw_does_not_flip_while_the_planner_charges(env):
     first, second = (cap.household_draw_kw(g) for g in seen[:2])
     assert first == pytest.approx(3.0)
     assert second == pytest.approx(3.0)
-    assert seen[1].own_grid_charge_kw == pytest.approx(charge_kw)   # not used
 
 
 # ---- peak guard --------------------------------------------------------------------
