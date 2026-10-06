@@ -114,11 +114,6 @@ def log_path_for(day, log_dir=DEFAULT_LOG_DIR):
         log_dir.rstrip("/"), day.year, day.month, day.day)
 
 
-# Fallback used ONLY when the configured driver cannot be loaded or its reading
-# is unusable. It is a placeholder, not a measurement: decisions built on it
-# carry degraded=soc_stubbed. Keep equal to inverter_logging.STUBBED_CHARGE_PERCENT.
-STUBBED_CHARGE_PERCENT = 50.0
-
 # Largest allowed gap between the target_power_kw argument and the record's.
 POWER_TOLERANCE_KW = 1e-9
 
@@ -294,9 +289,6 @@ def _load_driver(driver_dir, inverter_type):
                     r"[a-z0-9_]+\.[a-z0-9_]+", entity):
                 raise ValueError("%s: SOC_ENTITY %r is not an entity id"
                                  % (path, entity))
-        elif not callable(getattr(module, "read_charge_percent", None)):
-            raise AttributeError(
-                "%s defines no read_charge_percent() or SOC_ENTITY" % path)
     except BaseException:
         sys.modules.pop(full, None)
         raise
@@ -695,33 +687,34 @@ def apply(action, target_power_kw, record, log_path=None,
 
 
 def read_charge(inverter_type="logging", driver_dir=None):
-    """Battery charge from the configured driver: (percent, is_stub, marker).
+    """Battery charge from the configured driver: (percent, marker).
 
-    percent  -- 0-100. A driver that declares SOC_ENTITY (a sensor in percent)
-                is read with state.get here; unavailable, unknown, not a
-                number or outside 0-100 gives the placeholder and the marker
-                inverter_read_failed. Such a driver is never a stub.
-    is_stub  -- True when the value is a placeholder (driver says SOC_IS_STUB);
-                the caller marks its decisions degraded=soc_stubbed
+    percent  -- 0-100, or None when the driver gives no usable reading: it
+                offers none (no SOC_ENTITY and no read_charge_percent), it is
+                unavailable, or the reading is not a number from 0 to 100.
+                There is no placeholder: the caller holds (no charge reading)
+                or uses battery.soc_sensor. A driver that declares SOC_ENTITY
+                (a sensor in percent) is read with state.get here.
     marker   -- None, or a degraded marker string the caller must add to its
                 decisions: the driver is unavailable or its reading unusable.
-                Then percent is the safe placeholder and is_stub is True.
     """
     driver, problem = _driver(inverter_type, driver_dir)
     if driver is None:
-        return STUBBED_CHARGE_PERCENT, True, MARKER_UNAVAILABLE
+        return None, MARKER_UNAVAILABLE
     entity = getattr(driver, "SOC_ENTITY", None)
     if entity is not None:
         try:
             value = float(state.get(entity))  # noqa: F821  (pyscript global)
             if not (0.0 <= value <= 100.0):
                 raise ValueError("%r is outside 0-100" % (value,))
-            return value, False, None
+            return value, None
         except Exception as exc:
             log.warning(  # noqa: F821
                 "inverter: driver %r charge sensor %s unusable: %r"
                 % (inverter_type, entity, exc))
-            return STUBBED_CHARGE_PERCENT, True, MARKER_READ_FAILED
+            return None, MARKER_READ_FAILED
+    if not callable(getattr(driver, "read_charge_percent", None)):
+        return None, None
     try:
         ok, value, err = _invoke(driver, "read_charge_percent", (),
                                  DRIVER_TIMEOUT_SECONDS)
@@ -729,15 +722,15 @@ def read_charge(inverter_type="logging", driver_dir=None):
             log.warning(  # noqa: F821
                 "inverter: driver %r read_charge_percent failed: %s"
                 % (inverter_type, err))
-            return STUBBED_CHARGE_PERCENT, True, MARKER_READ_FAILED
+            return None, MARKER_READ_FAILED
         if (isinstance(value, bool) or not isinstance(value, (int, float))
                 or not (0.0 <= value <= 100.0)):
             log.warning(  # noqa: F821
                 "inverter: driver %r read_charge_percent returned %r, "
                 "expected a number 0-100" % (inverter_type, value))
-            return STUBBED_CHARGE_PERCENT, True, MARKER_READ_FAILED
-        return float(value), bool(getattr(driver, "SOC_IS_STUB", False)), None
+            return None, MARKER_READ_FAILED
+        return float(value), None
     except Exception as exc:
         log.warning(  # noqa: F821
             "inverter: driver %r read failed: %r" % (inverter_type, exc))
-        return STUBBED_CHARGE_PERCENT, True, MARKER_READ_FAILED
+        return None, MARKER_READ_FAILED

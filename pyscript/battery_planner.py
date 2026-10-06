@@ -1288,7 +1288,7 @@ def _publish_halted(on, cause, since, now):
         "cause": cause, "since": since}, now)
 
 
-def _publish_sensors(cfg, local, record, grid, stubbed, solar_ratio=None):
+def _publish_sensors(cfg, local, record, grid, no_reading, solar_ratio=None):
     """Publish this cycle's decision. NEVER raises, never touches a decision.
 
     Missing data is published as "unknown" (state) or null (attribute), never
@@ -1298,7 +1298,7 @@ def _publish_sensors(cfg, local, record, grid, stubbed, solar_ratio=None):
     try:
         if not cfg.sensors_enabled:
             return
-        soc = None if stubbed else _rounded(record.charge_percent, 1)
+        soc = None if no_reading else _rounded(record.charge_percent, 1)
         _publish(SENSOR_ACTION, record.action, {
             "friendly_name": "Battery planner action",
             "icon": "mdi:battery-sync",
@@ -1410,25 +1410,19 @@ def _cycle(now):
     window_days = cfg.usage_history_weeks * 7
     coverage = history_days if history_days < window_days else None
 
-    soc_known = True
     if cfg.soc_sensor is None:
-        charge, charge_is_stub, charge_marker = inverter.read_charge(
-            cfg.inverter_type, CORE_DIR)
+        charge, charge_marker = inverter.read_charge(cfg.inverter_type, CORE_DIR)
         if charge_marker:
             markers.append(charge_marker)
-        bat = battery.from_percent(charge, cfg, is_stubbed=charge_is_stub)
-        # a real driver that only offers the 50 % placeholder is not a reading
-        soc_known = not (charge_is_stub and cfg.inverter_type != "logging")
-    else:                                    # real reading: never the stub
+    else:
         charge = _debounced("soc", _read_soc(cfg.soc_sensor), local, cfg,
                             markers, "soc_last_good")
-        if charge is None:
-            soc_known, charge_is_stub = False, True
-            markers.append("soc_unavailable")
-            bat = battery.unknown(cfg)
-        else:
-            charge_is_stub = False
-            bat = battery.from_percent(charge, cfg, is_stubbed=False)
+    soc_known = charge is not None
+    if soc_known:
+        bat = battery.from_percent(charge, cfg)
+    else:                                    # no reading: hold, never guess
+        markers.append("soc_unavailable")
+        bat = battery.unknown(cfg)
     block_start = local.replace(
         minute=(local.minute // cfg.block_minutes) * cfg.block_minutes,
         second=0, microsecond=0)
@@ -1464,11 +1458,8 @@ def _cycle(now):
         if p.block_start <= local < p.block_start + timedelta(minutes=cfg.block_minutes):
             price_now = p
     degraded = decision.degraded_markers(
-        bat, solar_zero_fallback=zero_fallback, cache_markers=markers,
+        solar_zero_fallback=zero_fallback, cache_markers=markers,
         usage_samples=coverage)
-    if not soc_known and cfg.soc_sensor is not None:
-        # soc_unavailable says it already
-        degraded = [m for m in degraded if m != "soc_stubbed"]
     streak = inverter.send_failure_streak()
     if streak:
         degraded = degraded + ["inverter_send_failed=%d" % streak]
@@ -1484,13 +1475,13 @@ def _cycle(now):
                           state_dir=STATE_DIR,
                           dry_run=cfg.inverter_dry_run):
         log.error("battery_planner: decision could not be recorded")  # noqa: F821
-    _publish_sensors(cfg, local, record, grid, bat.is_stubbed, solar_ratio)
+    _publish_sensors(cfg, local, record, grid, not soc_known, solar_ratio)
     if took > SLOW_CYCLE_MS:
         log.warning(f"battery_planner: slow cycle {took}ms")  # noqa: F821
     # The history records the RAW forecast: a calibrated one would feed the
     # ratio back into itself.
     _record_history(cfg, now, price_map, solar_raw, zero_fallback,
-                    None if charge_is_stub else charge)
+                    charge)
 
 
 def _due(now):

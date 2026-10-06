@@ -35,7 +35,7 @@ def rec(**over):
         duration_ms=84, running_average_kw=1.2, ceiling_kw=2.5,
         budget_kw=1.95, vetoes_applied=[], selector="S3",
         reasoning="leftover 4.1kWh with saturation at 12:45",
-        degraded_inputs=["soc_stubbed"], source="planner")
+        degraded_inputs=["soc_unavailable"], source="planner")
     base.update(over)
     return decision.DecisionRecord(**base)
 
@@ -176,7 +176,7 @@ def test_round_trip_split():
     kv = fields_of(line)
     assert kv["vetoes"] == "V2(suppressed S3 export)"
     assert kv["selector"] == "S3"
-    assert kv["degraded"] == "soc_stubbed"
+    assert kv["degraded"] == "soc_unavailable"
 
 
 # ---- vetoes and degraded --------------------------------------------------------
@@ -212,16 +212,13 @@ def test_veto_line_names_selector_action_and_veto():
 
 
 def test_degraded_markers_all_kinds():
-    stub = battery.BatteryState(50.0, 5.0, 5.0, True)
-    live = battery.BatteryState(50.0, 5.0, 5.0, False)
-    assert decision.degraded_markers(live) == []
+    assert decision.degraded_markers() == []
     assert decision.degraded_markers(
-        stub, True, ["cache_age_solar=3h12m"], 3) == [
-        "soc_stubbed", "solar_zero_fallback", "cache_age_solar=3h12m",
-        "usage_samples=3"]
+        True, ["cache_age_solar=3h12m"], 3) == [
+        "solar_zero_fallback", "cache_age_solar=3h12m", "usage_samples=3"]
     line = decision.format_record(rec(
-        degraded_inputs=["soc_stubbed", "cache_age_solar=3h12m"]))
-    assert "degraded=soc_stubbed,cache_age_solar=3h12m" in line
+        degraded_inputs=["soc_unavailable", "cache_age_solar=3h12m"]))
+    assert "degraded=soc_unavailable,cache_age_solar=3h12m" in line
 
 
 # ---- halt -----------------------------------------------------------------------
@@ -265,7 +262,7 @@ STEP = timedelta(minutes=15)
 
 def _pipeline(site_config, pct, grid, plist, solar=(1.0, 1.0, 0.0, 0.0)):
     cfg = site_config
-    bs = battery.from_percent(pct, cfg, is_stubbed=True)
+    bs = battery.from_percent(pct, cfg)
     sol = [series.ForecastSlot(T0P + i * STEP, s, False, 15)
            for i, s in enumerate(solar)]
     use = [series.UsageSlot(T0P + i * STEP, 0.1, 7) for i in range(4)]
@@ -275,7 +272,7 @@ def _pipeline(site_config, pct, grid, plist, solar=(1.0, 1.0, 0.0, 0.0)):
     now = T0P + timedelta(minutes=1)
     d = rules.decide(traj, pm, bs, grid, cfg, now,
                     usage_history_available=True)
-    r = decision.build(d, traj, bs, pm[T0P], decision.degraded_markers(bs),
+    r = decision.build(d, traj, bs, pm[T0P], decision.degraded_markers(),
                        now=now, duration_ms=84, grid_state=grid, config=cfg)
     return traj, d, r
 
@@ -309,7 +306,7 @@ def test_real_pipeline_export_record(site_config):
     assert kv["avg"] == "1.20kW" and kv["ceiling"] == "5.00kW"
     assert kv["budget"] == "3.93kW"
     assert kv["vetoes"] == "none" and kv["selector"] == "S3"
-    assert kv["degraded"] == "soc_stubbed" and kv["source"] == "planner"
+    assert kv["degraded"] == "none" and kv["source"] == "planner"
     assert "spill ahead 0.80 kWh" in kv["why"]
     assert "\n" not in line
 
@@ -349,7 +346,7 @@ def test_real_pipeline_no_history_idle_record(site_config):
     # Same situation as the export record above, but without usage history:
     # S3 export is held by V4 and the record is an idle one saying why.
     cfg = site_config
-    bs = battery.from_percent(90.0, cfg, is_stubbed=True)
+    bs = battery.from_percent(90.0, cfg)
     sol = [series.ForecastSlot(T0P + i * STEP, s, False, 15)
            for i, s in enumerate((1.0, 1.0, 0.0, 0.0))]
     use = [series.UsageSlot(T0P + i * STEP, 0.1, 7) for i in range(4)]
@@ -360,7 +357,7 @@ def test_real_pipeline_no_history_idle_record(site_config):
     now = T0P + timedelta(minutes=1)
     d = rules.decide(traj, pm, bs, _grid(), cfg, now,
                      usage_history_available=False)
-    r = decision.build(d, traj, bs, pm[T0P], decision.degraded_markers(bs),
+    r = decision.build(d, traj, bs, pm[T0P], decision.degraded_markers(),
                        now=now, duration_ms=5, grid_state=_grid(), config=cfg)
     kv = fields_of(decision.format_record(r))
     assert (kv["action"], kv["selector"], kv["power"]) == (

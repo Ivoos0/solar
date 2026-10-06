@@ -88,7 +88,7 @@ def test_required_sensors_follow_the_configuration(site_config):
     assert kinds[site_config.forecast_entity] == "forecast"
     assert kinds[site_config.offtake_sensor] == "offtake"
     assert site_config.price_entity not in kinds       # has its own halt alert
-    assert "soc" not in kinds.values()                 # not configured
+    assert kinds[site_config.soc_sensor] == "soc"      # the charge reading is required
 
 
 def test_optional_sensors_appear_once_configured():

@@ -180,7 +180,7 @@ is left out.
 
 | Entity | What it is for | `user_config.yaml` key |
 |---|---|---|
-| `sensor.alphaess_soc_battery` | Battery charge in percent. The planner and the peak guard use it instead of the 50 % placeholder | `battery.soc_sensor` |
+| `sensor.alphaess_soc_battery` | Battery charge in percent. The planner and the peak guard use it as the battery charge (required) | `battery.soc_sensor` |
 | `sensor.alphaess_power_battery` | Battery power in W. Positive while the battery discharges, which is the default sign. It lets the planner see the load the battery is covering | `battery.power_sensor`, with `battery.power_positive: discharge` (use `charge` if yours is the other way round) |
 | `sensor.alphaess_battery_max_charge_power` | The inverter's maximum battery charge power in W. The planner uses it as its charge limit | `battery.max_charge_sensor` |
 | `sensor.alphaess_battery_max_discharge_power` | The inverter's maximum battery discharge power in W. The planner uses it as its export and peak shaving limit | `battery.max_discharge_sensor` |

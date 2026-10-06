@@ -45,10 +45,10 @@ def test_normal_cycle_publishes_the_sensors(env):
     assert a["selector"] == log["selector"]
     assert a["vetoes"] == log["vetoes"].replace(",", ", ")
     assert a["degraded"] == log["degraded"].replace(",", ", ")
-    assert "soc_stubbed" in a["degraded"] and isinstance(a["degraded"], str)
+    assert "soc_stubbed" not in a["degraded"] and isinstance(a["degraded"], str)
     assert a["why"] == log["why"].strip('"')            # same words as the log
     assert isinstance(a["why"], str) and "\n" not in a["why"]
-    assert a["soc_percent"] is None                     # charge is a stub: not a measurement
+    assert a["soc_percent"] == pytest.approx(50.0)      # the real charge reading
     assert a["decided_at"] == log["_ts"] and a["decided_at"].endswith("+02:00")
     assert a["source"] == "planner"
 
@@ -208,7 +208,7 @@ def test_decision_is_identical_with_and_without_sensors(env):
 # ---- config -----------------------------------------------------------------------
 
 def _cfg(**extra):
-    raw = {"battery": {"capacity_kwh": 10.0}, "alerts": {"address": "a@b.c"}}
+    raw = {"battery": {"capacity_kwh": 10.0, "soc_sensor": "sensor.test_battery_soc"}, "alerts": {"address": "a@b.c"}}
     raw.update(extra)
     return config.from_dict(raw)
 

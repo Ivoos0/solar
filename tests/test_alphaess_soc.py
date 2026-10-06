@@ -136,12 +136,12 @@ def test_soc_known_follows_the_sensor_with_a_short_debounce(env, monkeypatch):
     assert "soc_unavailable" in fields_of(env.decisions()[3])["degraded"]
 
 
-def test_without_the_sensor_nothing_changes(env):
+def test_a_readable_charge_sensor_gives_a_real_charge_and_no_marker(env):
     env.run(T0)
     keys = fields_of(env.decisions()[0])
-    assert "soc_stubbed" in keys["degraded"]
     assert "soc_unavailable" not in keys["degraded"]
-    assert action_sensor(env)[2]["soc_percent"] is None
+    assert "soc_stubbed" not in keys["degraded"]
+    assert action_sensor(env)[2]["soc_percent"] == pytest.approx(50.0)
 
 
 # ---- peak guard ---------------------------------------------------------------

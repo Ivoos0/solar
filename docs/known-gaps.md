@@ -3,7 +3,6 @@
 What the planner does not do yet, and what has not been tested. Back to the [README](../README.md).
 
 - No inverter driver is shipped except `logging`, so nothing controls a battery.
-- Battery charge is a fixed 50 % unless `battery.soc_sensor` is set or a driver reads the real value.
 - Until a household load source is configured (usage history exists), the planner only peak-shaves
   and otherwise idles: no grid charging, no solar storage, no exporting. The inverter's own behaviour
   applies meanwhile.

@@ -125,15 +125,15 @@ def test_a_power_dropout_of_one_cycle_does_not_hold(env):
 
 # ---- a real driver with only the placeholder charge -----------------------------------
 
-def test_a_real_driver_with_only_the_placeholder_charge_holds(env):
+def test_a_real_driver_without_a_charge_reading_holds(env):
+    env.soc_sensor = False
     _real_driver(env)
     (env.tmp / "drivers" / "inverter_fakeinv.py").write_text(
-        "SOC_IS_STUB = True\n"
-        "def send(action, target_power_kw):\n    return True\n"
-        "def read_charge_percent():\n    return 50.0\n", encoding="utf-8")
+        "def send(action, target_power_kw):\n    return True\n", encoding="utf-8")
     env.run(T0)
     keys = fields_of(env.decisions()[0])
     assert "V7" in keys["vetoes"] and keys["action"] == "idle"
+    assert "soc_unavailable" in keys["degraded"]
 
 
 # ---- the peak guard applies the same rules ------------------------------------------------

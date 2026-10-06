@@ -48,13 +48,14 @@ prices:
 battery:
   capacity_kwh: CHANGE_ME       # REQUIRED - no sensible default (number, kWh)
   reserve_percent: 10.0         # never export to the grid below (a limit, not a target)
-  # soc_sensor: sensor.alphaess_soc_battery
-                                # OPTIONAL. A sensor holding the battery charge in
-                                # percent (0..100). Without it the charge is the
-                                # driver's placeholder (50 % with the logging
-                                # driver). Set but unreadable: the planner holds
-                                # (no grid charging, no export). See
-                                # docs/alphaess.md.
+  soc_sensor: sensor.alphaess_soc_battery
+                                # REQUIRED with the logging driver (the config is
+                                # refused without it); a real driver may read the
+                                # charge itself. A sensor holding the battery
+                                # charge in percent (0..100). There is no
+                                # placeholder value: unreadable or frozen, the
+                                # planner holds (no grid charging, no export).
+                                # See docs/alphaess.md.
   # power_sensor: sensor.alphaess_power_battery
                                 # REQUIRED while capacity_tariff.enabled is true.
                                 # Battery power, in W or kW (the unit attribute is

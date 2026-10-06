@@ -85,7 +85,7 @@ def test_message_mentions_the_previous_notice(site_config):
 
 def test_config_default_and_override():
     from config import ConfigError, from_dict
-    raw = {"battery": {"capacity_kwh": 10.0}, "alerts": {"address": "a@b.c"}}
+    raw = {"battery": {"capacity_kwh": 10.0, "soc_sensor": "sensor.test_battery_soc"}, "alerts": {"address": "a@b.c"}}
     assert from_dict(raw).peak_alert_enabled is True
     raw["alerts"]["peak_enabled"] = False
     assert from_dict(raw).peak_alert_enabled is False

@@ -2,13 +2,11 @@
 
 Selected by `inverter.type: logging` (or no `inverter:` section, or `none`).
 It transmits nothing: the decision log line written by inverter.apply IS the
-whole effect. It reports a placeholder battery charge and says so
-(SOC_IS_STUB), so decisions stay marked degraded=soc_stubbed.
+whole effect. It has no battery charge reading, so battery.soc_sensor is
+required with it.
 
 THE DRIVER INTERFACE (everything a new inverter has to provide):
 
-    SOC_IS_STUB = False                     # optional; True while the charge
-                                            # you return is a placeholder
     def send(action, target_power_kw): ...  # action: "charge" | "discharge" |
                                             # "export" | "idle"; power >= 0 kW,
                                             # 0.0 when idle. Return True on
@@ -21,7 +19,8 @@ function returning the Home Assistant service calls to make, as an ordered list
 of {"domain": ..., "service": ..., "data": {...}} dicts. The boundary validates
 and runs them (see docs/inverter-boundary.md, "Plan-style drivers"). It may then
 declare SOC_ENTITY (the battery charge sensor, percent) and omit
-read_charge_percent(). This driver uses neither.
+read_charge_percent(). This driver uses neither (a driver may also offer
+no charge reading at all and rely on battery.soc_sensor).
 
 WHAT "idle" MEANS: send("idle", 0.0) must cancel every forced mode this project
 set (forced grid charge, forced export, forced discharge) and return the
@@ -44,15 +43,7 @@ set your own network timeouts), never on the Home Assistant event loop. They
 must not use pyscript globals (log, state, ...). See docs/inverter-drivers.md.
 """
 
-SOC_IS_STUB = True
-STUBBED_CHARGE_PERCENT = 50.0
-
-
 def send(action, target_power_kw):
     """Transmit nothing."""
     return True
 
-
-def read_charge_percent():
-    """Placeholder charge, flagged by SOC_IS_STUB."""
-    return STUBBED_CHARGE_PERCENT

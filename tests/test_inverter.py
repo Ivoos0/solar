@@ -208,11 +208,9 @@ def test_format_record_exception_returns_false_and_warns(
     assert len(warnings) == 1 and "cannot format" in warnings[0]
 
 
-def test_default_read_charge_is_the_flagged_stub(inverter):
-    v, is_stub, marker = inverter.read_charge()
-    assert isinstance(v, float) and 0.0 <= v <= 100.0
-    assert v == inverter.STUBBED_CHARGE_PERCENT == 50.0
-    assert is_stub is True and marker is None
+def test_default_read_charge_has_no_reading_and_no_placeholder(inverter):
+    assert inverter.read_charge() == (None, None)
+    assert not hasattr(inverter, "STUBBED_CHARGE_PERCENT")
 
 
 # ---- action / target power must match the record -------------------------
@@ -413,7 +411,7 @@ def test_public_surface_is_exactly_five_functions_plus_constants(inverter):
                       "MAX_PLAN_CALLS", "LOG_REPEAT_MINUTES",
                       "POWER_DECIMALS",
                       "DEFAULT_LOG_DIR", "DEFAULT_DRIVER_DIR", "log_path_for",
-                      "STUBBED_CHARGE_PERCENT", "POWER_TOLERANCE_KW",
+                      "POWER_TOLERANCE_KW",
                       "DRIVER_TIMEOUT_SECONDS", "MARKER_UNAVAILABLE",
                       "MARKER_READ_FAILED"}
     assert inverter.DEFAULT_LOG_DIR == "/config/battery_planner"
@@ -508,12 +506,8 @@ def test_logging_driver_transmits_nothing_and_logs(inverter, tmp_path):
     assert builtins.log.errors == [] and builtins.log.messages == []
     drv = _driver_module("logging")
     assert drv.send("discharge", 3.0) is True      # no-op, nothing to observe
-    assert drv.SOC_IS_STUB is True
-
-
-def test_logging_driver_stub_matches_the_fallback_constant(inverter):
-    import inverter_logging
-    assert inverter_logging.STUBBED_CHARGE_PERCENT == inverter.STUBBED_CHARGE_PERCENT
+    assert not hasattr(drv, "read_charge_percent")      # no charge reading
+    assert not hasattr(drv, "SOC_IS_STUB")
 
 
 def test_logging_driver_has_no_imports_and_no_calls():
@@ -556,7 +550,6 @@ def test_every_action_is_forwarded_including_idle(inverter, drivers, tmp_path):
     ("missing_type", "cannot be loaded"),
     ("crashes", "import time failure"),
     ("nosend", "defines no send"),
-    ("noread", "defines no read_charge_percent"),
     ("../drivers/inverter_recording", "invalid driver name"),
     ("AlphaESS", "invalid driver name"),
 ])
@@ -635,44 +628,44 @@ def test_drivers_stay_out_of_sys_path_and_bare_names(inverter, drivers, tmp_path
 
 # ---- read_charge through the driver --------------------------------------------
 
-def test_read_charge_stub_marker_preserved_for_logging(inverter):
-    assert inverter.read_charge("logging") == (50.0, True, None)
+def test_read_charge_logging_has_no_reading(inverter):
+    assert inverter.read_charge("logging") == (None, None)
 
 
-def test_read_charge_real_driver_is_not_a_stub(inverter, drivers):
-    assert inverter.read_charge("recording") == (42.5, False, None)
+def test_read_charge_real_driver_gives_the_reading(inverter, drivers):
+    assert inverter.read_charge("recording") == (42.5, None)
 
 
-def test_read_charge_missing_driver_is_stub_with_marker(inverter, drivers):
+def test_read_charge_missing_driver_gives_no_reading_with_marker(inverter, drivers):
     assert inverter.read_charge("missing_type") == (
-        50.0, True, "inverter_driver_unavailable")
+        None, "inverter_driver_unavailable")
 
 
 @pytest.mark.parametrize("kind", ["raising", "badread", "overread",
                                   "boolread", "nanread"])
-def test_read_charge_unusable_reading_falls_back_with_marker(
+def test_read_charge_unusable_reading_gives_no_reading_with_marker(
         inverter, drivers, kind):
-    assert inverter.read_charge(kind) == (50.0, True, "inverter_read_failed")
+    assert inverter.read_charge(kind) == (None, "inverter_read_failed")
     assert len(builtins.log.messages) == 1
 
 
-def test_read_charge_timeout_falls_back_with_marker(inverter, drivers, monkeypatch):
+def test_read_charge_timeout_gives_no_reading_with_marker(inverter, drivers, monkeypatch):
     monkeypatch.setattr(inverter, "DRIVER_TIMEOUT_SECONDS", 0.2)
-    assert inverter.read_charge("slow") == (50.0, True, "inverter_read_failed")
+    assert inverter.read_charge("slow") == (None, "inverter_read_failed")
     assert "timed out" in builtins.log.messages[0]
 
 
 def test_read_charge_accepts_int_and_bounds(inverter, drivers):
     (drivers / "inverter_edge.py").write_text(
         _RECORDING.replace("return 42.5", "return 100"), encoding="utf-8")
-    assert inverter.read_charge("edge") == (100.0, False, None)
+    assert inverter.read_charge("edge") == (100.0, None)
 
 
-def test_driver_without_soc_is_stub_attribute_is_a_real_reading(inverter, drivers):
+def test_driver_without_any_stub_attribute_gives_a_real_reading(inverter, drivers):
     (drivers / "inverter_plain.py").write_text(
         "def send(a, p):\n    return True\n"
         "def read_charge_percent():\n    return 33.0\n", encoding="utf-8")
-    assert inverter.read_charge("plain") == (33.0, False, None)
+    assert inverter.read_charge("plain") == (33.0, None)
 
 
 def test_unexpected_failure_inside_the_boundary_never_reaches_the_caller(
@@ -1557,23 +1550,21 @@ def _soc(inverter, drivers, value, source=_PLAN_BASE, entity="sensor.my_soc"):
 @pytest.mark.parametrize("raw,expected", [
     ("63.5", 63.5), ("0", 0.0), ("100", 100.0), (42, 42.0), ("  7.25 ", 7.25)])
 def test_soc_entity_good_value(inverter, drivers, raw, expected):
-    assert _soc(inverter, drivers, raw) == (expected, False, None)
+    assert _soc(inverter, drivers, raw) == (expected, None)
     assert builtins.log.messages == []
 
 
 @pytest.mark.parametrize("raw", [
     "unavailable", "unknown", "abc", "150", "-1", "100.5", "nan", "inf", "", None])
-def test_soc_entity_bad_value_gives_placeholder_and_marker(
+def test_soc_entity_bad_value_gives_no_reading_and_marker(
         inverter, drivers, raw):
-    percent, is_stub, marker = _soc(inverter, drivers, raw)
-    assert (percent, is_stub, marker) == (50.0, True, "inverter_read_failed")
+    assert _soc(inverter, drivers, raw) == (None, "inverter_read_failed")
     assert builtins.log.messages          # said why
 
 
-def test_soc_entity_wins_over_a_reading_function_and_over_the_stub_flag(
-        inverter, drivers):
-    src = _PLAN_BASE + "SOC_IS_STUB = True\ndef read_charge_percent():\n    return 11.0\n"
-    assert _soc(inverter, drivers, "80", source=src) == (80.0, False, None)
+def test_soc_entity_wins_over_a_reading_function(inverter, drivers):
+    src = _PLAN_BASE + "def read_charge_percent():\n    return 11.0\n"
+    assert _soc(inverter, drivers, "80", source=src) == (80.0, None)
 
 
 @pytest.mark.parametrize("entity", [
@@ -1581,21 +1572,19 @@ def test_soc_entity_wins_over_a_reading_function_and_over_the_stub_flag(
 def test_invalid_soc_entity_makes_the_driver_unusable(inverter, drivers, entity):
     src = _PLAN_BASE.replace('SOC_ENTITY = "sensor.my_soc"',
                              "SOC_ENTITY = %s" % entity)
-    percent, is_stub, marker = inverter.read_charge(
-        _plan_driver(drivers, source=src), str(drivers))
-    assert (percent, is_stub, marker) == (50.0, True, "inverter_driver_unavailable")
+    assert inverter.read_charge(
+        _plan_driver(drivers, source=src), str(drivers)) == (
+            None, "inverter_driver_unavailable")
 
 
-def test_plan_driver_may_omit_read_charge_percent_only_with_soc_entity(
-        inverter, drivers):
+def test_a_driver_may_offer_no_charge_reading_at_all(inverter, drivers):
     src = "def plan(a, p):\n    return []\n"
-    percent, is_stub, marker = inverter.read_charge(
-        _plan_driver(drivers, source=src), str(drivers))
-    assert marker == "inverter_driver_unavailable"
+    assert inverter.read_charge(
+        _plan_driver(drivers, source=src), str(drivers)) == (None, None)
 
 
 def test_send_style_read_charge_is_unchanged(inverter, drivers):
-    assert inverter.read_charge("recording", str(drivers)) == (42.5, False, None)
+    assert inverter.read_charge("recording", str(drivers)) == (42.5, None)
 
 
 def test_list_values_in_the_calls_are_copies_too(inverter, drivers, tmp_path):

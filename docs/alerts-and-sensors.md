@@ -68,7 +68,7 @@ off.
 
 | Entity | State | Attributes |
 |---|---|---|
-| `sensor.battery_planner_action` | The last action: `charge`, `discharge`, `export` or `idle` (`unknown` during a price outage) | `power_kw`, `selector`, `vetoes`, `why` (the reason in words), `degraded` (the markers, comma separated), `soc_percent` (`null` while the charge is the 50 % placeholder), `decided_at` (local time), `source` |
+| `sensor.battery_planner_action` | The last action: `charge`, `discharge`, `export` or `idle` (`unknown` during a price outage) | `power_kw`, `selector`, `vetoes`, `why` (the reason in words), `degraded` (the markers, comma separated), `inputs_down` (the configured sensors that are unavailable right now, or `none`), `soc_percent` (`null` while there is no charge reading), `decided_at` (local time), `source` |
 | `sensor.battery_planner_budget` | Power the planner may still draw from the grid for charging, in kW. Can be negative. `unknown` when the peak logic is off or its sensors cannot be read | `ceiling_kw`, `average_kw`, `month_peak_kw` |
 | `binary_sensor.battery_planner_halted` | `on` while prices are missing and no decisions are made, `off` otherwise | `cause`, `since` (both empty while `off`) |
 | `sensor.battery_planner_solar_ratio` | The [solar calibration](history-and-reports.md#solar-calibration) ratio applied to the forecast block now. `unknown` while there is no forecast | `source` (`measured` or `configured`), `weeks_of_history` (weeks between the oldest and newest block with a ratio, counted over the window the planner reads, which is `solar.calibration_weeks` plus one day) |

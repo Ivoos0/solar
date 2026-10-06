@@ -12,7 +12,6 @@ for a hypothetical `alphaess`:
 
 ```python
 # pyscript/modules/inverter_alphaess.py
-SOC_IS_STUB = False            # optional, default False. True = the charge is a placeholder
 COMMAND_HOLD_MINUTES = None    # optional. Minutes the inverter keeps a forced command without a
                                # refresh, as a positive number. None or left out = unknown
 
@@ -107,7 +106,8 @@ What the framework does with it:
   the resend time), exactly as for `send`. `idle` runs once after a forced mode.
 - `SOC_ENTITY` is optional. When it is set, the framework reads that sensor for the battery charge
   and `read_charge_percent` is not needed. A value that is unavailable, not a number or outside 0 to
-  100 gives the 50 % placeholder and `degraded=inverter_read_failed`.
+  100 gives no reading and `degraded=inverter_read_failed`; the planner then holds. A driver may also
+  offer no charge reading at all and rely on `battery.soc_sensor`.
 
 **Run it with `inverter.dry_run: true` first.** In a dry run the framework logs the service calls it
 would make (one line per command, at info level) and executes none of them. The command is still
@@ -127,7 +127,6 @@ What the framework does for you:
   `False` or is missing never changes that line and never crashes the planner or the guard.
 - It runs your code in an executor thread, so blocking network calls are fine.
 - It gives each call 10 seconds, then treats it as failed and logs it.
-- It marks decisions `soc_stubbed` while `SOC_IS_STUB` is true.
 - It calls `send` only when the command changed or the resend time has passed since the
   last accepted send (80 % of your `COMMAND_HOLD_MINUTES`, else `inverter.resend_minutes`) (remembered in `state/last_command.json`, also across restarts and shared by
   the planner and the guard). A failed send is not remembered. `idle` is the exception: it is sent
@@ -175,7 +174,7 @@ Before you enable a real driver:
       assumes the commanded power is what the inverter delivers; a driver that clips it (for example
       at a lower inverter limit) should set `battery.max_discharge_kw` (or a `battery.max_discharge_sensor`) to that limit.
 - [ ] Run with `logging` first and compare a week of decisions with what the battery should have done.
-- [ ] Return the real charge from `read_charge_percent` and leave `SOC_IS_STUB` unset.
+- [ ] Return the real charge from `read_charge_percent` (or declare `SOC_ENTITY`), or leave it out and set `battery.soc_sensor`.
 
 The decision logic in `pyscript/modules/` contains no Home Assistant code and is tested without it:
 

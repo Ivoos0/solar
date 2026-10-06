@@ -12,8 +12,8 @@ Public API
           now, duration_ms, grid_state=None, config=None, source="planner")
     format_record(record)     -> one line, fixed field order
     format_halt(halt_state, now) -> one HALT line
-    degraded_markers(battery_state, solar_zero_fallback=False,
-                     cache_markers=(), usage_samples=None) -> [str]
+    degraded_markers(solar_zero_fallback=False, cache_markers=(),
+                     usage_samples=None) -> [str]
     render_vetoes(decision)   -> [str] (also used by build)
     FIELD_NAMES               the keys after the timestamp, in
                               output order
@@ -198,8 +198,8 @@ def render_vetoes(decision):
     return tokens
 
 
-def degraded_markers(battery_state, solar_zero_fallback=False,
-                     cache_markers=(), usage_samples=None):
+def degraded_markers(solar_zero_fallback=False, cache_markers=(),
+                     usage_samples=None):
     """Assemble the degraded list.
 
     cache_markers: strings from cache.age_marker(series, now), passed through
@@ -207,8 +207,6 @@ def degraded_markers(battery_state, solar_zero_fallback=False,
     fewer than seven (None = not degraded).
     """
     out = []
-    if battery_state.is_stubbed:
-        out.append("soc_stubbed")
     if solar_zero_fallback:
         out.append("solar_zero_fallback")
     out.extend(cache_markers)

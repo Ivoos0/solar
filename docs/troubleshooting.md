@@ -21,7 +21,7 @@ Markers you can expect in `degraded=` on a fresh install:
 
 | Marker | Meaning |
 |---|---|
-| `soc_stubbed` | The battery charge is the 50 % placeholder. Normal until a driver or `battery.soc_sensor` supplies the real charge |
+| `soc_unavailable` | There is no battery charge reading (the sensor is unreadable or frozen, or the driver offers none). The planner holds: no grid charging, no exporting; peak shaving still works. Check `battery.soc_sensor` |
 | `battery_reserve_fallback` | `battery.reserve_sensor` is set but cannot be read. `battery.reserve_percent` applies |
 | `battery_limits_fallback` | `battery.max_charge_sensor` or `battery.max_discharge_sensor` is set but cannot be read (or reads 0 or less). The numeric `battery.max_charge_kw` / `max_discharge_kw` apply for that direction |
 | `battery_power_not_configured` | The capacity tariff is on but `battery.power_sensor` is not set. The planner holds (no charging, no exporting) because the household draw cannot be measured. Set the sensor, or turn the capacity tariff off if you have none |

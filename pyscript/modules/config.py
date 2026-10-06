@@ -317,6 +317,11 @@ def _errors(cfg):
                 r"[a-z0-9_]+\.[a-z0-9_]+", v):
             bad(label, v, "must be an entity id like domain.object_id: "
                 "lowercase letters, digits, underscore, exactly one dot")
+    if cfg.soc_sensor is None and cfg.inverter_type == "logging":
+        bad("battery.soc_sensor", None,
+            "is required: the planner needs a battery charge reading and "
+            "the logging driver has none; set battery.soc_sensor to your "
+            "battery's state-of-charge sensor (percent)")
     for attr, label in _OPTIONAL_ENTITY_FIELDS:
         v = getattr(cfg, attr)
         if v is not None and (not isinstance(v, str) or not re.fullmatch(

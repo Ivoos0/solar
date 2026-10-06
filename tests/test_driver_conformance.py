@@ -36,8 +36,6 @@ def test_logging_driver_is_shipped():
 # ---- the check itself: a good driver passes, each broken one fails clearly ----
 
 GOOD = '''
-SOC_IS_STUB = False
-
 def send(action, target_power_kw):
     return True
 
@@ -63,7 +61,7 @@ def test_good_fake_driver_passes(tmp_path):
 
 
 def test_driver_without_soc_flag_passes(tmp_path):
-    dc.check_driver(write_driver(tmp_path, GOOD.replace("SOC_IS_STUB = False", "")))
+    dc.check_driver(write_driver(tmp_path, GOOD))
 
 
 def test_good_driver_may_import_third_party_names_that_exist(tmp_path):
@@ -76,9 +74,15 @@ def test_missing_send_fails(tmp_path):
         write_driver(tmp_path, src))
 
 
-def test_missing_read_fails(tmp_path):
+def test_a_driver_without_a_reading_function_passes(tmp_path):
     src = GOOD.replace("def read_charge_percent", "def read_charge")
-    assert "read_charge_percent() is missing" in failure(
+    dc.check_driver(write_driver(tmp_path, src))
+
+
+def test_a_reading_that_is_not_callable_fails(tmp_path):
+    src = GOOD.replace("def read_charge_percent():\n    return 42.5",
+                       "read_charge_percent = 42.5")
+    assert "read_charge_percent is not callable" in failure(
         write_driver(tmp_path, src))
 
 
@@ -167,11 +171,6 @@ def test_bad_file_name_fails(tmp_path, name):
     assert "must be inverter_<name>.py" in msg
 
 
-def test_soc_flag_not_a_bool_fails(tmp_path):
-    msg = failure(write_driver(tmp_path, GOOD.replace("SOC_IS_STUB = False", "SOC_IS_STUB = 'no'")))
-    assert "SOC_IS_STUB is 'no'; it must be a bool" in msg
-
-
 def test_hold_minutes_absent_none_or_positive_passes(tmp_path):
     for line in ("COMMAND_HOLD_MINUTES = None", "COMMAND_HOLD_MINUTES = 10",
                  "COMMAND_HOLD_MINUTES = 2.5"):
@@ -254,9 +253,9 @@ def test_good_plan_driver_passes_without_send_or_read(tmp_path):
     dc.check_driver(write_driver(tmp_path, GOOD_PLAN))
 
 
-def test_plan_driver_without_soc_entity_needs_a_reading_function(tmp_path):
+def test_plan_driver_without_soc_entity_may_have_no_reading_function(tmp_path):
     src = GOOD_PLAN.replace('SOC_ENTITY = "sensor.my_soc"', "")
-    assert "read_charge_percent() is missing" in failure(write_driver(tmp_path, src))
+    dc.check_driver(write_driver(tmp_path, src))
     dc.check_driver(write_driver(
         tmp_path, src + "def read_charge_percent():\n    return 50.0\n"))
 

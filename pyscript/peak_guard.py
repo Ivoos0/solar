@@ -118,7 +118,7 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   evaluated", never a projected 0.00kWh), saturation and breach render
   "none", end_soc is the CURRENT stored kWh (same fallback decision.build uses
   with no blocks), cons/inj render n/a (no prices). why says "no trajectory".
-  avg/ceiling/budget are real (capacity.*). degraded carries soc_stubbed and,
+  avg/ceiling/budget are real (capacity.*). degraded carries soc_unavailable and,
   when relevant, meter_restored. The configured average mode is stated in
   why.
 * Vetoes: only vetoes that forbid "discharge" BLOCK a shave, i.e. V5 (battery
@@ -487,7 +487,7 @@ def _guard_note(cfg, shave, vetoed, batt, charge_is_stub):
     else:
         note = "The guard is not shaving (nothing it could shave right now)."
     if charge_is_stub:
-        note += " The battery charge is a stub value (no real reading)."
+        note += " The battery charge reading is unavailable."
     if cfg.inverter_type == "logging":
         note += (" The inverter driver is 'logging': a shave is recorded but "
                  "nothing is sent to the battery.")
@@ -635,9 +635,7 @@ def _grid_state(offtake_kw, now, month_peak, cfg, is_restored, reported,
 def _make_record(now, cfg, grid, batt, took_ms, action, power_kw,
                  vetoes, reasoning):
     """Full DecisionRecord for a guard decision (see docstring for renderings)."""
-    degraded = decision.degraded_markers(batt)
-    if _flags["inverter_marker"] == "soc_unavailable":
-        degraded = [m for m in degraded if m != "soc_stubbed"]
+    degraded = decision.degraded_markers()
     if _flags["inverter_marker"]:
         degraded.append(_flags["inverter_marker"])
     if _flags["limits_marker"]:
@@ -841,18 +839,17 @@ def _evaluate(trigger_type, started):
         offtake_text = "offtake %.2f kW" % grid.offtake_kw
     shave = capacity.shave_kw(grid, cfg)
 
-    soc_known = True
     if cfg.soc_sensor is None:
-        charge, charge_is_stub, charge_marker = inverter.read_charge(
-            cfg.inverter_type, CORE_DIR)
-        batt = battery.from_percent(charge, cfg, is_stubbed=charge_is_stub)
-    else:                                    # real reading: never the stub
+        charge, charge_marker = inverter.read_charge(cfg.inverter_type, CORE_DIR)
+    else:
         charge = _read_soc(cfg.soc_sensor, cfg)
-        soc_known = charge is not None
-        charge_is_stub = not soc_known
-        charge_marker = None if soc_known else "soc_unavailable"
-        batt = (battery.from_percent(charge, cfg, is_stubbed=False)
-                if soc_known else battery.unknown(cfg))
+        charge_marker = None
+    soc_known = charge is not None
+    if not soc_known:
+        charge_marker = "soc_unavailable"
+    charge_is_stub = not soc_known           # no reading behind the figure
+    batt = (battery.from_percent(charge, cfg) if soc_known
+            else battery.unknown(cfg))
     _flags["inverter_marker"] = charge_marker
     forbidden, fired = rules.establish_vetoes(
         batt, None, cfg, grid, usage_history_available=True,   # never grid-charges: V4 is moot

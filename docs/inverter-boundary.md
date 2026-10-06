@@ -58,12 +58,13 @@ def log_path_for(day, log_dir=DEFAULT_LOG_DIR):
 
 
 def read_charge(inverter_type="logging", driver_dir=None):
-    """Returns (percent, is_stub, marker).
+    """Returns (percent, marker).
 
-    is_stub -- the value is a placeholder: the caller marks decisions soc_stubbed.
+    percent -- 0 to 100, or None when there is no usable reading: the driver
+               offers none, it is unavailable, or the reading is not a number
+               from 0 to 100. There is no placeholder; the caller holds.
     marker  -- None, or "inverter_driver_unavailable" / "inverter_read_failed":
-               the caller adds it to the decision's degraded list. percent is
-               then 50.0 and is_stub is True.
+               the caller adds it to the decision's degraded list.
     """
 ```
 
@@ -75,11 +76,10 @@ and `last_command.json`.
 ## What a driver implements (`inverter_<type>.py`)
 
 ```python
-SOC_IS_STUB = False                      # optional, default False
 COMMAND_HOLD_MINUTES = None              # optional: positive number of minutes
 
 def send(action, target_power_kw): ...   # True = accepted; False or raise = failed
-def read_charge_percent(): ...           # number, 0..100
+def read_charge_percent(): ...           # optional: number, 0..100
 ```
 
 `action` is `charge`, `discharge`, `export` or `idle`; power is 0 or more kW and
@@ -102,19 +102,19 @@ cannot verify this without hardware; you must.
    written, or `apply` refuses (action and power do not match the record), the
    driver is not called.
 2. **No driver outcome changes the record or the return value.** A driver that
-   raises, times out (10 seconds), returns `False`, lacks `send` or
-   `read_charge_percent`, fails to import or does not exist is logged and
+   raises, times out (10 seconds), returns `False`, lacks `send`, fails to
+   import or does not exist is logged and
    nothing else happens. The cycle and the guard continue.
 3. **An unknown or broken driver is safe and visible.** Nothing is transmitted,
-   `apply` logs an error on every call, and `read_charge` returns the 50.0
-   placeholder with `is_stub=True` and marker `inverter_driver_unavailable`,
-   which appears in `degraded=`. A failed load is not cached, so a fixed file
-   is picked up on the next call. An unusable reading (exception, timeout, not a
-   number from 0 to 100, a bool) gives the same placeholder with
-   `inverter_read_failed`.
-4. **The stub is visible.** `logging` sets `SOC_IS_STUB = True`, so its
-   decisions are marked `soc_stubbed`. A driver that reads real hardware leaves
-   the flag unset and the marker disappears.
+   `apply` logs an error on every call, and `read_charge` returns no reading
+   (`None`) with marker `inverter_driver_unavailable`, which appears in
+   `degraded=`. A failed load is not cached, so a fixed file is picked up on the
+   next call. An unusable reading (exception, timeout, not a number from 0 to
+   100, a bool) gives no reading with `inverter_read_failed`.
+4. **There is no placeholder charge.** A driver may offer no charge reading at
+   all (`logging` does not; it needs `battery.soc_sensor`). No reading means the
+   planner holds and marks `soc_unavailable`; it never plans on an invented
+   number.
 5. **Drivers never run on the event loop.** `inverter.py` loads them with
    importlib inside a `@pyscript_executor` helper (private name
    `inverter_driver_<type>`, no `sys.path` entry, no bare alias) and calls them
@@ -165,8 +165,7 @@ cannot verify this without hardware; you must.
     string, a bool, zero, negative, NaN, infinity) is ignored with one warning
     in the Home Assistant log and the fallback applies. A recorded send older
     than the window is expired: after a restart, a stale `last_command.json`
-    never blocks a send. The attribute is read from the loaded driver the way
-    `SOC_IS_STUB` is.
+    never blocks a send. The attribute is read from the loaded driver.
 
 ## Plan-style drivers (service calls through Home Assistant)
 
@@ -217,12 +216,11 @@ instead of `send`. If `plan` exists it is used and `send` is ignored. Existing
 5. **`SOC_ENTITY`.** When the driver declares it (an entity id such as
    `sensor.my_battery_soc`), `read_charge` reads it with `state.get` in the
    interpreted layer and the driver needs no `read_charge_percent`. A value that
-   is unavailable, unknown, not a number or outside 0 to 100 gives the 50.0
-   placeholder with `is_stub=True` and the marker `inverter_read_failed`, as for
-   an unusable reading. `SOC_IS_STUB` is not consulted: a good reading from
-   `SOC_ENTITY` is never a stub. A `SOC_ENTITY` that is not an entity id makes the
-   driver unusable (`inverter_driver_unavailable`). A driver without
-   `SOC_ENTITY` still needs `read_charge_percent`.
+   is unavailable, unknown, not a number or outside 0 to 100 gives no reading
+   with the marker `inverter_read_failed`, as for an unusable reading. A
+   `SOC_ENTITY` that is not an entity id makes the driver unusable
+   (`inverter_driver_unavailable`). A driver with neither `SOC_ENTITY` nor
+   `read_charge_percent` simply offers no reading.
 6. **Dry run.** With `inverter.dry_run: true` the boundary logs, at info level,
    one line per command that lists the planned service calls, and executes none
    of them. The command is recorded as sent, so de-duplication and resend behave
