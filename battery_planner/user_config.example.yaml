@@ -110,7 +110,10 @@ capacity_tariff:
                                 # if the quarter-hour looks like passing 2.0 kW.
                                 # Peak shaving still defends the real ceiling.
                                 # 100 = charge right up to the ceiling.
-  quarter_hour_average_mode: auto   # auto | running | accumulating
+  quarter_hour_average_mode: accumulating   # accumulating | running
+                                # accumulating: the sensor is energy so far / the full 15
+                                #   minutes, a sawtooth from 0 (SlimmeLezer 1-0:1.4.0)
+                                # running: energy so far / elapsed time, near the load at once
   offtake_sensor: sensor.slimmelezer_power_consumed
                                 # the meter's NETTED three-phase total; never
                                 # sum the per-phase sensors

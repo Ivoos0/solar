@@ -42,7 +42,7 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `capacity_tariff.billing_floor_kw` | `2.5` | kW | Peaks at or below this cost nothing extra. Sets the lowest ceiling |
 | `capacity_tariff.stay_under_percent` | `80` | % (above 0, up to 100) | Grid charging stays under this share of the ceiling |
 | `capacity_tariff.guard_interval_seconds` | `30` | seconds | Minimum gap between peak guard runs. The guard's timer is fixed at 30, so values below 30 change nothing |
-| `capacity_tariff.quarter_hour_average_mode` | `auto` | `auto`, `running`, `accumulating` | How the meter's quarter-hour average is read |
+| `capacity_tariff.quarter_hour_average_mode` | `accumulating` | `accumulating`, `running` | How the meter's quarter-hour average is read (see below). `auto` no longer exists |
 | `capacity_tariff.offtake_sensor` | `sensor.slimmelezer_power_consumed` | entity id | Netted total offtake |
 | `capacity_tariff.quarter_hour_average_sensor` | `sensor.slimmelezer_huidig_kwartiervermogen` | entity id | Meter register 1-0:1.4.0 |
 | `capacity_tariff.month_peak_sensor` | `sensor.slimmelezer_maandpiek` | entity id | Meter register 1-0:1.6.0 |
@@ -117,11 +117,13 @@ sensor name and attribute have not been checked on other installs, so confirm th
 
 Quarter-hour average mode: some meters report the quarter-hour average as energy so far divided by the
 full 15 minutes (`accumulating`), others divide by elapsed time (`running`). One minute into a window
-the two differ by a factor of 15. With `auto` the peak guard works out which applies by comparing
-samples from several windows, and says so in its records. Pin the value once it is stable. What the
-detection has seen is saved under `battery_planner/state/`, so a mode that was detected stays detected
-after a restart. If you delete those files, the mode is "assumed" again until enough windows have been
-seen.
+the two differ by a factor of 15. You set which one your meter does; there is no detection. To find
+out, open the history graph of `capacity_tariff.quarter_hour_average_sensor`: a sawtooth that drops to 0
+at every quarter-hour and climbs from there is `accumulating` (the SlimmeLezer 1-0:1.4.0 register
+behaves like this); a line that jumps to roughly the current load right after the boundary is
+`running`. A config that still says `auto` is refused at startup with a message saying so. The old
+`average_mode_planner.json` and `average_mode_guard.json` files under `battery_planner/state/` are no
+longer used and can be deleted.
 
 The peak guard's `@state_trigger` names `sensor.slimmelezer_power_consumed` literally, because
 decorator arguments are fixed at load time. If your netted offtake sensor has another name, the guard

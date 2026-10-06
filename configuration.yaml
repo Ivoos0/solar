@@ -40,17 +40,16 @@ rest:
 
 # Capacity-tariff sensors (SlimmeLezer reflash). All report kW with device_class
 # power, so no unit conversion is needed:
-#   sensor.slimmelezer_huidig_kwartiervermogen           1-0:1.4.0  running quarter-hour average
+#   sensor.slimmelezer_huidig_kwartiervermogen           1-0:1.4.0  quarter-hour average
 #   sensor.slimmelezer_maandpiek                         1-0:1.6.0  this month's peak (level to defend)
 #   sensor.slimmelezer_gemiddelde_maandpiek_13_maanden   13-month average (what the fee is billed on)
 #   sensor.slimmelezer_power_consumed                    netted total
 # No helper sensors are needed: the meter's own registers are
 # authoritative. Do not add them.
 #
-# Whether the quarter-hour sensor accumulates (energy so far / full 15 min) or
-# reports a true running average is detected by the planner from normal
-# household consumption. Pin it with capacity_tariff.quarter_hour_average_mode
-# once you know the answer (default: auto).
+# Whether the quarter-hour sensor accumulates (energy so far / full 15 min, a
+# sawtooth from 0 at every quarter-hour) or reports a true running average is
+# set with capacity_tariff.quarter_hour_average_mode (default: accumulating).
 #
 # The planner reads two other entities; check their names on your install
 # (Developer Tools -> States):

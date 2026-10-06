@@ -117,8 +117,6 @@ Documented readings and guesses (this file cannot be run outside Home Assistant)
     halt.json                  price-outage halt (cause, entered_at,
                                last_alert_at): a restart during an outage
                                neither re-alerts early nor loses the outage
-    average_mode_planner.json  the detector samples that can still vote, so
-                               a detected quarter-hour mode stays "detected"
     peak_alert.json            last month-peak e-mail (see _check_peak_alert)
     last_command.json          written by inverter.apply (command de-dup)
 """
@@ -141,7 +139,6 @@ HISTORY_DIR = "/config/battery_planner/history/"
 STATE_DIR = "/config/battery_planner/state/"
 PEAK_ALERT_PATH = "/config/battery_planner/state/peak_alert.json"
 HALT_STATE_PATH = "/config/battery_planner/state/halt.json"
-MODE_STATE_PATH = "/config/battery_planner/state/average_mode_planner.json"
 CORE_DIR = "/config/pyscript/modules"
 # Dependency order (rules needs capacity). inverter is NOT in this list.
 CORE_MODULES = ("config", "prices", "series", "battery", "trajectory",
@@ -176,7 +173,6 @@ MAX_FETCHES_PER_HOUR = 12             # shared with the hourly poll
 FORECAST_FAILURES_BEFORE_RETRY = 2
 FORECAST_AGE_MARKER_MINUTES = 75      # older than a normal hourly refresh: mark it
 SLOW_CYCLE_MS = 5000                  # a cycle slower than this is logged
-MAX_MODE_SAMPLES = 400
 HISTORY_WARN_MINUTES = 60             # per warning kind, energy history
 
 # ---- module state -----------------------------------------------------------
@@ -190,9 +186,6 @@ _halt_state = None
 _halt_loaded = False                  # halt.json read once per process
 _forecast_failures = 0
 _refresh_calls = []
-_mode_samples = []
-_mode_loaded = False                  # average_mode_planner.json read once
-_mode_saved = None                    # what that file holds (skip equal writes)
 _hist_last = None                     # history.Snapshot at the last boundary
 _hist_loaded = False                  # last_snapshot.json read once per process
 _hist_warned = {}                     # warning kind -> last time logged
@@ -1096,39 +1089,12 @@ def _own_grid_charge_kw(cfg, local):
     return kw
 
 
-def _load_mode_samples():
-    """Restore the detector samples saved by an earlier process (once)."""
-    global _mode_samples, _mode_loaded, _mode_saved
-    if _mode_loaded:
-        return
-    _mode_loaded = True
-    loaded = capacity.samples_from_data(
-        _read_json(MODE_STATE_PATH), MAX_MODE_SAMPLES)
-    _mode_saved = capacity.samples_to_data(loaded)
-    _mode_samples = loaded + _mode_samples
-
-
-def _save_mode_samples():
-    """Persist the samples that can still vote; skipped when unchanged."""
-    global _mode_saved
-    data = capacity.samples_to_data(_mode_samples)
-    if data == _mode_saved:
-        return
-    err = _write_json_atomic(MODE_STATE_PATH, data)
-    if err:
-        log.error(  # noqa: F821
-            f"battery_planner: cannot save average-mode state: {err}")
-    else:
-        _mode_saved = data
-
-
 def _grid_state(cfg, local, battery_discharge_kw=None):
     """capacity.GridState, or None (capacity off, or a sensor is unreadable).
 
     battery_discharge_kw: battery power (kW, discharge positive) from
     battery.power_sensor, or None to estimate the household draw instead.
     """
-    global _mode_samples
     if not cfg.capacity_enabled:
         return None
     offtake = _sensor_kw(cfg.offtake_sensor)
@@ -1136,16 +1102,8 @@ def _grid_state(cfg, local, battery_discharge_kw=None):
     peak = _sensor_kw(cfg.month_peak_sensor)
     if offtake is None or reported is None or peak is None:
         return None
-    start = capacity.window_start_of(local)
-    _load_mode_samples()
-    _mode_samples.append(capacity.Sample(
-        start, (local - start).total_seconds() / 60.0, reported, offtake))
-    _mode_samples = _mode_samples[-MAX_MODE_SAMPLES:]
-    _save_mode_samples()
-    verdict = capacity.detect_average_mode(_mode_samples, cfg)
     return capacity.build_state(
         offtake, 0.0, local, peak, cfg, reported_average_kw=reported,
-        average_mode=verdict.mode, mode_confidence=verdict.confidence,
         own_grid_charge_kw=_own_grid_charge_kw(cfg, local),
         battery_discharge_kw=battery_discharge_kw)
 

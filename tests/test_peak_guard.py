@@ -202,8 +202,6 @@ def make_guard(monkeypatch, tmp_path):
         monkeypatch.setattr(mod, "CONFIG_PATH", str(cfg_path))
         state_dir = tmp_path / state
         monkeypatch.setattr(mod, "STATE_DIR", str(state_dir) + "/")
-        monkeypatch.setattr(mod, "MODE_STATE_PATH",
-                            str(state_dir / "average_mode_guard.json"))
         monkeypatch.setattr(mod, "WARN_STATE_PATH",
                             str(state_dir / "peak_warning.json"))
         monkeypatch.setattr(mod, "inverter", inv)
@@ -243,9 +241,7 @@ def test_forming_peak_discharges_once_with_guard_record(make_guard):
     assert len(g.inv.calls) == 1
     action, power, rec = g.inv.calls[0]
     grid = capacity.build_state(5.0, 0.0, g.now, 2.5, _cfg(),
-                                reported_average_kw=4.0,
-                                average_mode="running",
-                                mode_confidence="configured")
+                                reported_average_kw=4.0)
     expected = capacity.shave_kw(grid, _cfg())
     assert expected > 0
     assert action == "discharge" and power == pytest.approx(expected)
@@ -257,7 +253,7 @@ def test_forming_peak_discharges_once_with_guard_record(make_guard):
     assert "soc_stubbed" in rec.degraded_inputs
     line = decision.format_record(rec)
     assert "source=guard" in line and "selector=S0" in line
-    assert "average mode running (configured)" in line
+    assert "average mode running;" in line
     # documented renderings of trajectory-dependent fields
     assert rec.forecast_remaining_kwh is None
     assert rec.usage_remaining_kwh is None and rec.spill_kwh is None
@@ -431,56 +427,13 @@ def test_time_tick_respects_configured_interval(make_guard):
     assert g.st.values[SHAVING] == "off"
 
 
-def test_window_boundary_resets_buffer_and_feeds_detector(make_guard,
-                                                         monkeypatch):
-    g = make_guard(mode="auto")
-    seen = []
-    real = capacity.detect_average_mode
-
-    def spy(samples, cfg):
-        seen.append(list(samples))
-        return real(samples, cfg)
-    monkeypatch.setattr(g.mod.capacity, "detect_average_mode", spy)
-    quiet = dict(offtake="3.0", avg="3.0", peak="6.0")
-    g.at(12, 5).tick(**quiet)
-    g.at(12, 10).tick(**quiet)
-    assert len(g.mod._samples) == 2
-    assert all(isinstance(s, capacity.Sample) for s in seen[-1])
-    g.at(12, 15, 5).tick(**quiet)                    # new window, elapsed<2
-    assert g.mod._samples == []
-    assert len(g.mod._history) == 2
-    g.at(12, 20).tick(**quiet)
-    assert len(g.mod._samples) == 1                  # only this window's
-    assert {s.window_start.minute for s in g.mod._samples} == {15}
-
-
-def test_auto_mode_detection_reaches_running_verdict(make_guard, monkeypatch):
-    g = make_guard(mode="auto")
-    verdicts = []
-    real = capacity.detect_average_mode
-
-    def spy(samples, cfg):
-        v = real(samples, cfg)
-        verdicts.append(v)
-        return v
-    monkeypatch.setattr(g.mod.capacity, "detect_average_mode", spy)
-    steady = dict(offtake="3.0", avg="3.0", peak="6.0")   # running semantics
-    for start in (0, 15, 30, 45):
-        g.at(13, start, 0)
-        g.at(13, start + 4).tick(**steady)
-        g.at(13, start + 12).tick(**steady)
-    g.at(14, 0, 5).tick(**steady)
-    assert verdicts[-1].mode == "running"
-    assert verdicts[-1].confidence == "detected"
-
-
-def test_auto_mode_record_states_mode_and_confidence(make_guard):
-    g = make_guard(mode="auto").at(12, 7, 30)
+def test_record_states_the_configured_mode(make_guard):
+    g = make_guard(mode="accumulating").at(12, 7, 30)
     g.tick(**PEAK_ARGS)
-    # 12:07:30 with "accumulating" assumed: 4.0*15/7.5 = 8.0 kW average
+    # 12:07:30 with "accumulating": 4.0*15/7.5 = 8.0 kW average
     rec = g.discharges[0][2]
-    assert "average mode accumulating (assumed)" in rec.reasoning
-    assert "avg_mode_assumed" in rec.degraded_inputs
+    assert "average mode accumulating;" in rec.reasoning
+    assert "avg_mode_assumed" not in rec.degraded_inputs
     assert rec.running_average_kw == pytest.approx(8.0)
 
 
@@ -623,17 +576,6 @@ def test_stale_average_without_timestamp_ignored_for_first_seconds(make_guard):
     assert not [m for m in g.log.messages if "not refreshed" in m]
     g.at(12, 22, 30).tick(**PEAK_ARGS)                  # past the fallback
     assert len(g.discharges) == 1
-
-
-def test_stale_average_still_rolls_the_window_buffer(make_guard):
-    g = make_guard(mode="auto")
-    quiet = dict(offtake="3.0", avg="3.0", peak="6.0")
-    g.at(12, 5).tick(**quiet)
-    g.at(12, 10).tick(**quiet)
-    g.at(12, 15, 2)
-    g.st.updated[AVG] = _stamp(12, 14, 59)
-    g.tick(**quiet)
-    assert g.mod._samples == [] and len(g.mod._history) == 2
 
 
 @pytest.mark.parametrize("scale", [(1000.0, "W"), (1.0, "kW")])
@@ -1043,7 +985,6 @@ assert not any(n in sys.modules for n in ("config", "capacity", "decision"))
     "capacity_tariff:\n  quarter_hour_average_mode: running\n")
 mod.CONFIG_PATH = str(tmp / "user_config.yaml")
 mod.STATE_DIR = str(tmp / "state") + "/"
-mod.MODE_STATE_PATH = str(tmp / "state" / "average_mode_guard.json")
 mod.WARN_STATE_PATH = str(tmp / "state" / "peak_warning.json")
 mod.CORE_DIR = str(modules)
 mod._now = lambda cfg: datetime(2026, 9, 30, 12, 7, 30, tzinfo=ZoneInfo("Europe/Brussels"))

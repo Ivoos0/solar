@@ -87,7 +87,6 @@ something that was just done:
 |---|---|---|
 | `last_command.json` | The last command the driver accepted (action, power, time) | The driver is not sent the same command again until its resend time has passed (a record older than that is treated as expired, so an old file never blocks a command) |
 | `halt.json` | A price outage in progress: cause, when it started, when the last e-mail went out | No early second e-mail, the same outage keeps its start time, and `RECOVERED` reports its full length |
-| `average_mode_planner.json`, `average_mode_guard.json` | The quarter-hour average readings used to detect the meter's behaviour | A detected mode stays detected instead of falling back to "assumed" |
 | `peak_warning.json` | When the last peak warning was sent | No second warning for the same quarter-hour, and the minimum interval still applies |
 | `peak_alert.json` | The last month-peak e-mail | No repeat e-mail for an old peak |
 

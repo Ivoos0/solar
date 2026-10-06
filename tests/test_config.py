@@ -459,3 +459,13 @@ def test_min_history_days_rejects(bad_value):
 def test_min_history_days_limit_follows_history_weeks():
     c = from_dict(base(usage__history_weeks=5, usage__min_history_days=29))
     assert c.usage_min_history_days == 29
+
+
+def test_average_mode_defaults_to_accumulating(site_config):
+    assert site_config.quarter_hour_average_mode == "accumulating"
+
+
+def test_average_mode_auto_is_refused_with_an_explanation():
+    with pytest.raises(ConfigError) as e:
+        from_dict(base(capacity_tariff__quarter_hour_average_mode="auto"))
+    assert "auto' was removed" in str(e.value)
