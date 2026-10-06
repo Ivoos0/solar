@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from alphaess_support import bump_mtime
+
 SRC = Path(__file__).resolve().parent.parent / "pyscript" / "battery_planner.py"
 MODULES = SRC.parent / "modules"
 UTC = timezone.utc
@@ -164,8 +166,7 @@ class Env:
             "  peak_enabled: %s\n" % ("true" if self.peak_alerts else "false")
             + "  sensor_enabled: %s\n" % ("true" if self.sensor_alerts else "false")
             + extra, encoding="utf-8")
-        bump = self.config_path.stat().st_mtime + 10
-        os.utime(self.config_path, (bump, bump))
+        bump_mtime(self.config_path)
 
 
 def price_entries(days=2, start=None):
@@ -1095,8 +1096,7 @@ def test_alert_uses_default_service_when_config_omits_it(env):
         "battery:\n  capacity_kwh: 10.0\nalerts:\n"
         "  address: owner@example.com\n  peak_enabled: false\n",
         encoding="utf-8")
-    bump = env.config_path.stat().st_mtime + 20
-    os.utime(env.config_path, (bump, bump))
+    bump_mtime(env.config_path, 20)
     env.state.set(PRICE_ENTITY, "unavailable", {})
     env.run(T0)
     assert len(env.service.of("notify", "battery_alert")) == 1
