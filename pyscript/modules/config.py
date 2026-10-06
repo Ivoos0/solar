@@ -42,6 +42,8 @@ _MAP = [
     ("alerts", "address", "alert_address"),
     ("alerts", "notify_service", "notify_service"),
     ("alerts", "realert_minutes", "realert_minutes"),
+    ("alerts", "sensor_enabled", "sensor_alert_enabled"),
+    ("alerts", "sensor_outage_minutes", "sensor_outage_minutes"),
     ("alerts", "peak_enabled", "peak_alert_enabled"),
     ("alerts", "peak_warning_enabled", "peak_warning_enabled"),
     ("alerts", "peak_warning_min_interval_minutes",
@@ -84,7 +86,8 @@ _NON_NUMERIC = (
     "usage_recency_weighting", "inverter_type", "price_entity",
     "price_attribute", "forecast_entity", "forecast_attribute",
     "quarter_hour_average_sensor", "month_peak_sensor", "history_enabled",
-    "peak_alert_enabled", "peak_warning_enabled", "report_enabled",
+    "peak_alert_enabled", "peak_warning_enabled", "sensor_alert_enabled",
+    "report_enabled",
     "sensors_enabled", "inverter_dry_run", "soc_sensor",
     "power_sensor", "power_positive", "max_charge_sensor",
     "max_discharge_sensor", "reserve_sensor",
@@ -144,6 +147,8 @@ class SiteConfig:
     solar_cache_stale_minutes: int = 120
     usage_cache_stale_minutes: int = 2880
     realert_minutes: int = 60
+    sensor_alert_enabled: bool = True
+    sensor_outage_minutes: int = 15
     notify_service: str = "battery_alert"
     peak_alert_enabled: bool = True
     peak_warning_enabled: bool = True
@@ -312,6 +317,13 @@ def _errors(cfg):
     if not isinstance(cfg.peak_alert_enabled, bool):
         bad("alerts.peak_enabled", cfg.peak_alert_enabled,
             "must be true or false")
+    if not isinstance(cfg.sensor_alert_enabled, bool):
+        bad("alerts.sensor_enabled", cfg.sensor_alert_enabled,
+            "must be true or false")
+    if (isinstance(cfg.sensor_outage_minutes, float)
+            or cfg.sensor_outage_minutes < 1):
+        bad("alerts.sensor_outage_minutes", cfg.sensor_outage_minutes,
+            "must be an integer >= 1")
     if not isinstance(cfg.peak_warning_enabled, bool):
         bad("alerts.peak_warning_enabled", cfg.peak_warning_enabled,
             "must be true or false")

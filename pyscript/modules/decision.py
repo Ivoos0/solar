@@ -333,3 +333,93 @@ def format_halt(halt_state, now):
         "entered=%s" % _iso(halt_state.entered_at),
         "alerted=%s" % _iso(halt_state.last_alert_at),
     ])
+
+
+# ---- sensor outage alert ----------------------------------------------------
+# What the planner does while each kind of input is missing (the e-mail says so).
+_SENSOR_EFFECTS = {
+    "soc": "battery charge unknown: the planner holds (no charging, no exporting)",
+    "power": "the household draw is estimated from the grid offtake alone",
+    "max_charge": "battery.max_charge_kw applies",
+    "max_discharge": "battery.max_discharge_kw applies",
+    "reserve": "battery.reserve_percent applies",
+    "offtake": "peak protection and the grid budget cannot be evaluated",
+    "quarter_hour_average": "peak protection falls back to its own estimate",
+    "month_peak": "the ceiling and the month-peak notice cannot be evaluated",
+    "forecast": "the cached solar forecast is used, or no solar is assumed",
+    "history": "energy history for these blocks is recorded as unknown",
+}
+
+
+def required_sensors(cfg):
+    """[(entity, kind)] for every configured sensor the planner reads each
+    cycle, except the price entity (a price outage halts the planner and has
+    its own alert). Each entity appears once."""
+    out = []
+    if cfg.soc_sensor:
+        out.append((cfg.soc_sensor, "soc"))
+    if cfg.power_sensor:
+        out.append((cfg.power_sensor, "power"))
+    if cfg.max_charge_sensor:
+        out.append((cfg.max_charge_sensor, "max_charge"))
+    if cfg.max_discharge_sensor:
+        out.append((cfg.max_discharge_sensor, "max_discharge"))
+    if cfg.reserve_sensor:
+        out.append((cfg.reserve_sensor, "reserve"))
+    out.append((cfg.forecast_entity, "forecast"))
+    if cfg.capacity_enabled:
+        out.append((cfg.offtake_sensor, "offtake"))
+        out.append((cfg.quarter_hour_average_sensor, "quarter_hour_average"))
+        out.append((cfg.month_peak_sensor, "month_peak"))
+    if cfg.history_enabled:
+        for attr in ("history_import_sensors", "history_export_sensors",
+                     "history_solar_sensors", "history_battery_charge_sensors",
+                     "history_battery_discharge_sensors",
+                     "history_load_sensors"):
+            for entity in getattr(cfg, attr):
+                out.append((entity, "history"))
+    seen = set()
+    unique = []
+    for entity, kind in out:
+        if entity not in seen:
+            seen.add(entity)
+            unique.append((entity, kind))
+    return unique
+
+
+def outage_step(first_down, last_alert, down, now, after_minutes,
+                realert_minutes):
+    """One cycle of the sensor outage tracker. Pure.
+
+    first_down: {entity: when it was first seen down}; last_alert: when the
+    last alert went out (None = none for this outage); down: the entities down
+    now. Returns (first_down, last_alert, due): the new state and the entities
+    to report, or [] when no alert is due. An entity is reported once it has
+    been down for after_minutes; the alert repeats every realert_minutes while
+    any entity stays down, and the repeat timer resets when all are back.
+    """
+    first = {e: first_down.get(e, now) for e in down}
+    long = sorted(e for e in first
+                  if (now - first[e]).total_seconds() >= after_minutes * 60)
+    if not long:
+        return first, None, []
+    if (last_alert is not None
+            and (now - last_alert).total_seconds() < realert_minutes * 60):
+        return first, last_alert, []
+    return first, last_alert, long
+
+
+def outage_message(kinds, first_down, now, realert_minutes):
+    """(title, message) for the entities in kinds ({entity: kind})."""
+    lines = []
+    for entity in sorted(kinds):
+        minutes = int((now - first_down[entity]).total_seconds() // 60)
+        lines.append("- %s: unavailable for %d min; %s" % (
+            entity, minutes, _SENSOR_EFFECTS[kinds[entity]]))
+    count = len(lines)
+    title = "Battery planner: %d sensor%s unavailable" % (
+        count, "" if count == 1 else "s")
+    message = ("The planner keeps running with fallbacks, but these inputs "
+               "cannot be read:\n%s\nRe-alert every %d min while any stays "
+               "unavailable." % ("\n".join(lines), realert_minutes))
+    return title, message

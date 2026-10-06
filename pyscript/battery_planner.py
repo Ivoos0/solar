@@ -198,6 +198,8 @@ _hist_loaded = False                  # last_snapshot.json read once per process
 _hist_warned = {}                     # warning kind -> last time logged
 _peak_alert_loaded = False            # peak_alert.json read once per process
 _peak_alert_last = None               # (YYYY-MM, kW) of the last notified peak
+_sensor_first_down = {}               # entity -> when first seen unavailable
+_sensor_last_alert = None             # when the last sensor outage mail went out
 _last_grid_charge = None              # (local time, kW) of the last recorded grid-charge decision
 _calibration = None                   # history.solar_calibration result, per clock hour
 _calibration_key = None               # what it was computed for (date, hour, settings)
@@ -701,6 +703,36 @@ def _check_peak_alert(cfg, local):
                 f"battery_planner: cannot save peak alert state: {err}")
     except Exception as exc:
         log.error(f"battery_planner: peak alert failed: {exc!r}")  # noqa: F821
+
+
+def _check_sensor_outage(cfg, local):
+    """E-mail when configured sensors stay unavailable.
+
+    Every cycle, before the price check (so it also works in a halt). A sensor
+    is reported after alerts.sensor_outage_minutes, then every
+    alerts.realert_minutes while any stays down. In memory only: a restart
+    during an outage starts the count again. Never raises, never touches a
+    decision; a failed send is retried next cycle.
+    """
+    global _sensor_first_down, _sensor_last_alert
+    try:
+        if not cfg.sensor_alert_enabled:
+            return
+        sensors = decision.required_sensors(cfg)
+        down = [e for e, _ in sensors if _state_value(e) is None]
+        first, last, due = decision.outage_step(
+            _sensor_first_down, _sensor_last_alert, down, local,
+            cfg.sensor_outage_minutes, cfg.realert_minutes)
+        _sensor_first_down, _sensor_last_alert = first, last
+        if not due:
+            return
+        kinds = dict(sensors)
+        title, message = decision.outage_message(
+            {e: kinds[e] for e in due}, first, local, cfg.realert_minutes)
+        if _notify(cfg, title, message):
+            _sensor_last_alert = local
+    except Exception as exc:
+        log.error(f"battery_planner: sensor alert failed: {exc!r}")  # noqa: F821
 
 
 # ---- forecast and solar series -----------------------------------------------
@@ -1269,6 +1301,7 @@ def _cycle(now):
         return
     local = now.astimezone(ZoneInfo(cfg.timezone))
     _check_peak_alert(cfg, local)        # before prices: also works in a halt
+    _check_sensor_outage(cfg, local)
     price_map, cause = _read_prices(cfg, local)
     if cause is not None:
         _halt(cfg, local, cause)

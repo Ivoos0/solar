@@ -127,6 +127,8 @@ class Env:
         # Off by default: the fixture's month peak (3.0) is above the floor
         # and would mail in every unrelated test. Peak-alert tests turn it on.
         self.peak_alerts = False
+        # Off by default for the same reason: fixture sensors are missing.
+        self.sensor_alerts = False
 
     def run(self, now=None):
         if now is not None:
@@ -157,6 +159,7 @@ class Env:
             "  address: owner@example.com\n"
             "  notify_service: test_notifier\n"
             "  peak_enabled: %s\n" % ("true" if self.peak_alerts else "false")
+            + "  sensor_enabled: %s\n" % ("true" if self.sensor_alerts else "false")
             + extra, encoding="utf-8")
         bump = self.config_path.stat().st_mtime + 10
         os.utime(self.config_path, (bump, bump))
