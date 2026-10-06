@@ -9,7 +9,7 @@ Public surface (documented in docs/inverter-boundary.md):
     log_path_for(day, log_dir=DEFAULT_LOG_DIR)
         -> "<log_dir>/decisions-YYYY-MM-DD.log"
     read_charge(inverter_type="logging", driver_dir=None)
-        -> (percent, is_stub, marker)
+        -> (percent or None, marker)
 driver_dir=None means DEFAULT_DRIVER_DIR. state_dir=None means
 <log_dir>/state.
 

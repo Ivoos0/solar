@@ -30,11 +30,14 @@ Source: <https://github.com/Ivoos0/solar>
   [AlphaESS inverter, read-only](docs/alphaess.md#alphaess-inverter-read-only-home-assistant-modbus)). Nothing is
   written to the inverter, so its default behaviour is unchanged.
 - Household usage history comes from energy counters you configure (see [Energy history](docs/history-and-reports.md#energy-history)).
-  Until a `load` counter (or `solar` plus both battery counters) is configured, records carry
-  `usage_history_unavailable` and the planner holds: it does nothing price-driven (no charging from
-  the grid, no exporting) and logs idle with the reason "no usage history:
-  planner holds". Only peak protection still acts, because it reads the live grid reading and does
+  Until a `load` counter (or `solar` plus both battery counters) is configured and `usage.min_history_days`
+  (default 3) days are recorded, records carry `usage_history_unavailable` and the planner holds: it does
+  nothing price-driven (no charging from the grid, no exporting) and logs idle with the reason "no usage
+  history: planner holds". Only peak protection still acts, because it reads the live grid reading and does
   not need history. While the planner holds, the inverter's own behaviour applies.
+- When an input is missing or frozen (prices, battery charge, battery power, the meter) the planner does
+  not guess: it holds, releases any forced command with one `idle`, marks the record and sends an e-mail
+  (see [What the planner does](docs/how-it-works.md#when-an-input-is-missing-or-frozen)).
 
 - The main known gaps (the full list is in [Known gaps](docs/known-gaps.md)):
   - Peak protection is reactive. The projection covers battery charge, not grid offtake, so the planner
@@ -45,6 +48,8 @@ Source: <https://github.com/Ivoos0/solar>
   - The alert e-mails and the entity names on installs other than the original one have not been tested
     against a live Home Assistant.
   - The solar calibration has only been tested with generated history.
+  - The planner cannot curtail solar: at a negative injection price with a full battery the inverter's
+    default exports the surplus. There is also no minimum hold time between commands.
 
 If you install it, your battery behaves exactly as before. What you get is a log of decisions you can
 compare with what the battery actually did.
@@ -59,6 +64,7 @@ compare with what the battery actually did.
 | ENTSO-e API key | Free. Used by the Home Assistant ENTSO-e integration for dynamic prices |
 | Solar array | One roof plane. The forecast logic assumes it |
 | Home battery with a hybrid inverter | The planner decides what the battery should do; acting on it needs a driver |
+| A battery charge sensor and a battery power sensor in Home Assistant | From your inverter's integration. The charge sensor is required; the power sensor is required while the capacity tariff is on (see [Configure](docs/configuration.md#settings-reference)) |
 | A working SMTP account | For the alert e-mails. Optional, but the price-outage alert needs it |
 
 The capacity-tariff logic is specific to the Flemish tariff: billing on the average of the monthly
@@ -80,7 +86,7 @@ The full steps are in [Install](docs/install.md#install). In short:
 2. Reflash the SlimmeLezer so it publishes the demand registers ([step 3](docs/install.md#install-step-3)).
 3. Copy `pyscript/` and `configuration.yaml` to your Home Assistant config folder ([step 4](docs/install.md#install-step-4)).
 4. Create `secrets.yaml` from `secrets.example.yaml` ([step 5](docs/install.md#install-step-5)).
-5. Create `user_config.yaml` and set `battery.capacity_kwh` and `alerts.address` ([step 6](docs/install.md#install-step-6), [Configure](docs/configuration.md#configure)).
+5. Create `user_config.yaml` and set `battery.capacity_kwh`, `battery.soc_sensor`, `battery.power_sensor` and `alerts.address` ([step 6](docs/install.md#install-step-6), [Configure](docs/configuration.md#configure)).
 6. Restart Home Assistant and test the notifier ([steps 7 and 8](docs/install.md#install-step-7)).
 7. Look for the first decision record in the log ([Check that it works](docs/troubleshooting.md#check-that-it-works)).
 

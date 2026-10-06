@@ -66,6 +66,19 @@ def read_charge(inverter_type="logging", driver_dir=None):
     marker  -- None, or "inverter_driver_unavailable" / "inverter_read_failed":
                the caller adds it to the decision's degraded list.
     """
+
+
+def last_sent_action(log_dir=DEFAULT_LOG_DIR, state_dir=None):
+    """Action of the last command a driver accepted ("charge", "discharge",
+    "export" or "idle"), or None when nothing is on record. Read-only; never
+    raises. Used to release a forced command after a restart, a price halt, an
+    invalid configuration or a lost meter."""
+
+
+def send_failure_streak():
+    """How many commands in a row the driver did not accept (an exception, a
+    timeout, False, a missing driver). 0 after any accepted command. The
+    logging driver and a dry run never count. Three in a row send an e-mail."""
 ```
 
 Both adapters pass `cfg.inverter_type`, `cfg.inverter_resend_minutes`, their own
@@ -125,7 +138,7 @@ cannot verify this without hardware; you must.
    its own HALT, RECOVERED and SKIP lines, through its own helper, to the same
    day's file.
 7. **The core never imports anything below this boundary.** It does not know a
-   driver exists; the adapters know only `apply` and `read_charge`.
+   driver exists; the adapters know only the five functions above.
 8. **File I/O lives here or in the adapter, never in the core**, and runs off
    the event loop with `@pyscript_executor`. `@pyscript_compile` alone does not
    move work off the loop.
@@ -142,9 +155,9 @@ cannot verify this without hardware; you must.
     the planner and the guard. It is kept in memory as a fallback when the file
     cannot be written. The time used is the decision record's timestamp. A
     command is recorded only when the driver accepted it; a send that raised,
-    timed out, returned `False` or whose driver is missing is not recorded and
-    also clears the existing record, because the inverter's state is then
-    unknown and the next call must send. A missing, empty, corrupt or incomplete
+    timed out, returned `False` or whose driver is missing is not recorded,
+    counts towards `send_failure_streak()` and also clears the existing record,
+    because the inverter's state is then unknown and the next call must send. A missing, empty, corrupt or incomplete
     file means "no command on record", never an error. The `logging` driver
     transmits nothing and keeps no record.
 11. **`idle` is sent once.** An `idle` command is sent when the recorded command
@@ -227,7 +240,7 @@ instead of `send`. If `plan` exists it is used and `send` is ignored. Existing
    exactly as in a live run. A `send`-style driver in a dry run is not called; a
    line saying it would have been is logged instead. The `logging` driver is
    unchanged. In a dry run the planner and the guard also assume that nothing was
-   really commanded (no own-charge or discharge correction). Run a new driver in
+   really commanded (the guard adds no discharge back to the meter reading). Run a new driver in
    dry run on your hardware before the first live run.
 7. **What was tested.** The service-call path has been exercised with test
    doubles for `service` and `state`, and with the pyscript interpreter in a test

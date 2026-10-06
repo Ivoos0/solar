@@ -17,20 +17,19 @@ A normal record is one line of `|`-separated fields: timestamp, `action`, `power
 `avg`, `ceiling`, `budget`, `vetoes`, `selector`, `why` (the reason in words; `vetoes` and `selector` use the labels explained under [Labels in the decision log](decision-log.md#labels-in-the-decision-log)), `degraded` and
 `source` (`planner` or `guard`). Fields that do not apply show `n/a`.
 
-Markers you can expect in `degraded=` on a fresh install:
+Markers you can see in `degraded=`:
 
 | Marker | Meaning |
 |---|---|
 | `soc_unavailable` | There is no battery charge reading (the sensor is unreadable or frozen, or the driver offers none). The planner holds: no grid charging, no exporting; peak shaving still works. Check `battery.soc_sensor` |
-| `battery_reserve_fallback` | `battery.reserve_sensor` is set but cannot be read. `battery.reserve_percent` applies |
-| `battery_limits_fallback` | `battery.max_charge_sensor` or `battery.max_discharge_sensor` is set but cannot be read (or reads 0 or less). The numeric `battery.max_charge_kw` / `max_discharge_kw` apply for that direction |
+| `battery_reserve_fallback` | `battery.reserve_sensor` is set but cannot be read or has not refreshed. `battery.reserve_percent` applies |
+| `battery_limits_fallback` | `battery.max_charge_sensor` or `battery.max_discharge_sensor` is set but cannot be used (unreadable, 0 or less, not refreshed, or implausibly high). The numeric `battery.max_charge_kw` / `max_discharge_kw` apply for that direction |
 | `battery_power_not_configured` | The capacity tariff is on but `battery.power_sensor` is not set. The planner holds (no charging, no exporting) because the household draw cannot be measured. Set the sensor, or turn the capacity tariff off if you have none |
 | `inverter_send_failed=N` | The inverter driver has not accepted the last N commands. After 3 you also get an e-mail. Check the connection to the inverter and the driver messages in the log |
 | `soc_last_good` | `battery.soc_sensor` could not be read this cycle; the last good reading (at most two evaluation intervals old) was used instead. A longer outage gives `soc_unavailable` |
 | `battery_power_last_good` | The same for `battery.power_sensor` |
 | `battery_power_unavailable` | `battery.power_sensor` is set but cannot be read (or its unit is not W or kW). The household draw cannot be measured (the meter alone undercounts while the battery covers the house), so the planner holds (V8) while the capacity tariff is on |
-| `soc_unavailable` | `battery.soc_sensor` is set but cannot be read. The planner holds: no charging from the grid and no exporting until the sensor is back. Peak shaving is not affected |
-| `usage_history_unavailable` | No household usage history yet. Normal until a load source is configured; the planner only peak-shaves and otherwise idles meanwhile |
+| `usage_history_unavailable` | Not enough household usage history yet: no load source is configured, or fewer than `usage.min_history_days` days are recorded. Normal at first; the planner only peak-shaves and otherwise idles meanwhile |
 | `consumption_offset_low` | `prices.consumption_offset` is below 0.05 EUR/kWh, so it cannot include network costs, taxes and VAT. The planner underestimates the buying price and grid charging looks too attractive. Work out the all-in offset from your bill (see the example config) |
 | `usage_gaps_pct=N` | N percent of the planned blocks have too little history behind them. They are filled from neighbouring blocks, so the profile can be less accurate there. Normal during the first weeks; if it stays high, check that the energy counters keep recording (see `grid_sensors_unavailable`, the sensor outage e-mail and the history warnings) |
 | `usage_samples=N` | The usage profile rests on fewer than `usage.history_weeks` x 7 days of history (N days). Disappears as history builds up |
@@ -39,9 +38,10 @@ Markers you can expect in `degraded=` on a fresh install:
 | `solar_ratio=0.83` | The forecast for the current or next block was multiplied by this ratio, measured from your own history (see [Solar calibration](history-and-reports.md#solar-calibration)). Absent when the ratio is 1.00 |
 | `solar_ratio_configured=0.80` | The same, but the ratio is `solar.calibration_default` because there is not enough measured history yet. Absent when it is 1.00 |
 | `solar_zero_fallback` | The forecast was unavailable (or older than `timing.solar_cache_stale_minutes`) and no usable cached copy exists, so solar was treated as zero. The planner holds (no grid charging, no export) until a forecast is back, retries, and does not halt |
-| `grid_sensors_unavailable` | Capacity logic is on but the grid sensors are unreadable. Grid charging is suppressed |
+| `grid_sensors_unavailable` | Capacity logic is on but the grid sensors are unreadable. The planner holds (V8): no grid charging, no exporting |
 | `quarter_hour_average_stale` | The quarter-hour average sensor has not been written since the previous quarter-hour and shows a high value (at least half the billing floor), more than 5 minutes into the window. The planner cannot trust it, so it behaves as with `grid_sensors_unavailable`. Check the meter and the sensor |
-| `inverter_driver_unavailable`, `inverter_read_failed` | The configured driver is missing or its charge reading failed |
+| `meter_restored` | Peak guard records only: the meter was unreadable for a while and has just recovered |
+| `inverter_driver_unavailable`, `inverter_read_failed` | The configured driver is missing or its charge reading failed. With no `battery.soc_sensor` the planner then holds (`soc_unavailable`) |
 
 When the peak guard is shaving a peak it writes its own records: when a shave starts, changes
 materially, is blocked or stops, not once per 30-second tick.
@@ -51,6 +51,8 @@ materially, is blocked or stops, not once per 30-second tick.
 | Symptom | Cause | Fix |
 |---|---|---|
 | No records at all | pyscript not loaded, or the `pyscript:` block is missing | Add the block from `configuration.yaml`, restart Home Assistant |
+| No records, the log says `STARTUP FAILURE` and `battery.soc_sensor ... is required` (or another configuration error) | The configuration is refused: with the `logging` driver a battery charge sensor is required, and `quarter_hour_average_mode: auto` no longer exists | Set `battery.soc_sensor` (and `battery.power_sensor` while the capacity tariff is on); use `accumulating` or `running`. The message names every problem |
+| Records say `idle`, `degraded=` carries `soc_unavailable`, `battery_power_unavailable` or `grid_sensors_unavailable` and `vetoes=` shows V7 or V8 | A sensor the planner needs is missing, frozen or implausible, so it holds on purpose | Fix the sensor or the integration behind it; the sensor outage e-mail names it after 15 minutes. `inputs_down` on `sensor.battery_planner_action` lists them |
 | `ImportError` in the HA log | `allow_all_imports: true` is missing | Add it to the `pyscript:` block |
 | HA log warns about blocking I/O | A file operation ran on the event loop | It must use `@pyscript_executor` |
 | Forecast always zero, records show `solar_zero_fallback` and the planner idles with "hold: no solar forecast" | The REST sensor is failing | Check `forecast_solar_url` and the forecast.solar free-tier rate limit. The planner does not buy or export power until a forecast is back |

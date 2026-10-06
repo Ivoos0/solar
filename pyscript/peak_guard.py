@@ -475,7 +475,7 @@ def _notify(cfg, title, message):
         return False
 
 
-def _guard_note(cfg, shave, vetoed, batt, charge_is_stub):
+def _guard_note(cfg, shave, vetoed, batt, no_reading):
     """One sentence on what the guard is doing about a predicted crossing."""
     if vetoed:
         note = ("The guard CANNOT shave it: veto V5, the battery is empty "
@@ -486,7 +486,7 @@ def _guard_note(cfg, shave, vetoed, batt, charge_is_stub):
         note = "The guard is shaving: discharging %.2f kW to hold it." % shave
     else:
         note = "The guard is not shaving (nothing it could shave right now)."
-    if charge_is_stub:
+    if no_reading:
         note += " The battery charge reading is unavailable."
     if cfg.inverter_type == "logging":
         note += (" The inverter driver is 'logging': a shave is recorded but "
@@ -497,7 +497,7 @@ def _guard_note(cfg, shave, vetoed, batt, charge_is_stub):
     return note
 
 
-def _predictive_warning(cfg, grid, shave, vetoed, batt, charge_is_stub, at):
+def _predictive_warning(cfg, grid, shave, vetoed, batt, no_reading, at):
     """E-mail when this quarter-hour is probably going to cross the ceiling.
     Never raises and never touches a decision; a failed send is retried."""
     try:
@@ -512,7 +512,7 @@ def _predictive_warning(cfg, grid, shave, vetoed, batt, charge_is_stub, at):
         if not capacity.peak_warning_due(mem, grid, cfg, at):
             return
         title, message = capacity.peak_warning_message(
-            grid, cfg, _guard_note(cfg, shave, vetoed, batt, charge_is_stub))
+            grid, cfg, _guard_note(cfg, shave, vetoed, batt, no_reading))
         if _notify(cfg, title, message):
             capacity.peak_warning_sent(mem, grid, at)
             err = _write_json_atomic(
@@ -847,7 +847,7 @@ def _evaluate(trigger_type, started):
     soc_known = charge is not None
     if not soc_known:
         charge_marker = "soc_unavailable"
-    charge_is_stub = not soc_known           # no reading behind the figure
+    no_reading = not soc_known           # no reading behind the figure
     batt = (battery.from_percent(charge, cfg) if soc_known
             else battery.unknown(cfg))
     _flags["inverter_marker"] = charge_marker
@@ -880,7 +880,7 @@ def _evaluate(trigger_type, started):
             _emit("idle", 0.0, record, cfg)
             record_written = True
 
-    _predictive_warning(cfg, metered, shave, vetoed, batt, charge_is_stub,
+    _predictive_warning(cfg, metered, shave, vetoed, batt, no_reading,
                         started)
 
     if shave > 0:

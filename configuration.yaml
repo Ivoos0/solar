@@ -51,8 +51,8 @@ rest:
 # sawtooth from 0 at every quarter-hour) or reports a true running average is
 # set with capacity_tariff.quarter_hour_average_mode (default: accumulating).
 #
-# The planner reads two other entities; check their names on your install
-# (Developer Tools -> States):
+# Two more names must match your install (Developer Tools -> States); the
+# battery and meter sensors are named in user_config.yaml:
 #   1. sensor.forecast_solar_estimate  (created above)
 #   2. The ENTSO-e price entity (prices.entity in user_config.yaml) and the
 #      attribute holding the forward price series (prices.attribute).
@@ -60,10 +60,11 @@ rest:
 #   unavailable" while the sensor visibly has data.
 
 # ---------------------------------------------------------------------------
-# Halt-alert e-mail (alerts.notify_service in user_config.yaml, default battery_alert)
+# Alert e-mails (alerts.notify_service in user_config.yaml, default battery_alert)
 # ---------------------------------------------------------------------------
-# The planner sends its "no price data" alert through notify.<name>, where <name>
-# is alerts.notify_service. This defines that notifier. Provider, credentials and
+# The planner sends all its alert e-mails (price outage, sensor outage, peak
+# notices, a refusing inverter, an invalid configuration) through notify.<name>,
+# where <name> is alerts.notify_service. This defines that notifier. Provider, credentials and
 # addresses ALL come from Home Assistant's secrets.yaml (gitignored); nothing here
 # is provider-specific, so this block never needs editing. See secrets.example.yaml
 # for ready-made provider presets.

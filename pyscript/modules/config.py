@@ -180,9 +180,9 @@ class SiteConfig:
     # True: a plan-style driver's service calls are logged, not executed.
     # Not in fingerprint(): it changes what is done, not what a block means.
     inverter_dry_run: bool = False
-    # Optional sensor holding the real battery charge (percent, 0..100). None:
-    # the charge is the inverter driver's value (a placeholder while the
-    # driver is "logging"). Not in fingerprint(): it names where data is read.
+    # Sensor holding the battery charge (percent, 0..100). Required with the
+    # "logging" driver (validated); None with a real driver means the driver
+    # reads the charge itself. Not in fingerprint(): it names where data is read.
     soc_sensor: object = None
     # Optional sensors with the inverter's maximum battery charge / discharge
     # power (W or kW). Not in fingerprint(): they name where data is read.
