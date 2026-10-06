@@ -118,6 +118,7 @@ only V5 can stop a peak shave, shown as `V5(suppressed S0 discharge)`.
 | `solar_zero_fallback` | The forecast was unavailable and no usable cached copy exists, so solar was treated as zero. V6 then holds grid charging and export |
 | `cache_age_solar=3h12m`, `cache_age_usage=...` | A cached series was used, with its age |
 | `forecast_age=1h20m` | The forecast was used, but its sensor last refreshed 75 minutes or more ago. A stamp older than `timing.solar_cache_stale_minutes` counts as a failed forecast instead |
+| `consumption_offset_low` | `prices.consumption_offset` is below 0.05 EUR/kWh: a bare supplier coefficient without network costs, taxes and VAT. See the table under [Check that it works](troubleshooting.md#check-that-it-works) |
 | `usage_gaps_pct=N` | N percent of the planned blocks have fewer than `usage.min_bucket_days` days of history behind them (the profile has holes or thin spots). Those blocks are filled from their neighbours; the number shrinks as history builds up |
 | `usage_samples=N` | The usage profile rests on N days of history, fewer than `usage.history_weeks` x 7 |
 | `solar_ratio=0.83` | The forecast of the current or next block that has solar was multiplied by this ratio, measured from your own history. Absent when it rounds to 1.00 |

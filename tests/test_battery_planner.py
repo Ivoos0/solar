@@ -1641,3 +1641,14 @@ def test_a_full_profile_has_no_gap_marker(env, monkeypatch):
                         lambda cfg, local: _history(28))
     env.run(T0)
     assert "usage_gaps_pct" not in fields_of(env.decisions()[0])["degraded"]
+
+
+def test_the_default_offset_is_marked_as_too_low(env):
+    env.run(T0)
+    assert "consumption_offset_low" in fields_of(env.decisions()[0])["degraded"]
+
+
+def test_a_full_offset_has_no_marker(env):
+    env.write_config("prices:\n  consumption_offset: 0.1366\n")
+    env.run(T0)
+    assert "consumption_offset_low" not in fields_of(env.decisions()[0])["degraded"]

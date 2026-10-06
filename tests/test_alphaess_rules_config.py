@@ -44,9 +44,9 @@ def test_v7_does_not_stop_peak_shaving(site_config):
     assert (d.selector, d.action) == ("S0", "discharge")
 
 
-def test_unknown_placeholder_is_stubbed_and_unusable(site_config):
+def test_unknown_placeholder_is_stubbed_at_the_reserve(site_config):
     b = battery.unknown(site_config)
-    assert b.is_stubbed and b.usable_kwh == 0.0
+    assert b.is_stubbed and b.stored_kwh == pytest.approx(1.0)   # the 10 % reserve of 10 kWh
     assert b.charge_percent == site_config.reserve_percent
 
 

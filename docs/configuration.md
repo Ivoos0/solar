@@ -18,7 +18,7 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | Key | Default | Unit | What it changes |
 |---|---|---|---|
 | `prices.consumption_multiplier` | `1.07` | factor | Buying price = market price x this + offset. Must be all-in (see below) |
-| `prices.consumption_offset` | `0.007` | EUR/kWh | Added to the buying price. Put per-kWh network costs, taxes and VAT here |
+| `prices.consumption_offset` | `0.007` | EUR/kWh | Added to the buying price. Put per-kWh network costs, taxes and VAT here. The default is only a supplier coefficient: below 0.05 records carry `consumption_offset_low`, because every grid charge then looks cheaper than it is (the example config shows how to work out the real figure, about 0.14 in Flanders) |
 | `prices.injection_multiplier` | `0.94` | factor | Selling price = market price x this + offset |
 | `prices.injection_offset` | `-0.011` | EUR/kWh | Added to the selling price. Negative: injection can turn negative while the market price is still positive |
 | `prices.entity` | `sensor.entso_prices_average_electricity_price` | entity id | Sensor that carries the price list |

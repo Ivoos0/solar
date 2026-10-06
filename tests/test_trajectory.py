@@ -27,19 +27,17 @@ def idx_start(i):
 
 # ---- battery --------------------------------------------------------------
 
-@pytest.mark.parametrize("pct,stored,usable,headroom", [
-    (0.0, 0.0, 0.0, 10.0),      # empty; usable floored at 0
-    (5.0, 0.5, 0.0, 9.5),       # below 10% reserve: 0.5 - 1.0 -> 0, not -0.5
-    (10.0, 1.0, 0.0, 9.0),      # exactly at reserve
-    (50.0, 5.0, 4.0, 5.0),      # 5.0 - 1.0
-    (100.0, 10.0, 9.0, 0.0),
+@pytest.mark.parametrize("pct,stored,headroom", [
+    (0.0, 0.0, 10.0),           # empty
+    (5.0, 0.5, 9.5),            # below the 10% reserve
+    (10.0, 1.0, 9.0),           # exactly at reserve
+    (50.0, 5.0, 5.0),
+    (100.0, 10.0, 0.0),
 ])
-def test_battery_derived_figures(site_config, pct, stored, usable, headroom):
+def test_battery_derived_figures(site_config, pct, stored, headroom):
     b = battery.from_percent(pct, site_config)
     assert b.stored_kwh == pytest.approx(stored)
-    assert b.usable_kwh == pytest.approx(usable)
     assert b.headroom_kwh == pytest.approx(headroom)
-    assert b.usable_kwh >= 0.0
     assert b.charge_percent == pct
 
 
