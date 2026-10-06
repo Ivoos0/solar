@@ -469,3 +469,17 @@ def test_average_mode_auto_is_refused_with_an_explanation():
     with pytest.raises(ConfigError) as e:
         from_dict(base(capacity_tariff__quarter_hour_average_mode="auto"))
     assert "auto' was removed" in str(e.value)
+
+
+def test_min_bucket_days_default_and_validation(site_config):
+    assert site_config.usage_min_bucket_days == 2
+    assert from_dict(base(usage__min_bucket_days=1)).usage_min_bucket_days == 1
+    for bad in (0, -1, 1.5):
+        with pytest.raises(ConfigError) as e:
+            from_dict(base(usage__min_bucket_days=bad))
+        assert "usage_min_bucket_days" in str(e.value)
+
+
+def test_min_bucket_days_changes_the_fingerprint():
+    ref = from_dict(base()).fingerprint()
+    assert from_dict(base(usage__min_bucket_days=3)).fingerprint() != ref

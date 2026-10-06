@@ -183,6 +183,29 @@ def _bucket(ts, config):
     return (group, block_of_day)
 
 
+def _interpolated(b, supported, per_group, config):
+    """Value for bucket b from the nearest supported buckets of its day group.
+
+    supported: {bucket: mean}. The neighbours are found around the clock
+    (the block after the last one of the day is the first one), and the value
+    is the distance-weighted mean of the nearest earlier and later ones.
+    None when the group has no supported bucket.
+    """
+    group, bod = b
+    options = per_group.get(group)
+    if not options:
+        return None
+    blocks_per_day = (24 * 60) // config.block_minutes
+    prev = min(options, key=lambda o: (bod - o) % blocks_per_day)
+    nxt = min(options, key=lambda o: (o - bod) % blocks_per_day)
+    dp = (bod - prev) % blocks_per_day
+    dn = (nxt - bod) % blocks_per_day
+    if prev == nxt or dp + dn == 0:
+        return supported[(group, prev)]
+    return (supported[(group, prev)] * dn
+            + supported[(group, nxt)] * dp) / (dp + dn)
+
+
 def usage_profile(history, config, start_time, horizon_end):
     """Expected consumption per block from history of (timestamp, kwh) readings.
 
@@ -190,10 +213,16 @@ def usage_profile(history, config, start_time, horizon_end):
     are used. Buckets are (day group, time of day), the day group chosen by
     config.usage_grouping. A bucket's value is a weighted mean over the
     distinct dates that contributed; sample_days is the plain count of those
-    dates (coverage, independent of weighting). An empty bucket gets the
-    overall mean over all contributing dates, weighted the same way, with
-    sample_days 0. With no history every block is 0.0 with sample_days 0
-    (never raises).
+    dates (coverage, independent of weighting).
+
+    A bucket backed by fewer than config.usage_min_bucket_days dates (none, or
+    too few to trust) takes its value from the nearest well backed buckets of
+    the same day group, interpolated by distance in time, and keeps its own
+    sample_days (0 or the thin count). When no bucket at all is well backed
+    (the first days of history), a bucket with data keeps its own mean and an
+    empty one gets the overall mean over all contributing dates, weighted the
+    same way, with sample_days 0. With no history every block is 0.0 with
+    sample_days 0 (never raises).
 
     Recency weighting (config.usage_recency_weighting):
       "none":   every date weighs 1 (plain mean).
@@ -243,11 +272,24 @@ def usage_profile(history, config, start_time, horizon_end):
         total_w += w
     overall_mean = total / total_w if total_w else 0.0
 
+    minimum = config.usage_min_bucket_days
+    supported = {b: sums[b] / wsum[b] for b in days if days[b] >= minimum}
+    per_group = {}
+    for group, bod in supported:
+        per_group.setdefault(group, []).append(bod)
+
     out = []
     for t in _grid(config, start_time, horizon_end):
         b = _bucket(t.astimezone(tz) if t.tzinfo else t, config)
-        if b in days:
-            out.append(UsageSlot(t, sums[b] / wsum[b], days[b]))
+        n = days.get(b, 0)
+        if b in supported:
+            out.append(UsageSlot(t, supported[b], n))
+            continue
+        filled = _interpolated(b, supported, per_group, config)
+        if filled is not None:
+            out.append(UsageSlot(t, filled, n))
+        elif n:
+            out.append(UsageSlot(t, sums[b] / wsum[b], n))
         else:
             out.append(UsageSlot(t, overall_mean, 0))
     return out

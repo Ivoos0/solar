@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from alphaess_support import bump_mtime
+
 import decision
 import history
 
@@ -56,8 +58,7 @@ class Env:
         self.config_path.write_text(
             "battery:\n  capacity_kwh: 10.0\nalerts:\n"
             "  address: owner@example.com\n" + extra, encoding="utf-8")
-        bump = self.config_path.stat().st_mtime + 10
-        os.utime(self.config_path, (bump, bump))
+        bump_mtime(self.config_path)
 
     def decisions(self, day, text="x"):
         self.base.mkdir(parents=True, exist_ok=True)
@@ -258,8 +259,7 @@ def test_report_disabled_writes_nothing(env):
 
 def test_broken_config_logs_and_does_not_raise(env):
     env.config_path.write_text("battery: [", encoding="utf-8")
-    bump = env.config_path.stat().st_mtime + 20
-    os.utime(env.config_path, (bump, bump))
+    bump_mtime(env.config_path, 20)
     day_files(env, YESTERDAY)
     env.mod.run_report(NOW)
     assert not env.report(YESTERDAY).exists()
@@ -522,8 +522,7 @@ def test_cleanup_with_broken_config_deletes_nothing(env):
     make_tree(env)
     before = tree(env)
     env.config_path.write_text("retention: [", encoding="utf-8")
-    bump = env.config_path.stat().st_mtime + 20
-    os.utime(env.config_path, (bump, bump))
+    bump_mtime(env.config_path, 20)
     env.mod.run_cleanup(NOW_CLEAN)
     assert tree(env) == before
     assert any("config unusable" in m for m in env.log.by_level["error"])

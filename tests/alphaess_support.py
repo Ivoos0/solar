@@ -7,6 +7,23 @@ import os
 from pathlib import Path
 
 
+_last_bump = 0.0
+
+
+def bump_mtime(path, extra=10):
+    """Move the config file's mtime forward so a running adapter reloads it.
+
+    Strictly increasing across calls: two rewrites inside one clock tick would
+    otherwise get the same mtime, and the adapter (which caches by mtime)
+    would miss the second change.
+    """
+    global _last_bump
+    path = Path(path)
+    mtime = path.stat().st_mtime if path.exists() else 0
+    _last_bump = max(mtime + extra, _last_bump + 1.0)
+    os.utime(path, (_last_bump, _last_bump))
+
+
 def battery_config(path, battery_lines=(), extra="", mode=None,
                    alert_lines=("sensor_enabled: false",)):
     """Write a valid user config with `battery_lines` inside `battery:`.
@@ -26,5 +43,4 @@ def battery_config(path, battery_lines=(), extra="", mode=None,
                  "  stay_under_percent: 100\n" % mode)
     text += extra
     path.write_text(text, encoding="utf-8")
-    bump = (path.stat().st_mtime if path.exists() else 0) + 10
-    os.utime(path, (bump, bump))
+    bump_mtime(path)

@@ -37,6 +37,7 @@ _MAP = [
     ("timing", "usage_cache_stale_minutes", "usage_cache_stale_minutes"),
     ("usage", "history_weeks", "usage_history_weeks"),
     ("usage", "min_history_days", "usage_min_history_days"),
+    ("usage", "min_bucket_days", "usage_min_bucket_days"),
     ("usage", "grouping", "usage_grouping"),
     ("usage", "recency_weighting", "usage_recency_weighting"),
     ("alerts", "address", "alert_address"),
@@ -119,6 +120,7 @@ _ATTRIBUTE_FIELDS = (
 _FINGERPRINT_FIELDS = (
     "block_minutes",
     "usage_history_weeks", "usage_grouping", "usage_recency_weighting",
+    "usage_min_bucket_days",
 )
 
 
@@ -163,6 +165,7 @@ class SiteConfig:
     stay_under_percent: float = 80.0
     usage_history_weeks: int = 4
     usage_min_history_days: int = 3
+    usage_min_bucket_days: int = 2
     usage_grouping: str = "same_weekday"
     usage_recency_weighting: str = "linear"
     # Solar calibration: the ratio applied to the forecast until
@@ -373,6 +376,10 @@ def _errors(cfg):
                                      else ""))
     if isinstance(cfg.usage_history_weeks, float) or cfg.usage_history_weeks < 1:
         bad("usage_history_weeks", cfg.usage_history_weeks,
+            "must be an integer >= 1")
+    if (isinstance(cfg.usage_min_bucket_days, float)
+            or cfg.usage_min_bucket_days < 1):
+        bad("usage_min_bucket_days", cfg.usage_min_bucket_days,
             "must be an integer >= 1")
     if (isinstance(cfg.usage_min_history_days, float)
             or cfg.usage_min_history_days < 1):

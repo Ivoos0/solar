@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from alphaess_support import bump_mtime
+
 SRC = Path(__file__).resolve().parent.parent / "pyscript" / "battery_planner.py"
 MODULES = SRC.parent / "modules"
 UTC = timezone.utc
@@ -164,8 +166,7 @@ class Env:
             "  peak_enabled: %s\n" % ("true" if self.peak_alerts else "false")
             + "  sensor_enabled: %s\n" % ("true" if self.sensor_alerts else "false")
             + extra, encoding="utf-8")
-        bump = self.config_path.stat().st_mtime + 10
-        os.utime(self.config_path, (bump, bump))
+        bump_mtime(self.config_path)
 
 
 def price_entries(days=2, start=None):
@@ -1095,8 +1096,7 @@ def test_alert_uses_default_service_when_config_omits_it(env):
         "battery:\n  capacity_kwh: 10.0\nalerts:\n"
         "  address: owner@example.com\n  peak_enabled: false\n",
         encoding="utf-8")
-    bump = env.config_path.stat().st_mtime + 20
-    os.utime(env.config_path, (bump, bump))
+    bump_mtime(env.config_path, 20)
     env.state.set(PRICE_ENTITY, "unavailable", {})
     env.run(T0)
     assert len(env.service.of("notify", "battery_alert")) == 1
@@ -1683,3 +1683,18 @@ def test_dry_run_gives_no_own_grid_charge_correction(env):
     env.run(T0)
     env.run(T0 + STEP)
     assert seen[1].own_grid_charge_kw == 0.0          # nothing was really charged
+
+
+def test_a_patchy_profile_is_marked_with_the_share_of_gaps(env, monkeypatch):
+    monkeypatch.setattr(env.mod, "read_usage_history",
+                        lambda cfg, local: _history(3))
+    env.run(T0)
+    degraded = fields_of(env.decisions()[0])["degraded"]
+    assert "usage_gaps_pct=" in degraded
+
+
+def test_a_full_profile_has_no_gap_marker(env, monkeypatch):
+    monkeypatch.setattr(env.mod, "read_usage_history",
+                        lambda cfg, local: _history(28))
+    env.run(T0)
+    assert "usage_gaps_pct" not in fields_of(env.decisions()[0])["degraded"]

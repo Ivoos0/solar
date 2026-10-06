@@ -28,6 +28,7 @@ Markers you can expect in `degraded=` on a fresh install:
 | `battery_power_unavailable` | `battery.power_sensor` is set but cannot be read (or its unit is not W or kW). The household draw cannot be measured (the meter alone undercounts while the battery covers the house), so the planner holds (V8) while the capacity tariff is on |
 | `soc_unavailable` | `battery.soc_sensor` is set but cannot be read. The planner holds: no charging from the grid and no exporting until the sensor is back. Peak shaving is not affected |
 | `usage_history_unavailable` | No household usage history yet. Normal until a load source is configured; the planner only peak-shaves and otherwise idles meanwhile |
+| `usage_gaps_pct=N` | N percent of the planned blocks have too little history behind them. They are filled from neighbouring blocks, so the profile can be less accurate there. Normal during the first weeks; if it stays high, check that the energy counters keep recording (see `grid_sensors_unavailable`, the sensor outage e-mail and the history warnings) |
 | `usage_samples=N` | The usage profile rests on fewer than `usage.history_weeks` x 7 days of history (N days). Disappears as history builds up |
 | `cache_age_solar=...`, `cache_age_usage=...` | A cached series was used, with its age |
 | `forecast_age=...` | The forecast was used, but the sensor last refreshed 75 minutes or more ago (a normal hourly refresh keeps it under that) |
