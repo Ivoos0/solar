@@ -387,11 +387,7 @@ def _errors(cfg):
             "must be > 0 and <= 100")
     if cfg.quarter_hour_average_mode not in _MODES:
         bad("quarter_hour_average_mode", cfg.quarter_hour_average_mode,
-            "must be one of %s%s" % (", ".join(_MODES),
-                                     " ('auto' was removed: the detector is "
-                                     "gone, pick the mode of your meter)"
-                                     if cfg.quarter_hour_average_mode == "auto"
-                                     else ""))
+            "must be one of %s" % ", ".join(_MODES))
     if isinstance(cfg.usage_history_weeks, float) or cfg.usage_history_weeks < 1:
         bad("usage_history_weeks", cfg.usage_history_weeks,
             "must be an integer >= 1")

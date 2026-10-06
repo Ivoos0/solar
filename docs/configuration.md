@@ -44,7 +44,7 @@ capacity tariff is on, `battery.power_sensor` is needed too, or the planner hold
 | `capacity_tariff.billing_floor_kw` | `2.5` | kW | Peaks at or below this cost nothing extra. Sets the lowest ceiling |
 | `capacity_tariff.stay_under_percent` | `80` | % (above 0, up to 100) | Grid charging stays under this share of the ceiling |
 | `capacity_tariff.guard_interval_seconds` | `30` | seconds | Minimum gap between peak guard runs. The guard's timer is fixed at 30, so values below 30 change nothing |
-| `capacity_tariff.quarter_hour_average_mode` | `accumulating` | `accumulating`, `running` | How the meter's quarter-hour average is read (see below). `auto` no longer exists |
+| `capacity_tariff.quarter_hour_average_mode` | `accumulating` | `accumulating`, `running` | How the meter's quarter-hour average is read (see below) |
 | `capacity_tariff.offtake_sensor` | `sensor.slimmelezer_power_consumed` | entity id | Netted total offtake |
 | `capacity_tariff.quarter_hour_average_sensor` | `sensor.slimmelezer_huidig_kwartiervermogen` | entity id | Meter register 1-0:1.4.0 |
 | `capacity_tariff.month_peak_sensor` | `sensor.slimmelezer_maandpiek` | entity id | Meter register 1-0:1.6.0 |
@@ -54,7 +54,7 @@ capacity tariff is on, `battery.power_sensor` is needed too, or the planner hold
 | `usage.grouping` | `same_weekday` | `same_weekday`, `day_type` | `same_weekday` averages the same weekday; `day_type` pools weekdays and weekend days |
 | `usage.recency_weighting` | `linear` | `linear`, `none` | `linear` weights newer weeks more (4 weeks: 4, 3, 2, 1). Changing it discards the cached profile |
 | `history.enabled` | `true` | true/false | Records the energy history |
-| `history.sensors.import`, `.export` | the SlimmeLezer tariff 1 and 2 counters | entity ids (list) | Cumulative kWh from and to the grid |
+| `history.sensors.import`, `.export` | the SlimmeLezer tariff 1 and 2 counters | entity ids (list) | Cumulative kWh from and to the grid. A listed sensor that does not exist in your Home Assistant triggers the sensor outage e-mail, so replace the defaults if you have other counters |
 | `history.sensors.solar`, `.battery_charge`, `.battery_discharge`, `.load` | `[]` | entity ids (list) | Cumulative kWh counters. See [Energy history](history-and-reports.md#energy-history) |
 | `report.enabled` | `true` | true/false | Writes the [daily report](history-and-reports.md#daily-report) |
 | `sensors.enabled` | `true` | true/false | Publishes the planner state as Home Assistant [sensors](alerts-and-sensors.md#sensors). `false` publishes nothing |
@@ -125,9 +125,7 @@ the two differ by a factor of 15. You set which one your meter does; there is no
 out, open the history graph of `capacity_tariff.quarter_hour_average_sensor`: a sawtooth that drops to 0
 at every quarter-hour and climbs from there is `accumulating` (the SlimmeLezer 1-0:1.4.0 register
 behaves like this); a line that jumps to roughly the current load right after the boundary is
-`running`. A config that still says `auto` is refused at startup with a message saying so. The old
-`average_mode_planner.json` and `average_mode_guard.json` files under `battery_planner/state/` are no
-longer used and can be deleted.
+`running`.
 
 The peak guard's `@state_trigger` names `sensor.slimmelezer_power_consumed` literally, because
 decorator arguments are fixed at load time. If your netted offtake sensor has another name, the guard

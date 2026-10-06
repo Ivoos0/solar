@@ -45,7 +45,7 @@ def test_normal_cycle_publishes_the_sensors(env):
     assert a["selector"] == log["selector"]
     assert a["vetoes"] == log["vetoes"].replace(",", ", ")
     assert a["degraded"] == log["degraded"].replace(",", ", ")
-    assert "soc_stubbed" not in a["degraded"] and isinstance(a["degraded"], str)
+    assert isinstance(a["degraded"], str)
     assert a["why"] == log["why"].strip('"')            # same words as the log
     assert isinstance(a["why"], str) and "\n" not in a["why"]
     assert a["soc_percent"] == pytest.approx(50.0)      # the real charge reading

@@ -41,7 +41,6 @@ def test_reading_is_used_and_not_stubbed(env):
     env.run(T0)
     keys = fields_of(env.decisions()[0])
     assert keys["soc"].startswith("57.6")
-    assert "soc_stubbed" not in keys["degraded"]
     assert "soc_unavailable" not in keys["degraded"]
     assert action_sensor(env)[2]["soc_percent"] == 57.6
 
@@ -79,7 +78,6 @@ def test_unreadable_charge_marks_holds_and_shows_v7(env, monkeypatch, raw):
     env.run(T0)
     keys = fields_of(env.decisions()[0])
     assert "soc_unavailable" in keys["degraded"]
-    assert "soc_stubbed" not in keys["degraded"]
     assert keys["action"] == "idle" and keys["selector"] == "S6"
     assert "V7(suppressed S1 charge)" in keys["vetoes"]
     assert "no battery reading" in keys["why"]
@@ -140,7 +138,6 @@ def test_a_readable_charge_sensor_gives_a_real_charge_and_no_marker(env):
     env.run(T0)
     keys = fields_of(env.decisions()[0])
     assert "soc_unavailable" not in keys["degraded"]
-    assert "soc_stubbed" not in keys["degraded"]
     assert action_sensor(env)[2]["soc_percent"] == pytest.approx(50.0)
 
 
@@ -159,7 +156,6 @@ def test_guard_reads_the_sensor_not_the_driver(make_guard):
     assert g.inv.reads == []
     rec = g.discharges[0][2]
     assert rec.charge_percent == 42.5
-    assert "soc_stubbed" not in rec.degraded_inputs
 
 
 def test_guard_empty_battery_is_still_vetoed_by_v5(make_guard):
@@ -176,7 +172,6 @@ def test_guard_still_shaves_when_the_charge_is_unreadable(make_guard, raw):
     assert len(g.discharges) == 1
     rec = g.discharges[0][2]
     assert "soc_unavailable" in rec.degraded_inputs
-    assert "soc_stubbed" not in rec.degraded_inputs
     assert "V7" in rec.vetoes_applied           # bare: it blocks nothing
     assert not any(v.startswith("V5") for v in rec.vetoes_applied)
     assert g.st.values[SHAVING] == "on"

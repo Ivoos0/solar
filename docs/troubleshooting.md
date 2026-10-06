@@ -51,7 +51,7 @@ materially, is blocked or stops, not once per 30-second tick.
 | Symptom | Cause | Fix |
 |---|---|---|
 | No records at all | pyscript not loaded, or the `pyscript:` block is missing | Add the block from `configuration.yaml`, restart Home Assistant |
-| No records, the log says `STARTUP FAILURE` and `battery.soc_sensor ... is required` (or another configuration error) | The configuration is refused: with the `logging` driver a battery charge sensor is required, and `quarter_hour_average_mode: auto` no longer exists | Set `battery.soc_sensor` (and `battery.power_sensor` while the capacity tariff is on); use `accumulating` or `running`. The message names every problem |
+| No records, the log says `STARTUP FAILURE` and `battery.soc_sensor ... is required` (or another configuration error) | The configuration is refused: with the `logging` driver a battery charge sensor is required | Set `battery.soc_sensor` (and `battery.power_sensor` while the capacity tariff is on). The message names every problem |
 | Records say `idle`, `degraded=` carries `soc_unavailable`, `battery_power_unavailable` or `grid_sensors_unavailable` and `vetoes=` shows V7 or V8 | A sensor the planner needs is missing, frozen or implausible, so it holds on purpose | Fix the sensor or the integration behind it; the sensor outage e-mail names it after 15 minutes. `inputs_down` on `sensor.battery_planner_action` lists them |
 | `ImportError` in the HA log | `allow_all_imports: true` is missing | Add it to the `pyscript:` block |
 | HA log warns about blocking I/O | A file operation ran on the event loop | It must use `@pyscript_executor` |

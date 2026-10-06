@@ -274,7 +274,6 @@ def test_normal_cycle_appends_one_contract_line(env):
     assert re.fullmatch(r"\d+ms", keys["took"])
     assert keys["source"] == "planner"
     assert keys["soc"] == "50.0%/5.00kWh"             # the real sensor reading
-    assert "soc_stubbed" not in keys["degraded"]
     assert "usage_history_unavailable" in keys["degraded"]
     assert keys["_ts"].endswith("+02:00")
     assert env.service.calls == []
@@ -1125,7 +1124,6 @@ def test_alert_goes_to_the_configured_service_name(env):
 # ---- inverter.type: the planner selects the driver from config ---------------------
 
 _REAL_DRIVER = '''
-SOC_IS_STUB = False
 SENT = []
 def send(action, target_power_kw):
     SENT.append((action, target_power_kw))
@@ -1156,7 +1154,6 @@ def test_default_config_uses_the_logging_driver_and_the_charge_sensor(env, _clea
     env.mod.CORE_DIR = str(MODULES)
     env.run()
     keys = fields_of(env.decisions()[0])
-    assert "soc_stubbed" not in keys["degraded"]
     assert "soc_unavailable" not in keys["degraded"]
     assert "inverter_driver_unavailable" not in keys["degraded"]
     assert env.log.by_level["error"] == []
@@ -1170,7 +1167,6 @@ def test_configured_driver_gets_the_decision_and_supplies_the_charge(
     lines = env.decisions()
     assert len(lines) == 1
     keys = fields_of(lines[0])
-    assert "soc_stubbed" not in keys["degraded"]
     assert keys["soc"].startswith("61")
     sent = sys.modules["inverter_driver_realdrv"].SENT
     assert sent == [(keys["action"], float(keys["power"].replace("kW", "")))]
@@ -1392,7 +1388,7 @@ def _real_driver(env, name="fakeinv"):
     d = env.tmp / "drivers"
     d.mkdir(exist_ok=True)
     (d / ("inverter_%s.py" % name)).write_text(
-        "SOC_IS_STUB = False\n"
+        ""
         "def send(action, target_power_kw):\n    return True\n"
         "def read_charge_percent():\n    return 40.0\n", encoding="utf-8")
     env.mod.CORE_DIR = str(d)

@@ -31,7 +31,7 @@ What is checked:
     and gives the same answer when repeated
   * read_charge_percent(), when the driver defines it, returns a real number
     0..100 (not a bool, not NaN); a driver may leave it out and rely on
-    battery.soc_sensor, there is no placeholder charge any more
+    battery.soc_sensor, there is no placeholder charge
   * COMMAND_HOLD_MINUTES, when present, is None (unknown) or a positive number
     (not a bool): how long the inverter keeps a forced command without a
     refresh. The planner re-sends an unchanged command at 0.8 x that.

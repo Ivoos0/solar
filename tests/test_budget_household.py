@@ -62,7 +62,7 @@ def test_shave_ignores_the_household_budget(c80):
     assert cap.shave_kw(hstate(3.0, energy=0.3), c80) == a
 
 
-# ---- rules: S1 / S4 / S5 clamp and V3 use the post-household budget --------
+# ---- rules: S1 / S4 clamp and V3 use the post-household budget --------
 
 def test_grid_power_clamps_to_post_household_budget(c80):
     class Ctx:

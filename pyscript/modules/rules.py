@@ -39,12 +39,11 @@ Entry point
                  reading, are not evaluated. Default True (other callers).
 
 Decision fields: action (charge|discharge|export|idle), target_power_kw,
-selector ("S0", "S1", "S3".."S6"), reasoning, vetoes_fired (["V1", ...]),
+selector ("S0", "S1", "S3", "S4", "S6"), reasoning, vetoes_fired (["V1", ...]),
 suppressed ([(selector, action, blocking_veto)]), block_start (current block).
-There is no S2: storing surplus solar is what the inverter does by default
-(see "The inverter's default behaviour"), so no rule is needed. The numbering
-is kept so labels in old logs keep their meaning. ``charge`` always means
-charge from the grid.
+Storing surplus solar needs no rule: it is what the inverter does by default
+(see "The inverter's default behaviour"). The selector numbers are labels, not
+a count. ``charge`` always means charge from the grid.
 
 The inverter's default behaviour
 --------------------------------
@@ -150,8 +149,7 @@ Resolved ambiguities / documented readings
   candidate blocks are those before that sell block whose consumption price
   is below that value, and N = max(1, ceil(headroom / (max_charge_kw *
   block_hours))) capped at the candidates, so only the cheapest blocks that
-  fill the battery's room charge (ties with the N-th included). The selector
-  that was called S5 in older logs is this second use.
+  fill the battery's room charge (ties with the N-th included).
 * S4 import avoidance acts only when charging is CHEAPER than simply importing at the breach.
   The reserve is a floor, not a target: when the battery gets there the house
   imports at that time. Charging now costs price_now / round_trip_efficiency

@@ -64,7 +64,7 @@ A value that does not apply is written explicitly (`none`, `n/a`, or a computed
 | `ceiling` | `N.NNkW` or `n/a` | The peak level being defended: the larger of 2.5 kW and this month's peak |
 | `budget` | `N.NNkW` or `n/a` | Grid power still available for charging in this quarter-hour, after the household's draw (measured with `battery.power_sensor`: offtake plus battery discharge) and capped at the charge limit (`battery.max_charge_sensor` when readable, else `battery.max_charge_kw`), measured against `capacity_tariff.stay_under_percent` of the ceiling (80 % of 2.5 kW = 2.0 kW by default). Negative when the window is already over that level. `0.00kW` in the last `timing.evaluation_interval_minutes` of the quarter-hour (grid charging stops one evaluation interval before it ends) |
 | `vetoes` | comma-separated or `none` | Rules that fired, and what each suppressed (see below) |
-| `selector` | `S0`, `S1`, `S3`, `S4` or `S6` | The action that was chosen (`S5` appears only in older logs, `S2` never) |
+| `selector` | `S0`, `S1`, `S3`, `S4` or `S6` | The action that was chosen |
 | `why` | quoted text | The values that made the condition true |
 | `degraded` | comma-separated or `none` | Inputs that were missing, stale or replaced (see below) |
 | `source` | `planner` or `guard` | Which loop wrote the record. Always the last field |
@@ -174,10 +174,10 @@ Selectors, in the order they are tried:
 | S0 | Peak shave: discharge to the house when the quarter-hour is heading above the ceiling. Mostly relevant when the planner is holding energy back (see [Peak guard](how-it-works.md#peak-guard)) |
 | S1 | Charge from the grid while the consumption price is negative. Never more than the room left in the battery (S4 too) |
 | S3 | Export when a spill is projected (the battery would be full and solar lost), only the energy not needed before the battery refills, and only when the injection price now, after round-trip losses, beats every other priced block in the window (equal prices do not qualify). Charge left over at the horizon end is never sold |
-| S4 | Charge from the grid when a stored kWh is worth more than it costs, in the cheapest blocks only. Two uses, tried in this order. (1) Import avoided: charging now, price divided by `battery.round_trip_efficiency`, is cheaper than the average buying price (weighted by energy) of the blocks where the house would otherwise import between the first reserve breach and the next refill. The cheapest blocks before the breach that cover that shortage charge. (2) Sale: the best later injection price after round-trip losses beats the price now. The cheapest blocks before that sell block that fill the room left in the battery charge. It needs usage history (`usage.min_history_days` days), like the other price-driven choices. Older logs may show this second use as `S5` |
+| S4 | Charge from the grid when a stored kWh is worth more than it costs, in the cheapest blocks only. Two uses, tried in this order. (1) Import avoided: charging now, price divided by `battery.round_trip_efficiency`, is cheaper than the average buying price (weighted by energy) of the blocks where the house would otherwise import between the first reserve breach and the next refill. The cheapest blocks before the breach that cover that shortage charge. (2) Sale: the best later injection price after round-trip losses beats the price now. The cheapest blocks before that sell block that fill the room left in the battery charge. It needs usage history (`usage.min_history_days` days), like the other price-driven choices |
 | S6 | Idle: nothing applies, so the planner cancels any forced mode and the inverter does what it does by default (see [What the planner does](how-it-works.md#what-the-planner-does)) |
 
-There is no S2, and the other labels keep their numbers. Storing surplus solar needs no rule: the inverter's own default does it. By default
+The numbers are only labels, so the sequence has gaps. Storing surplus solar needs no rule: the inverter's own default does it. By default
 the inverter charges the battery from solar surplus until it is full and then exports, and drains it to
 serve the house until it is empty and then uses grid power. The planner only steps in when it wants
 something different (peak shaving, charging from the grid, exporting); the rest of the time it idles.

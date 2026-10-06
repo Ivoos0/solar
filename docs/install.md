@@ -111,19 +111,3 @@ Assistant's `secrets.yaml`.
 3. Never overwrite `user_config.yaml` or `secrets.yaml`. If a release adds keys, compare
    `user_config.example.yaml` and `secrets.example.yaml` with your files and add what is missing.
 4. Restart Home Assistant.
-
-Upgrade notes for configurations written for older versions:
-
-- `battery.soc_sensor` is required with the `logging` driver (there is no placeholder charge any more).
-- `battery.power_sensor` is needed while the capacity tariff is on; without it the planner holds.
-- `capacity_tariff.quarter_hour_average_mode: auto` was removed; use `accumulating` (a sensor that drops to
-  0 at every quarter-hour and climbs) or `running`. The files `average_mode_planner.json` and
-  `average_mode_guard.json` in `battery_planner/state/` are no longer used and can be deleted.
-- New optional settings: `battery.reserve_sensor`, `usage.min_history_days`, `usage.min_bucket_days`,
-  `timing.sensor_stale_minutes`, `alerts.sensor_enabled` and `alerts.sensor_outage_minutes`. A configured
-  sensor that does not exist in your Home Assistant, such as the default SlimmeLezer energy counters under
-  `history.sensors` when you do not have them, triggers the sensor outage e-mail after 15 minutes.
-
-Upgrade note: older versions named the notifier `gmail_alert`. If you set
-`alerts.notify_service: gmail_alert`, either keep that name in your notifier or change the setting to
-`battery_alert`.
