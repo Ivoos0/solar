@@ -11,7 +11,7 @@ How to install the planner in Home Assistant and how to update it. Back to the [
 
 Do these in order.
 
-1. <a id="install-step-1"></a>Install HACS, then install pyscript through HACS (Integrations). Restart Home Assistant.
+1. <a id="install-step-1"></a>Install HACS, then install pyscript through HACS (Integrations). Restart Home Assistant. Tested with pyscript 2.1.0.
 2. <a id="install-step-2"></a>Install the ENTSO-e integration and enter your API key. Day-ahead prices are published around
    13:00 local time.
 3. <a id="install-step-3"></a>Reflash the SlimmeLezer with the demand registers. In its ESPHome configuration, add this to the
