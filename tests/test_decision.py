@@ -212,8 +212,8 @@ def test_veto_line_names_selector_action_and_veto():
 
 
 def test_degraded_markers_all_kinds():
-    stub = battery.BatteryState(50.0, 5.0, 4.0, 5.0, True)
-    live = battery.BatteryState(50.0, 5.0, 4.0, 5.0, False)
+    stub = battery.BatteryState(50.0, 5.0, 5.0, True)
+    live = battery.BatteryState(50.0, 5.0, 5.0, False)
     assert decision.degraded_markers(live) == []
     assert decision.degraded_markers(
         stub, True, ["cache_age_solar=3h12m"], 3) == [

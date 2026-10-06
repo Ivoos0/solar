@@ -1,5 +1,7 @@
 import pytest
 
+import config
+
 from config import ConfigError, from_dict
 
 
@@ -483,3 +485,17 @@ def test_min_bucket_days_default_and_validation(site_config):
 def test_min_bucket_days_changes_the_fingerprint():
     ref = from_dict(base()).fingerprint()
     assert from_dict(base(usage__min_bucket_days=3)).fingerprint() != ref
+
+
+# ---- L4: an offset that cannot hold the network costs, taxes and VAT ---------------
+
+@pytest.mark.parametrize("offset,low", [
+    (0.007, True),          # the default: a bare supplier coefficient
+    (0.0, True),
+    (0.0499, True),
+    (0.05, False),
+    (0.1366, False),        # the worked example of the example config
+])
+def test_offset_looks_incomplete(offset, low):
+    cfg = from_dict(base(prices__consumption_offset=offset))
+    assert config.offset_looks_incomplete(cfg) is low

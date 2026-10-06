@@ -1254,6 +1254,8 @@ def _cycle(now):
     markers = []
     cfg = _with_limits(cfg, markers)
     cfg = _with_reserve(cfg, markers)
+    if config.offset_looks_incomplete(cfg):
+        markers.append("consumption_offset_low")
     payload, forecast_age = _read_forecast(cfg, now)
     if payload is None:
         _forecast_failed(cfg, now)

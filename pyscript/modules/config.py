@@ -247,6 +247,17 @@ def with_limits(cfg, charge_kw=None, discharge_kw=None):
     return replace(cfg, **changes) if changes else cfg
 
 
+# A buying-price offset below this cannot include the per-kWh network costs,
+# taxes and VAT (about 0.10 - 0.14 EUR/kWh in Flanders); it is a bare supplier
+# coefficient, and every grid charge then looks cheaper than it is.
+LOW_CONSUMPTION_OFFSET = 0.05
+
+
+def offset_looks_incomplete(cfg):
+    """True when prices.consumption_offset is too low to hold the fees."""
+    return _num(cfg.consumption_offset) and cfg.consumption_offset < LOW_CONSUMPTION_OFFSET
+
+
 def with_reserve(cfg, percent=None):
     """A NEW config with reserve_percent replaced by the inverter's own
     minimum charge (percent). None, or a value that is not a number from 0 up
