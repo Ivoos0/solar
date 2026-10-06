@@ -13,6 +13,13 @@ B and the snapshot at B + block_minutes. Rules that keep the numbers honest:
   quantity could not be read, the whole quantity is unknown (None), never a
   partial sum.
 * A negative delta (counter reset or replacement) makes that quantity None.
+* A counter that reads exactly 0 after it has been above 0 is treated as
+  unreadable (None, a failure): a cumulative counter does not return to 0, and
+  a sensor that bounces to 0 and then recovers would otherwise give one block
+  the whole counter value as its delta. The last good reading of every counter
+  is kept in the snapshot (last_good) for this check, so it also works across
+  an unavailable gap. A counter that really restarts is accepted from its
+  first non-zero reading.
 * A missing earlier snapshot, or a gap of more than one block between the two
   snapshots, yields null records for the blocks in between. One delta is NEVER
   spread over several blocks.
@@ -33,7 +40,7 @@ true instant-by-instant mix is unknowable.
 """
 import json
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 
 SCHEMA = 1
@@ -98,6 +105,7 @@ class Snapshot:
     consumption_price: object = None
     injection_price: object = None
     soc_percent: object = None
+    last_good: dict = field(default_factory=dict)   # {quantity: [kWh or None]}
 
 
 def _finite(value):
@@ -105,17 +113,42 @@ def _finite(value):
             and math.isfinite(value))
 
 
+def _screen_zero(values, previous_good):
+    """(values with a bounce to 0 replaced by None, new last-good list).
+
+    previous_good is the last good list of this quantity, or None; it only
+    applies when the number of counters is unchanged.
+    """
+    ref = previous_good if (previous_good is not None
+                            and len(previous_good) == len(values)) else None
+    cleaned, good = [], []
+    for i, v in enumerate(values):
+        before = ref[i] if ref is not None else None
+        if _finite(v) and v == 0 and before is not None and before > 0:
+            cleaned.append(None)          # fell to 0: not a reading
+            good.append(before)
+        else:
+            cleaned.append(v)
+            good.append(float(v) if _finite(v) else before)
+    return cleaned, good
+
+
 def make_snapshot(boundary, read_at, readings, forecast_solar_kwh=None,
                   consumption_price=None, injection_price=None,
-                  soc_percent=None):
+                  soc_percent=None, previous=None):
     """Build a Snapshot. readings: {quantity: [kWh or None, ...]}.
 
     An empty list means "quantity not configured" (total None, not a failure).
-    Any None in a non-empty list makes the quantity unknown AND failed.
+    Any None in a non-empty list makes the quantity unknown AND failed. So does
+    a counter that reads 0 after it was above 0 (see the module docstring);
+    that check needs `previous`, the snapshot before this one.
     """
-    totals, failed = {}, []
+    totals, failed, last_good = {}, [], {}
+    before = previous.last_good if previous is not None else {}
     for q in QUANTITIES:
-        values = readings.get(q) or []
+        values = list(readings.get(q) or [])
+        if values:
+            values, last_good[q] = _screen_zero(values, before.get(q))
         if not values:
             totals[q] = None
         elif all(_finite(v) for v in values):
@@ -125,7 +158,7 @@ def make_snapshot(boundary, read_at, readings, forecast_solar_kwh=None,
             failed.append(q)
     return Snapshot(_utc(boundary), _utc(read_at), totals, tuple(failed),
                     forecast_solar_kwh, consumption_price, injection_price,
-                    soc_percent)
+                    soc_percent, last_good)
 
 
 def snapshot_to_dict(snap):
@@ -138,7 +171,21 @@ def snapshot_to_dict(snap):
         "consumption_price": snap.consumption_price,
         "injection_price": snap.injection_price,
         "soc_percent": snap.soc_percent,
+        "last_good": {q: list(v) for q, v in snap.last_good.items()},
     }
+
+
+def _last_good_from(raw):
+    """The persisted last_good, or {} when absent or malformed (older files)."""
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for q in QUANTITIES:
+        values = raw.get(q)
+        if (isinstance(values, list)
+                and all(v is None or _finite(v) for v in values)):
+            out[q] = list(values)
+    return out
 
 
 def snapshot_from_dict(data):
@@ -153,7 +200,8 @@ def snapshot_from_dict(data):
             _utc(datetime.fromisoformat(data["read_at"])),
             totals, tuple(data.get("failed") or ()),
             data.get("forecast_solar_kwh"), data.get("consumption_price"),
-            data.get("injection_price"), data.get("soc_percent"))
+            data.get("injection_price"), data.get("soc_percent"),
+            _last_good_from(data.get("last_good")))
     except (KeyError, TypeError, ValueError, AttributeError):
         return None
 

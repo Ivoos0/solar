@@ -399,3 +399,76 @@ def test_ratio_ignores_blocks_missing_either_side_and_old_blocks():
 def test_ratio_zero_forecast_blocks_do_not_break_the_sum():
     recs = [sol(0, 0.1, 0.0), sol(1, 1.5, 2.0)]
     assert h.solar_realisation_ratio(recs, 4) == pytest.approx(0.8)
+
+
+# ---- a counter that bounces to 0 -------------------------------------------------
+
+def chain(*readings, quantity="import"):
+    """Snapshots one block apart, each built with the one before it."""
+    out = []
+    for i, values in enumerate(readings):
+        out.append(snap(B0 + i * STEP, readings={quantity: values},
+                        previous=out[-1] if out else None))
+    return out
+
+
+def deltas(snaps, quantity="import"):
+    return [rec(a, b)[quantity + "_kwh"] for a, b in zip(snaps, snaps[1:])]
+
+
+def test_a_bounce_to_zero_never_becomes_one_huge_delta():
+    s = chain([5000.0], [0.0], [5000.0], [5000.25])
+    assert s[1].totals["import"] is None and "import" in s[1].failed
+    assert deltas(s) == [None, None, pytest.approx(0.25)]
+
+
+def test_the_last_good_reading_survives_an_unavailable_gap():
+    s = chain([5000.0], [None], [0.0], [5000.0], [5000.5])
+    assert s[2].totals["import"] is None          # 0 after 5000, via the gap
+    assert deltas(s) == [None, None, None, pytest.approx(0.5)]
+
+
+def test_a_counter_that_starts_at_zero_is_accepted():
+    s = chain([0.0], [0.0], [0.4])
+    assert s[0].totals["import"] == 0.0 and s[1].totals["import"] == 0.0
+    assert s[0].failed == () and s[1].failed == ()
+    assert deltas(s) == [0.0, pytest.approx(0.4)]
+
+
+def test_a_replaced_meter_is_accepted_from_its_first_nonzero_reading():
+    s = chain([5000.0], [0.0], [0.3], [0.8])
+    assert s[1].totals["import"] is None          # the 0 is not trusted
+    assert s[2].totals["import"] == pytest.approx(0.3)
+    assert deltas(s) == [None, None, pytest.approx(0.5)]
+
+
+def test_one_counter_of_a_sum_bouncing_to_zero_makes_the_quantity_unknown():
+    s = chain([3000.0, 2000.0], [0.0, 2000.0], [3000.0, 2000.0],
+              [3000.5, 2000.0])
+    assert s[1].totals["import"] is None
+    assert deltas(s) == [None, None, pytest.approx(0.5)]
+
+
+def test_the_other_quantities_are_not_affected():
+    a = snap(B0, readings={"import": [5000.0], "export": [10.0]})
+    b = snap(B0 + STEP, readings={"import": [0.0], "export": [10.5]},
+             previous=a)
+    r = rec(a, b)
+    assert r["import_kwh"] is None and r["export_kwh"] == 0.5
+
+
+def test_a_changed_number_of_counters_drops_the_reference():
+    s = chain([5000.0], [0.0, 0.0])               # sensor list changed
+    assert s[1].totals["import"] == 0.0 and s[1].failed == ()
+
+
+def test_last_good_survives_the_snapshot_file_and_old_files_still_load():
+    s = chain([5000.0], [None])[1]
+    assert s.last_good["import"] == [5000.0]
+    again = h.snapshot_from_dict(json.loads(json.dumps(h.snapshot_to_dict(s))))
+    assert again == s
+    old = h.snapshot_to_dict(s)
+    del old["last_good"]
+    assert h.snapshot_from_dict(old).last_good == {}
+    old["last_good"] = {"import": ["x"]}
+    assert h.snapshot_from_dict(old).last_good == {}
