@@ -13,15 +13,6 @@ MIN_ELAPSED_MINUTES = 1.0     # opening-seconds guard for divisions by elapsed
 NO_BUDGET_MINUTES = 1.0       # least remaining at which a budget exists, whatever
                               # the evaluation interval (see no_budget_minutes)
 
-# detector tuning
-DETECT_MIN_MIN = 2.0
-DETECT_MAX_MIN = 13.0
-DETECT_MIN_GAP_MIN = 3.0
-DETECT_MAX_LOAD_CHANGE = 0.25   # fraction of the larger offtake
-DETECT_MIN_LOAD_KW = 0.5
-DETECT_MIN_LEAD = 3             # votes one hypothesis must lead by
-
-
 @dataclass(frozen=True)
 class GridState:
     offtake_kw: float
@@ -32,7 +23,6 @@ class GridState:
     month_peak_kw: float
     is_restored: bool
     average_mode: str = "accumulating"
-    mode_confidence: str = "assumed"
     # Grid power the planner itself is currently drawing to charge (kW): the
     # last decision's grid-charge power, set by the adapter ONLY when a real
     # (non-logging) driver transmits it and it is still in effect; else 0.0.
@@ -68,21 +58,16 @@ def normalise_average(reported_kw, elapsed_minutes, mode):
 
 def build_state(offtake_kw, window_energy_kwh, now, month_peak_kw, config,
                 is_restored=False, reported_average_kw=None,
-                average_mode=None, mode_confidence=None,
                 own_grid_charge_kw=0.0, battery_discharge_kw=None):
     """Build a GridState.
 
     If reported_average_kw (the meter 1-0:1.4.0 figure) is given it is
-    authoritative and normalised per the active mode; window energy is then
-    derived from it. Otherwise the average is derived from window_energy_kwh.
+    authoritative and normalised per config.quarter_hour_average_mode; window
+    energy is then derived from it. Otherwise the average is derived from window_energy_kwh.
     """
     start = window_start_of(now)
     elapsed = (now - start).total_seconds() / 60.0
-    if config.quarter_hour_average_mode != "auto":
-        mode, conf = config.quarter_hour_average_mode, "configured"
-    else:
-        mode = average_mode or "accumulating"
-        conf = mode_confidence or "assumed"
+    mode = config.quarter_hour_average_mode
     eff = max(elapsed, MIN_ELAPSED_MINUTES)
     if reported_average_kw is not None:
         running = normalise_average(reported_average_kw, elapsed, mode)
@@ -91,7 +76,7 @@ def build_state(offtake_kw, window_energy_kwh, now, month_peak_kw, config,
         energy = window_energy_kwh
         running = energy / (eff / 60.0)
     return GridState(offtake_kw, start, energy, elapsed, running,
-                     month_peak_kw, is_restored, mode, conf,
+                     month_peak_kw, is_restored, mode,
                      own_grid_charge_kw, battery_discharge_kw)
 
 
@@ -362,109 +347,3 @@ def peak_warning_message(state, config, guard_note):
 def arbitrage_value_eur(kwh, price_spread):
     """Value of moving kwh across a price spread (eur/kWh)."""
     return kwh * price_spread
-
-
-# ---- quarter-hour average semantics detection ----------
-
-@dataclass(frozen=True)
-class Sample:
-    window_start: object
-    elapsed_minutes: float
-    reported_kw: float
-    offtake_kw: float
-
-
-@dataclass(frozen=True)
-class ModeVerdict:
-    mode: str
-    confidence: str
-    running_votes: int = 0
-    accumulating_votes: int = 0
-
-
-def _window_vote(samples):
-    """Vote from one window's samples: running, accumulating or None."""
-    good = sorted((s for s in samples
-                   if DETECT_MIN_MIN <= s.elapsed_minutes <= DETECT_MAX_MIN),
-                  key=lambda s: s.elapsed_minutes)
-    if len(good) < 2:
-        return None
-    early, late = good[0], good[-1]
-    if late.elapsed_minutes - early.elapsed_minutes < DETECT_MIN_GAP_MIN:
-        return None
-    if min(early.offtake_kw, late.offtake_kw) < DETECT_MIN_LOAD_KW:
-        return None
-    hi = max(early.offtake_kw, late.offtake_kw)
-    if abs(late.offtake_kw - early.offtake_kw) / hi > DETECT_MAX_LOAD_CHANGE:
-        return None
-    if early.reported_kw <= 0 or late.reported_kw <= 0:
-        return None
-    ratio = early.reported_kw / late.reported_kw
-    expected = early.elapsed_minutes / late.elapsed_minutes
-    if abs(ratio - 1.0) < abs(ratio - expected):
-        return "running"
-    return "accumulating"
-
-
-def samples_to_data(samples):
-    """JSON-ready form of the detector samples that can still matter.
-
-    Only samples inside the detection minutes ever take part in a vote
-    (_window_vote ignores the rest), so only those are kept.
-    """
-    out = []
-    for s in samples:
-        if DETECT_MIN_MIN <= s.elapsed_minutes <= DETECT_MAX_MIN:
-            out.append([s.window_start.isoformat(), s.elapsed_minutes,
-                        s.reported_kw, s.offtake_kw])
-    return out
-
-
-def samples_from_data(data, limit=None):
-    """Detector samples from samples_to_data() output; [] for anything else.
-
-    A malformed entry is skipped, a malformed whole is an empty list, so a
-    damaged file means a fresh start, never an error. `limit` keeps only the
-    newest entries.
-    """
-    if not isinstance(data, list):
-        return []
-    out = []
-    for item in data:
-        try:
-            start = datetime.fromisoformat(item[0])
-            nums = [item[1], item[2], item[3]]
-            ok = start.tzinfo is not None and len(item) == 4
-            for n in nums:
-                if isinstance(n, bool) or not isinstance(n, (int, float)) \
-                        or not math.isfinite(n):
-                    ok = False
-            if ok:
-                out.append(Sample(start, float(nums[0]), float(nums[1]),
-                                  float(nums[2])))
-        except Exception:
-            continue
-    if limit is not None:
-        out = out[-limit:]
-    return out
-
-
-def detect_average_mode(samples, config):
-    """Pure verdict from samples (adapter stores them across cycles)."""
-    if config.quarter_hour_average_mode != "auto":
-        return ModeVerdict(config.quarter_hour_average_mode, "configured")
-    by_window = {}
-    for s in samples:
-        by_window.setdefault(s.window_start, []).append(s)
-    run = acc = 0
-    for group in by_window.values():
-        vote = _window_vote(group)
-        if vote == "running":
-            run += 1
-        elif vote == "accumulating":
-            acc += 1
-    if run - acc >= DETECT_MIN_LEAD:
-        return ModeVerdict("running", "detected", run, acc)
-    if acc - run >= DETECT_MIN_LEAD:
-        return ModeVerdict("accumulating", "detected", run, acc)
-    return ModeVerdict("accumulating", "assumed", run, acc)

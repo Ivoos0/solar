@@ -3,7 +3,7 @@ import hashlib
 import re
 from dataclasses import dataclass, fields, replace
 
-_MODES = ("auto", "running", "accumulating")
+_MODES = ("accumulating", "running")
 _GROUPINGS = ("same_weekday", "day_type")
 _RECENCY = ("linear", "none")
 
@@ -158,7 +158,7 @@ class SiteConfig:
     capacity_enabled: bool = True
     billing_floor_kw: float = 2.5
     guard_interval_seconds: int = 30
-    quarter_hour_average_mode: str = "auto"
+    quarter_hour_average_mode: str = "accumulating"
     offtake_sensor: str = "sensor.slimmelezer_power_consumed"
     stay_under_percent: float = 80.0
     usage_history_weeks: int = 4
@@ -366,7 +366,11 @@ def _errors(cfg):
             "must be > 0 and <= 100")
     if cfg.quarter_hour_average_mode not in _MODES:
         bad("quarter_hour_average_mode", cfg.quarter_hour_average_mode,
-            "must be one of %s" % ", ".join(_MODES))
+            "must be one of %s%s" % (", ".join(_MODES),
+                                     " ('auto' was removed: the detector is "
+                                     "gone, pick the mode of your meter)"
+                                     if cfg.quarter_hour_average_mode == "auto"
+                                     else ""))
     if isinstance(cfg.usage_history_weeks, float) or cfg.usage_history_weeks < 1:
         bad("usage_history_weeks", cfg.usage_history_weeks,
             "must be an integer >= 1")

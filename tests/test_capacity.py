@@ -45,7 +45,7 @@ def test_running_mode_energy(site_config):
     # 4.0 kW * 7.5 min / 60 = 0.5 kWh
     assert s.running_average_kw == pytest.approx(4.0)
     assert s.window_energy_kwh == pytest.approx(0.5)
-    assert (s.average_mode, s.mode_confidence) == ("running", "configured")
+    assert s.average_mode == "running"
 
 
 def test_accumulating_mode_normalised(site_config):
@@ -58,16 +58,11 @@ def test_accumulating_mode_normalised(site_config):
     assert s.window_energy_kwh == pytest.approx(0.5)
 
 
-def test_auto_defaults_to_assumed_accumulating(site_config):
+def test_the_default_mode_is_accumulating(site_config):
     s = cap.build_state(4.0, 0.0, at(14, 7, 30), 0.0, site_config,
                         reported_average_kw=2.0)
-    assert (s.average_mode, s.mode_confidence) == ("accumulating", "assumed")
+    assert s.average_mode == "accumulating"
     assert s.running_average_kw == pytest.approx(4.0)
-    d = cap.build_state(4.0, 0.0, at(14, 7, 30), 0.0, site_config,
-                        reported_average_kw=4.0, average_mode="running",
-                        mode_confidence="detected")
-    assert d.running_average_kw == pytest.approx(4.0)
-    assert d.mode_confidence == "detected"
 
 
 def test_opening_seconds_guard(site_config):
@@ -237,85 +232,6 @@ def test_shave_never_below_floor(site_config):
 
 def test_arbitrage_value():
     assert cap.arbitrage_value_eur(2.0, 0.15) == pytest.approx(0.30)
-
-
-# ---- detector -------------------------------------------------------
-
-def win(i):
-    return datetime(2026, 9, 29, 8 + i, 0)
-
-
-def pair(i, kind, e=3.0, late=12.0, load_e=3.0, load_l=3.0):
-    def rep(minutes, load):
-        return load * minutes / 15.0 if kind == "acc" else load
-    return [cap.Sample(win(i), e, rep(e, load_e), load_e),
-            cap.Sample(win(i), late, rep(late, load_l), load_l)]
-
-
-def samples(n, kind, **kw):
-    out = []
-    for i in range(n):
-        out += pair(i, kind, **kw)
-    return out
-
-
-def test_detects_accumulating(site_config):
-    # load 3 kW: 3 min -> 0.6, 12 min -> 2.4 ; ratio 0.25 = 3/12
-    v = cap.detect_average_mode(samples(3, "acc"), site_config)
-    assert (v.mode, v.confidence) == ("accumulating", "detected")
-
-
-def test_detects_running(site_config):
-    # 3.0 and 3.0 : ratio 1
-    v = cap.detect_average_mode(samples(3, "run"), site_config)
-    assert (v.mode, v.confidence) == ("running", "detected")
-    assert v.running_votes == 3
-
-
-def test_safe_default_before_conclusion(site_config):
-    v = cap.detect_average_mode(samples(2, "run"), site_config)
-    assert (v.mode, v.confidence) == ("accumulating", "assumed")
-    v = cap.detect_average_mode([], site_config)
-    assert (v.mode, v.confidence) == ("accumulating", "assumed")
-
-
-def test_samples_from_different_windows_are_never_mixed(site_config):
-    # Each window holds ONE usable sample (3 min in one, 12 min in the next).
-    # Paired across windows they would look like a clean "running" pair
-    # (same reported value, steady load) and vote; kept apart they are lone
-    # samples and cast no vote at all.
-    out = []
-    for i in range(6):
-        minutes = 3.0 if i % 2 == 0 else 12.0
-        out.append(cap.Sample(win(i), minutes, 3.0, 3.0))
-    v = cap.detect_average_mode(out, site_config)
-    assert (v.mode, v.confidence) == ("accumulating", "assumed")
-    assert v.running_votes == 0 and v.accumulating_votes == 0
-
-
-def test_rejects_boundary_straddle(site_config):
-    # early 0.5 and late 14 min are outside 2..13 -> no vote
-    v = cap.detect_average_mode(samples(5, "run", e=0.5, late=14.0),
-                                site_config)
-    assert v.confidence == "assumed" and v.running_votes == 0
-
-
-def test_rejects_unstable_load(site_config):
-    # 3.0 -> 5.0 : change 2/5 = 0.4 > 0.25
-    v = cap.detect_average_mode(samples(5, "run", load_l=5.0), site_config)
-    assert v.confidence == "assumed" and v.running_votes == 0
-
-
-def test_rejects_near_zero_draw(site_config):
-    v = cap.detect_average_mode(samples(5, "run", load_e=0.2, load_l=0.2),
-                                site_config)
-    assert v.confidence == "assumed" and v.running_votes == 0
-
-
-def test_configured_mode_bypasses_detection(site_config):
-    c = cfg(site_config, quarter_hour_average_mode="running")
-    v = cap.detect_average_mode(samples(5, "acc"), c)
-    assert (v.mode, v.confidence) == ("running", "configured")
 
 
 # ---- stay_under_percent -----------------------------------------------------

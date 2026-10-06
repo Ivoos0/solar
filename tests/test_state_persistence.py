@@ -1,8 +1,7 @@
 """State that survives a Home Assistant restart.
 
-Planner: the price-outage halt (no early re-alert) and the quarter-hour mode
-detector's samples (a detected mode stays detected). Guard: the same detector
-and the peak-warning send time. Command de-duplication has its own tests in
+Planner: the price-outage halt (no early re-alert). Guard: the peak-warning
+send time. Command de-duplication has its own tests in
 test_inverter.py (and the planner/guard wiring is checked at the end here).
 
 A "restart" is simulated the way pyscript does it: module state is lost, files
@@ -33,9 +32,6 @@ def restart_planner(env):
     mod = env.mod
     mod._halt_state = None
     mod._halt_loaded = False
-    mod._mode_samples = []
-    mod._mode_loaded = False
-    mod._mode_saved = None
     mod._last_run = None
     mod._config = None
     mod._config_mtime = None
@@ -159,164 +155,6 @@ def test_normal_cycles_write_no_halt_file(env):
     assert not env.halt_path.exists()
 
 
-# ---- planner: quarter-hour mode detector -------------------------------------
-
-def _steady(env):
-    for entity in (OFFTAKE_ENTITY, QUARTER_AVG_ENTITY):
-        env.state.set(entity, "3.0", {"unit_of_measurement": "kW"})
-    env.state.set(MONTH_PEAK_ENTITY, "6.0", {"unit_of_measurement": "kW"})
-
-
-def _watch_grids(env):
-    seen = []
-    real = env.mod.rules.decide
-
-    def spy(traj, price_map, bat, grid, cfg, now, **kw):
-        seen.append(grid)
-        return real(traj, price_map, bat, grid, cfg, now, **kw)
-    env.mod.rules.decide = spy
-    return seen
-
-
-def _detect(env, cycles=30):
-    seen = _watch_grids(env)
-    for k in range(cycles):
-        env.run(T0 + k * STEP)
-    return seen
-
-
-def test_the_detector_reaches_detected_and_saves_its_samples(env):
-    _steady(env)
-    seen = _detect(env)
-    assert (seen[-1].average_mode, seen[-1].mode_confidence) == (
-        "running", "detected")
-    data = json.loads(env.mode_path.read_text(encoding="utf-8"))
-    assert data and all(len(item) == 4 for item in data)
-
-
-def test_a_detected_mode_stays_detected_after_a_restart(env):
-    _steady(env)
-    _detect(env)
-    restart_planner(env)
-    seen = _watch_grids(env)
-    env.run(T0 + 30 * STEP)
-    assert (seen[0].average_mode, seen[0].mode_confidence) == (
-        "running", "detected")
-
-
-def test_without_the_file_a_restart_falls_back_to_assumed(env):
-    _steady(env)
-    _detect(env)
-    env.mode_path.unlink()
-    restart_planner(env)
-    seen = _watch_grids(env)
-    env.run(T0 + 30 * STEP)
-    assert (seen[0].average_mode, seen[0].mode_confidence) == (
-        "accumulating", "assumed")
-
-
-@pytest.mark.parametrize("content", [
-    "", "garbage", "{}", "null", "[1, 2]", '[["x", 1, 2, 3]]',
-    '[["2026-09-30T14:35:00+02:00", "a", 2, 3]]',
-    '[["2026-09-30T14:35:00", 5, 2, 3]]',
-    '[["2026-09-30T14:35:00+02:00", 5, 2]]',
-    '[["2026-09-30T14:35:00+02:00", true, 2, 3]]',
-    '[["2026-09-30T14:35:00+02:00", NaN, 2, 3]]',
-])
-def test_corrupt_mode_file_starts_fresh_and_never_crashes(env, content):
-    _steady(env)
-    env.state_dir.mkdir(parents=True, exist_ok=True)
-    env.mode_path.write_text(content, encoding="utf-8")
-    seen = _watch_grids(env)
-    env.run(T0)
-    assert seen[0].mode_confidence == "assumed"
-    assert env.log.by_level["error"] == []
-    assert len(env.decisions()) == 1
-
-
-def test_unchanged_samples_are_not_rewritten(env, monkeypatch):
-    _steady(env)
-    writes = []
-    real = env.mod._write_json_atomic
-
-    def count(path, payload):
-        writes.append(path)
-        return real(path, payload)
-    monkeypatch.setattr(env.mod, "_write_json_atomic", count)
-    env.run(T0)
-    n = writes.count(env.mod.MODE_STATE_PATH)
-    env.run(T0 + 2 * STEP)                           # elapsed 0 in a new window
-    assert writes.count(env.mod.MODE_STATE_PATH) <= n + 1
-
-
-def test_a_configured_mode_is_not_overridden_by_saved_samples(env):
-    _steady(env)
-    _detect(env)
-    env.write_config("capacity_tariff:\n  quarter_hour_average_mode: "
-                     "accumulating\n")
-    restart_planner(env)
-    seen = _watch_grids(env)
-    env.run(T0 + 30 * STEP)
-    assert (seen[0].average_mode, seen[0].mode_confidence) == (
-        "accumulating", "configured")
-
-
-# ---- guard: detector -----------------------------------------------------------
-
-def _guard_detect(g):
-    steady = dict(offtake="3.0", avg="3.0", peak="6.0")
-    for start in (0, 15, 30, 45):
-        g.at(13, start + 4).tick(**steady)
-        g.at(13, start + 12).tick(**steady)
-    g.at(14, 0, 5).tick(**steady)
-
-
-def _mode_text(g):
-    g.at(14, 7, 30)
-    g.tick(**PEAK_ARGS)
-    return g.discharges[-1][2].reasoning
-
-
-def test_guard_detected_mode_stays_detected_after_a_restart(make_guard):
-    g1 = make_guard(mode="auto", state="keep")
-    _guard_detect(g1)
-    assert "(detected)" in _mode_text(g1)
-    data = json.loads(
-        (g1.mod.MODE_STATE_PATH and open(g1.mod.MODE_STATE_PATH).read()))
-    assert data
-    g2 = make_guard(mode="auto", state="keep")
-    assert g2.mod._history == []
-    assert "average mode running (detected)" in _mode_text(g2)
-
-
-def test_guard_without_the_file_is_assumed_after_a_restart(make_guard):
-    g1 = make_guard(mode="auto", state="keep")
-    _guard_detect(g1)
-    g2 = make_guard(mode="auto", state="other")
-    assert "(assumed)" in _mode_text(g2)
-
-
-@pytest.mark.parametrize("content", ["", "junk", "{}", "[[1]]",
-                                     '[["2026-09-30T13:04:00", 4, 3, 3]]'])
-def test_guard_corrupt_mode_file_starts_fresh(make_guard, content):
-    import os
-    g = make_guard(mode="auto", state="bad")
-    os.makedirs(os.path.dirname(g.mod.MODE_STATE_PATH), exist_ok=True)
-    with open(g.mod.MODE_STATE_PATH, "w") as handle:
-        handle.write(content)
-    assert "(assumed)" in _mode_text(g)
-    assert [m for m in g.log.messages if "Traceback" in str(m)] == []
-
-
-def test_guard_archive_is_bounded_after_loading(make_guard):
-    g1 = make_guard(mode="auto", state="keep")
-    _guard_detect(g1)
-    g2 = make_guard(mode="auto", state="keep")
-    _guard_detect(g2)
-    _guard_detect(g2)
-    assert len(g2.mod._history) <= g2.mod.MAX_HISTORY_SAMPLES
-
-
 # ---- guard: peak warning -------------------------------------------------------
 
 @pytest.fixture
@@ -391,53 +229,6 @@ def test_a_failed_send_is_not_saved(make_guard, svc):
     g = _warn_guard(make_guard, svc, "keep")
     two_ticks(g, **HIGH)
     assert not os.path.exists(g.mod.WARN_STATE_PATH)
-
-
-# ---- pure helpers --------------------------------------------------------------
-
-def _sample(minute, elapsed=5.0, reported=3.0, offtake=3.0):
-    start = datetime(2026, 9, 30, 14, minute, tzinfo=TZ)
-    return capacity.Sample(start, elapsed, reported, offtake)
-
-
-def test_samples_round_trip():
-    samples = [_sample(0), _sample(15, 9.5)]
-    again = capacity.samples_from_data(
-        json.loads(json.dumps(capacity.samples_to_data(samples))))
-    assert again == samples
-
-
-def test_samples_outside_the_detection_minutes_are_not_saved():
-    data = capacity.samples_to_data(
-        [_sample(0, elapsed=0.5), _sample(0, elapsed=5.0),
-         _sample(0, elapsed=14.0)])
-    assert len(data) == 1
-
-
-def test_samples_from_data_limit_keeps_the_newest():
-    data = capacity.samples_to_data([_sample(0), _sample(15), _sample(30)])
-    kept = capacity.samples_from_data(data, 2)
-    assert [s.window_start.minute for s in kept] == [15, 30]
-
-
-def test_samples_from_data_skips_bad_entries_but_keeps_good_ones():
-    good = capacity.samples_to_data([_sample(0)])[0]
-    kept = capacity.samples_from_data([good, "x", [1], None, good])
-    assert len(kept) == 2
-
-
-def test_the_restored_detector_gives_the_same_verdict(site_config):
-    samples = []
-    for hour_minute in (0, 15, 30, 45, 60, 75):
-        start = datetime(2026, 9, 30, 14, 0, tzinfo=TZ) + timedelta(
-            minutes=hour_minute)
-        samples.append(capacity.Sample(start, 4.0, 3.0, 3.0))
-        samples.append(capacity.Sample(start, 12.0, 3.0, 3.0))
-    before = capacity.detect_average_mode(samples, site_config)
-    after = capacity.detect_average_mode(
-        capacity.samples_from_data(capacity.samples_to_data(samples)),
-        site_config)
-    assert before == after and before.confidence == "detected"
 
 
 def test_peak_warning_restore_converts_to_the_monotonic_clock():

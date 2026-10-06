@@ -262,8 +262,7 @@ def test_guard_passes_the_battery_power_to_its_state(make_guard, monkeypatch):
     assert built[-1].battery_discharge_kw == pytest.approx(3.0)
     rec = g.discharges[0][2]
     grid = cap.build_state(5.0, 0.0, g.now, 2.5, _cfg(),
-                           reported_average_kw=4.0, average_mode="running",
-                           mode_confidence="configured",
+                           reported_average_kw=4.0,
                            battery_discharge_kw=3.0)
     assert rec.budget_kw == pytest.approx(cap.budget_kw(grid, _cfg()))
 

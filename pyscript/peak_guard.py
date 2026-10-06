@@ -120,8 +120,8 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   "none", end_soc is the CURRENT stored kWh (same fallback decision.build uses
   with no blocks), cons/inj render n/a (no prices). why says "no trajectory".
   avg/ceiling/budget are real (capacity.*). degraded carries soc_stubbed and,
-  when relevant, avg_mode_assumed / meter_restored. The detected average mode
-  and its confidence are stated in why.
+  when relevant, meter_restored. The configured average mode is stated in
+  why.
 * Vetoes: only vetoes that forbid "discharge" BLOCK a shave, i.e. V5 (battery
   empty: charge 0 %). V5 needs a reading: with battery.soc_sensor configured
   but unreadable (degraded=soc_unavailable) it is not evaluated and the guard
@@ -150,11 +150,6 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   inverter.apply periodic re-send (resend_minutes) does not run for a steady
   shave; a driver whose command times out on its own must be given a duration
   that outlasts a quarter-hour, or must tolerate a repeat.
-* Average-mode detection needs votes from several windows, yet samples from
-  different windows must not be compared. The per-window buffer is discarded
-  at every window boundary as required; before it is, its (at most two)
-  detector-relevant samples are archived to a bounded history so the detector
-  can accumulate its DETECT_MIN_LEAD votes. Nothing else crosses a boundary.
 * NATIVE CORE LOADER (same pattern as battery_planner.py). Files under
   pyscript/modules/ are *pyscript* modules, run by pyscript's AST interpreter,
   which lacks generator expressions, @property, native callbacks to pyscript
@@ -202,10 +197,9 @@ battery = capacity = decision = rules = site_config = None
 CONFIG_PATH = "/config/battery_planner/user_config.yaml"
 CORE_DIR = "/config/pyscript/modules"
 # Restart-surviving state (written atomically; a missing or corrupt file means
-# a fresh start): the detector's archived samples and the last peak warning.
+# a fresh start): the last peak warning.
 # inverter.apply keeps last_command.json here too (shared with the planner).
 STATE_DIR = "/config/battery_planner/state/"
-MODE_STATE_PATH = "/config/battery_planner/state/average_mode_guard.json"
 WARN_STATE_PATH = "/config/battery_planner/state/peak_warning.json"
 # Dependency order (rules needs capacity). Deliberately narrow: never
 # trajectory, prices, series or cache. inverter is NOT in this list.
@@ -216,8 +210,6 @@ MIN_STATE_GAP_SECONDS = 1.0
 GRACE_SECONDS = 120.0
 WARN_EVERY_SECONDS = 600.0
 SHAVE_CHANGE_KW = 0.25
-# 48 archived samples = 24 windows (two detector samples are kept per window)
-MAX_HISTORY_SAMPLES = 48
 STALE_FALLBACK_SECONDS = 15.0
 # A stamp must be this far past the window start to count as fresh (meter
 # clock skew; see the docstring). Only used when a timestamp exists.
@@ -232,12 +224,9 @@ _UNIT_FACTORS = {"kW": 1.0, "W": 0.001}
 _BAD = ("unavailable", "unknown", "none", "")
 
 # ---- module state (mutated in place; pyscript keeps it between triggers) ---
-_samples = []      # current-window detector samples (reset at each boundary)
-_history = []      # archived detector samples of closed windows (bounded)
 _core_ready = False
 _cfg = {"mtime": None, "config": None, "zone": None, "zone_name": None}
 _flags = {
-    "window": None,        # window_start the _samples belong to
     "shaving": None,       # None = unknown (fresh start), True, False
     "shave_kw": 0.0,       # power of the last recorded shave
     "since": None,
@@ -257,8 +246,6 @@ _flags = {
     "stale_episode": False,  # a stale average was seen and has not refreshed yet
     "peak_warn": {},       # capacity.peak_warning_due memory
     "warn_loaded": False,  # peak_warning.json read once per process
-    "mode_loaded": False,  # average_mode_guard.json read once per process
-    "mode_saved": None,    # what that file holds (skip equal writes)
 }
 
 
@@ -616,82 +603,16 @@ def _battery_discharge_kw(cfg):
 
 
 def _grid_state(offtake_kw, now, month_peak, cfg, is_restored, reported,
-                verdict, battery_discharge_kw=None):
+                battery_discharge_kw=None):
     return capacity.build_state(
         offtake_kw, 0.0, now, month_peak, cfg, is_restored=is_restored,
-        reported_average_kw=reported, average_mode=verdict.mode,
-        mode_confidence=verdict.confidence,
+        reported_average_kw=reported,
         battery_discharge_kw=battery_discharge_kw)
-
-
-# ---- average-mode detection buffer -----------------------------------------
-
-def _load_detector_state():
-    """Put back the archived samples of an earlier process (once)."""
-    if _flags["mode_loaded"]:
-        return
-    _flags["mode_loaded"] = True
-    loaded = capacity.samples_from_data(
-        _read_json(MODE_STATE_PATH), MAX_HISTORY_SAMPLES)
-    _flags["mode_saved"] = capacity.samples_to_data(loaded)
-    combined = loaded + _history
-    _history.clear()
-    for sample in combined:
-        _history.append(sample)
-    while len(_history) > MAX_HISTORY_SAMPLES:
-        _history.pop(0)
-
-
-def _save_detector_state():
-    """Persist the archive (it only changes at a window boundary)."""
-    data = capacity.samples_to_data(_history)
-    if data == _flags["mode_saved"]:
-        return
-    err = _write_json_atomic(MODE_STATE_PATH, data)
-    if err:
-        _warn("mode_state", "cannot save the average-mode state: %s" % (err,))
-    else:
-        _flags["mode_saved"] = data
-
-
-def _archive_window():
-    _load_detector_state()
-    for sample in _samples:
-        _history.append(sample)
-    while len(_history) > MAX_HISTORY_SAMPLES:
-        _history.pop(0)
-    _samples.clear()
-    _save_detector_state()
-
-
-def _roll_window(now):
-    """Discard the per-window buffer at a boundary; return the window start."""
-    start = capacity.window_start_of(now)
-    _load_detector_state()             # before the first verdict is drawn
-    if _flags["window"] != start:
-        _archive_window()              # buffer discarded at the boundary
-        _flags["window"] = start
-    return start
-
-
-def _feed_detector(cfg, now, reported_kw, offtake_kw):
-    """Buffer this window's samples and return the ModeVerdict."""
-    start = _roll_window(now)
-    if cfg.quarter_hour_average_mode != "auto":
-        return capacity.detect_average_mode([], cfg)
-    elapsed = (now - start).total_seconds() / 60.0
-    if capacity.DETECT_MIN_MIN <= elapsed <= capacity.DETECT_MAX_MIN:
-        sample = capacity.Sample(start, elapsed, reported_kw, offtake_kw)
-        if len(_samples) < 2:          # only earliest + latest are ever used
-            _samples.append(sample)
-        else:
-            _samples[1] = sample
-    return capacity.detect_average_mode(_history + _samples, cfg)
 
 
 # ---- records ----------------------------------------------------------------
 
-def _make_record(now, cfg, grid, batt, verdict, took_ms, action, power_kw,
+def _make_record(now, cfg, grid, batt, took_ms, action, power_kw,
                  vetoes, reasoning):
     """Full DecisionRecord for a guard decision (see docstring for renderings)."""
     degraded = decision.degraded_markers(batt)
@@ -703,13 +624,11 @@ def _make_record(now, cfg, grid, batt, verdict, took_ms, action, power_kw,
         degraded.append(_flags["limits_marker"])
     if _flags["reserve_marker"]:
         degraded.append(_flags["reserve_marker"])
-    if verdict.confidence == "assumed":
-        degraded.append("avg_mode_assumed")
     if grid.is_restored:
         degraded.append("meter_restored")
-    why = ("%s [average mode %s (%s); guard has no trajectory, forecast/usage/"
+    why = ("%s [average mode %s; guard has no trajectory, forecast/usage/"
            "spill/saturation/breach not evaluated]"
-           % (reasoning, verdict.mode, verdict.confidence))
+           % (reasoning, cfg.quarter_hour_average_mode))
     return decision.DecisionRecord(
         timestamp=now, action=action, target_power_kw=power_kw,
         charge_percent=batt.charge_percent, charge_kwh=batt.stored_kwh,
@@ -848,7 +767,7 @@ def _evaluate(trigger_type, started):
     _flags["gap"] = False
     _flags["unreadable_since"] = None
 
-    start = _roll_window(now)
+    start = capacity.window_start_of(now)
     staleness = _avg_staleness(avg_updated, now, start)
     if staleness:
         if staleness == "stale":
@@ -861,7 +780,6 @@ def _evaluate(trigger_type, started):
             "peak_guard: %s refreshed (stamp %s)" % (
                 cfg.quarter_hour_average_sensor, _stamp_text(avg_updated, now)))
 
-    verdict = _feed_detector(cfg, now, reported, offtake)
     # the meter shows offtake AFTER our own discharge: add it back (docstring)
     addback = _commanded_discharge_kw(cfg, started)
     # The sensor reading already includes the commanded discharge. The state
@@ -870,10 +788,10 @@ def _evaluate(trigger_type, started):
     # same in both and nothing is counted twice.
     sensor_kw = _battery_discharge_kw(cfg)
     metered = _grid_state(offtake, now, month_peak, cfg, is_restored,
-                          reported, verdict, sensor_kw)
+                          reported, sensor_kw)
     grid = metered if addback <= 0 else _grid_state(
         offtake + addback, now, month_peak, cfg, is_restored, reported,
-        verdict, None if sensor_kw is None else sensor_kw - addback)
+        None if sensor_kw is None else sensor_kw - addback)
     if addback > 0:
         offtake_text = ("offtake %.2f kW (metered %.2f kW + %.2f kW commanded "
                         "discharge)" % (grid.offtake_kw, offtake, addback))
@@ -912,7 +830,7 @@ def _evaluate(trigger_type, started):
                 "idle", 0.0, "S0", "", list(fired),
                 [("S0", "discharge", blocking)])
             record = _make_record(
-                now, cfg, grid, batt, verdict, took_ms, "idle", 0.0,
+                now, cfg, grid, batt, took_ms, "idle", 0.0,
                 _render("idle", 0.0, fired, as_decided.suppressed),
                 "peak shave vetoed by %s: the battery is empty (%.1f%%), so "
                 "the peak is allowed to form (%s, running "
@@ -934,7 +852,7 @@ def _evaluate(trigger_type, started):
             if starting:
                 _flags["since"] = now
             record = _make_record(
-                now, cfg, grid, batt, verdict, took_ms, "discharge", shave,
+                now, cfg, grid, batt, took_ms, "discharge", shave,
                 _render("discharge", shave, fired),
                 "peak shave (guard): %s; %s, running average "
                 "%.2f kW heading above the %.2f kW ceiling; discharge %.2f kW "
@@ -959,7 +877,7 @@ def _evaluate(trigger_type, started):
         _set_shaving_entity(False, window, 0.0)
         if not record_written:
             record = _make_record(
-                now, cfg, grid, batt, verdict, took_ms, "idle", 0.0,
+                now, cfg, grid, batt, took_ms, "idle", 0.0,
                 _render("idle", 0.0, fired),
                 "peak shave (guard): shaving stopped, projected average is "
                 "back at or under the %.2f kW ceiling (%s, "

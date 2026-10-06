@@ -94,8 +94,6 @@ Files on the Home Assistant side:
                                 in docs/how-it-works.md)
       peak_alert.json           last month-peak e-mail sent
       halt.json                 price-outage state while prices are missing
-      average_mode_planner.json, average_mode_guard.json
-                                what the quarter-hour average mode detection has seen
       peak_warning.json         when the last peak warning was sent
       last_command.json         the last command the inverter driver accepted
     history/                    generated, energy history

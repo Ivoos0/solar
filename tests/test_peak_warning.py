@@ -67,8 +67,9 @@ def two_ticks(g, **kw):
 
 def test_projection_matches_the_guards_shave_projection(site_config):
     g = capacity.build_state(5.0, 0.0, __import__("datetime").datetime(
-        2026, 9, 30, 12, 7, 30), 2.5, site_config, reported_average_kw=4.0,
-        average_mode="running", mode_confidence="configured")
+        2026, 9, 30, 12, 7, 30), 2.5,
+        replace(site_config, quarter_hour_average_mode="running"),
+        reported_average_kw=4.0)
     assert capacity.projected_average_kw(g) == pytest.approx(4.5)
 
 
