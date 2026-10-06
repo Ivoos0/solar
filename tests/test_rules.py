@@ -71,12 +71,13 @@ SHAVE = grid(offtake=4.0, energy=0.3, peak=2.5, avg=3.6)
 FLAT = (0.20, 0.02)     # consumption, injection: nothing attractive anywhere
 
 
-def blk(i, solar=0.0, usage=0.0, priced=True, shortfall=0.0):
+def blk(i, solar=0.0, usage=0.0, priced=True, shortfall=0.0, charge=5.0):
     return trajectory.TrajectoryBlock(
         block_start=T0 + i * STEP, solar_kwh=solar, usage_kwh=usage,
         usage_covered_kwh=min(solar, usage), absorbed_kwh=0.0,
         spilled_kwh=0.0, discharged_kwh=0.0, grid_shortfall_kwh=shortfall,
-        has_price=priced, projected_charge_kwh=5.0, projected_percent=50.0)
+        has_price=priced, projected_charge_kwh=charge,
+        projected_percent=charge * 10.0)
 
 
 def price(i, cons, inj):
@@ -85,7 +86,7 @@ def price(i, cons, inj):
 
 def go(cfg, plist, now_i=0, pct=50.0, g=CALM, sat=None, breach=None,
        spill=0.0, leftover=0.0, solar=None, usage=None, shortfall=None,
-       hide=(), history=True, forecast=True, soc_known=True):
+       hide=(), history=True, forecast=True, soc_known=True, charges=None):
     # history: True/False -> usage_history_available; None -> omit the kwarg
     """Build trajectory + price_map by hand and decide.
 
@@ -96,9 +97,11 @@ def go(cfg, plist, now_i=0, pct=50.0, g=CALM, sat=None, breach=None,
     solar = solar or {}
     usage = usage or {}
     shortfall = shortfall or {}
+    charges = charges or {}
     blocks = [blk(i, solar.get(i, 0.0), usage.get(i, 0.0),
                   priced=(plist[i] is not None and i not in hide),
-                  shortfall=shortfall.get(i, 0.0)) for i in range(n)]
+                  shortfall=shortfall.get(i, 0.0),
+                  charge=charges.get(i, 5.0)) for i in range(n)]
     traj = trajectory.Trajectory(
         blocks=blocks,
         saturation_block=None if sat is None else blocks[sat].block_start,
@@ -195,10 +198,11 @@ def test_s0_stops_when_the_battery_is_empty(site_config):
 
 
 def test_export_is_still_forbidden_below_the_reserve(site_config):
-    # spill ahead, now is the best injection block, but 5 % <= reserve: V1
+    # spill ahead, now is the best injection block, but 5 % <= reserve: V1.
+    # There is no charge above the reserve to export, so S3 proposes nothing.
     d = go(site_config, [(0.2, 0.05), (0.2, 0.01)], pct=5.0, spill=1.0)
-    assert ("S3", "export", "V1") in d.suppressed
-    assert d.action != "export"
+    assert "V1" in d.vetoes_fired
+    assert d.action == "idle"
 
 
 @pytest.mark.parametrize("g,fires", [
@@ -394,6 +398,7 @@ def test_regression_reserve_floor_does_not_stop_negative_price_charging(
 # 8 blocks; injection: b0 .10 b1 .15 b2 .12 b3 .11 b4 .10 b5 .09 b6 .30 b7 .08
 S3_INJ = [0.10, 0.15, 0.12, 0.11, 0.10, 0.09, 0.30, 0.08]
 S3_PRICES = [(0.40, i) for i in S3_INJ]     # consumption high: no S5/S1
+S3_PRICES[-1] = (0.20, S3_INJ[-1])   # last price: what a kept kWh avoids
 
 
 def test_s3_window_bounded_by_saturation(site_config):
@@ -462,6 +467,43 @@ def test_s3_no_price_for_current_block(site_config):
     plist[1] = None
     d = go(site_config, plist, now_i=1, sat=3, spill=2.0)
     assert d.selector == "S6" and "no price published" in d.reasoning
+
+
+def test_s3_does_not_export_into_a_coming_shortage(site_config):
+    # C4: the projection falls to the reserve at block 3 (1.0 kWh) before the
+    # saturation at block 5, and the house buys at 0.40 later. Nothing is
+    # spare, so S3 stays quiet however good the injection price is.
+    charges = {0: 6.0, 1: 4.0, 2: 2.0, 3: 1.0, 4: 3.0, 5: 10.0}
+    d = go(site_config, S3_PRICES, now_i=1, sat=5, spill=2.0, charges=charges)
+    assert d.selector == "S6" and d.action == "idle"
+
+
+def test_s3_exports_only_what_is_not_needed(site_config):
+    # lowest projected charge before saturation is 1.5 kWh: 0.5 kWh is spare,
+    # a 0.25 h block at 2.0 kW. Not the 5 kW the inverter could do.
+    charges = {0: 6.0, 1: 4.0, 2: 1.5, 3: 10.0}
+    d = go(site_config, S3_PRICES, now_i=1, sat=3, spill=2.0, charges=charges)
+    assert (d.selector, d.action) == ("S3", "export")
+    assert d.target_power_kw == pytest.approx(2.0)
+    assert "0.50 kWh is not needed" in d.reasoning
+
+
+def test_s3_leftover_worth_what_it_avoids_buying(site_config):
+    # no saturation: a kept kWh avoids buying. Injection now 0.30 against
+    # 0.40 * 0.9 = 0.36 at the last block: keep it. Against 0.20 * 0.9 = 0.18
+    # (the S3_PRICES default): export.
+    plist = list(S3_PRICES)
+    plist[-1] = (0.40, S3_INJ[-1])
+    assert go(site_config, plist, now_i=6, leftover=4.0).selector == "S6"
+    assert go(site_config, S3_PRICES, now_i=6, leftover=4.0).selector == "S3"
+
+
+def test_s3_leftover_uses_the_price_of_the_shortfall(site_config):
+    # a later shortfall is bought at 0.60: 0.54 after losses beats 0.30 now
+    plist = list(S3_PRICES)
+    plist[7] = (0.60, S3_INJ[7])
+    d = go(site_config, plist, now_i=6, leftover=4.0, shortfall={7: 1.0})
+    assert d.selector == "S6"
 
 
 # ---- S4 -------------------------------------------------------------------
@@ -603,7 +645,7 @@ def test_negative_injection_positive_consumption_band(site_config):
     # injection -0.01 while consumption +0.20, battery 50 %, spill ahead:
     # S3 proposes export (now -0.01 beats later -0.05) but V2 forbids it;
     # evaluation advances (S4, S5 do not apply) and lands on S6.
-    d = go(site_config, [(0.20, -0.01), (0.20, -0.05)], spill=1.0)
+    d = go(site_config, [(0.20, -0.01), (0.20, -0.05)], spill=1.0, sat=1)
     assert d.vetoes_fired == ["V2"]
     assert d.suppressed == [("S3", "export", "V2")]
     assert (d.selector, d.action) == ("S6", "idle")
@@ -615,16 +657,16 @@ def test_vetoed_s3_advances_to_next_selector_not_first(site_config):
     # breach at block 3 (importing there costs .60), consumption now .20 is
     # cheapest of window 0..2 and .20 / 0.9 = .22 is below .60.
     plist = [(0.20, -0.01), (0.30, -0.05), (0.40, -0.05), (0.60, -0.05)]
-    d = go(site_config, plist, pct=30.0, breach=3, spill=1.0,
-           shortfall={3: 1.0})
+    d = go(site_config, plist, pct=30.0, breach=3, spill=1.0, sat=1,
+           shortfall={3: 1.0}, charges={0: 3.0, 1: 3.0, 2: 3.0})
     assert d.suppressed == [("S3", "export", "V2")]
     assert d.selector == "S4" and d.action == "charge"
 
 
-def test_three_consecutive_vetoed_proposals_no_loop(site_config):
+def test_consecutive_vetoed_proposals_no_loop(site_config):
     # Battery at floor (V1), injection negative (V2), budget exhausted (V3).
     # S0 shave discharge: V1. S1 (cons -0.05) grid charge: V3.
-    # S3 export (spill, now -0.01 best of window): V1+V2.
+    # S3 proposes nothing: no charge above the reserve to export.
     # S5 grid-charge: later -0.05 * 0.9 = -0.045 > consumption now -0.05, so
     # under the plain-multiplication loss rule S5 also proposes (the old
     # price/eff division gave -0.0556 < -0.05 and hid it); V3 blocks it.
@@ -638,7 +680,6 @@ def test_three_consecutive_vetoed_proposals_no_loop(site_config):
     assert d.suppressed == [
         ("S0", "discharge", "V5"),
         ("S1", "charge", "V3"),
-        ("S3", "export", "V1+V2"),
         ("S5", "charge", "V3"),
     ]
     assert (d.selector, d.action, d.target_power_kw) == ("S6", "idle", 0.0)
