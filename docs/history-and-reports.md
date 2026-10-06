@@ -4,6 +4,7 @@ How the planner records energy history, calibrates the solar forecast, writes th
 
 **Contents**
 
+- [Usage profile](#usage-profile)
 - [Solar calibration](#solar-calibration)
 - [Daily report](#daily-report)
 - [Daily cleanup](#daily-cleanup)
@@ -38,7 +39,7 @@ Fields per block (energy in kWh; any field is `null` when unknown):
 | `solar_ratio` | `solar_kwh` divided by `forecast_solar_kwh`. `null` unless both are known and the forecast was at least 0.05 kWh (below that the ratio is noise). Not capped; the cap applies only when the ratio is used |
 | `consumption_price`, `injection_price` | Prices of the block, as known when it started |
 | `soc_percent` | Battery charge (%) at the start of the block; `null` while the charge is unreadable |
-| `soc_end_percent` | Battery charge (%) at the end of the block, read with the snapshot that closes it (the next block's start). `null` when that reading is unreadable, and in the `null` records of a gap. Records written before this field existed do not have it |
+| `soc_end_percent` | Battery charge (%) at the end of the block, read with the snapshot that closes it (the next block's start). `null` when that reading is unreadable, and in the `null` records of a gap |
 | `complete` | `true` only if every configured counter was readable at both readings and gave a valid difference |
 | `start_read_at`, `snapshot_read_at` | When the counters were actually read |
 
@@ -59,6 +60,23 @@ interval after the boundary. Both read times are in every record.
 History files are deleted after `retention.keep_days` days (default 90), see
 [Daily cleanup](#daily-cleanup). To keep more, raise that setting. To keep it forever, copy the
 `history` folder somewhere else before it expires.
+
+## Usage profile
+
+The expected household usage per block comes from `load_kwh` in the history, over the last
+`usage.history_weeks` weeks. A block of the day (for example 18:15) is one bucket per day group: with
+`usage.grouping: same_weekday` the group is the weekday, with `day_type` the weekdays pool together and
+the weekend days pool together. A bucket's value is the mean over the days that have a known `load_kwh`
+for that block, newer weeks weighing more with `usage.recency_weighting: linear`. A block with a `null`
+load (a gap, an unreadable counter, a counter that fell back to 0) is left out of that day's mean and
+never counted as 0.
+
+A bucket backed by fewer than `usage.min_bucket_days` days (default 2), or by none, takes a value
+interpolated from the nearest well backed buckets of the same group, not an overall average. During the
+first days, when no bucket has that many days yet, every bucket keeps its own value and an empty one gets
+the overall mean. Records carry `usage_gaps_pct=N` (the share of the planned blocks that are thin or
+empty) and `usage_samples=N` (days of history, while fewer than `usage.history_weeks` x 7). Until
+`usage.min_history_days` days (default 3) exist the planner does not act on prices (veto V4).
 
 ## Solar calibration
 

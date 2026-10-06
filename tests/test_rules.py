@@ -311,7 +311,7 @@ def test_v3_blocks_grid_charge_and_leaves_solar_to_the_default(site_config):
     # Budget exhausted. Grid charge (S1, cons -0.05) is suppressed by V3 ...
     d = go(site_config, [(-0.05, 0.02)] * 2, g=EXHAUSTED)
     assert d.vetoes_fired == ["V3"]
-    # S5 also proposes a grid charge (later 0.02*0.9 = 0.018 > -0.05): vetoed.
+    # S4 (sale use) also proposes a grid charge (later 0.02*0.9 = 0.018 > -0.05): vetoed.
     assert d.suppressed == [("S1", "charge", "V3"), ("S4", "charge", "V3")]
     assert d.selector == "S6" and d.action == "idle"
     # ... and surplus solar asks for nothing: the inverter stores it by default.
@@ -326,21 +326,13 @@ def test_v3_blocks_grid_charge_and_leaves_solar_to_the_default(site_config):
 def test_sunny_with_room_and_positive_price_is_idle_not_a_forced_charge(
         site_config):
     # Surplus 1.0 - 0.4 = 0.6 kWh, battery 50 % (headroom), positive prices,
-    # a better injection price later: the old S2 forced a charge here. The
+    # a better injection price later: forcing a charge would be wrong. The
     # inverter charges from surplus on its own, so the planner sends idle.
     d = go(site_config, [(0.20, 0.05), (0.20, 0.20)],
            solar={0: 1.0}, usage={0: 0.4})
     assert (d.selector, d.action, d.target_power_kw) == ("S6", "idle", 0.0)
     assert d.vetoes_fired == [] and d.suppressed == []
-    assert "S2" not in d.reasoning
     assert "default behaviour" in d.reasoning
-
-
-def test_no_selector_is_named_s2(site_config):
-    assert not hasattr(_rules, "_s2")
-    assert "S2" not in [n for n, _ in _rules._SELECTORS]
-    assert not hasattr(_rules, "FORBID_SOLAR_CHARGE")
-    assert not hasattr(_rules.Proposal("idle", 0.0, "r"), "charge_source")
 
 
 @pytest.mark.parametrize("plist", [
@@ -371,7 +363,7 @@ def test_regression_negative_injection_does_not_end_the_chain(site_config):
 
     Hand numbers: battery 50 % (headroom 5.0). Block 0: solar 1.0, usage 0.4.
     Injection now -0.02 (V2 fires); later 0.10. S3 sees a later block with a
-    better price and stands aside; S5 needs 0.10 * 0.90 = 0.09 > consumption
+    better price and stands aside; S4 needs 0.10 * 0.90 = 0.09 > consumption
     0.15, which fails. Nothing applies: idle, and the inverter's default
     stores the solar surplus. Nothing is exported at the negative price.
     """
@@ -400,7 +392,7 @@ def test_regression_reserve_floor_does_not_stop_negative_price_charging(
 
 # 8 blocks; injection: b0 .10 b1 .15 b2 .12 b3 .11 b4 .10 b5 .09 b6 .30 b7 .08
 S3_INJ = [0.10, 0.15, 0.12, 0.11, 0.10, 0.09, 0.30, 0.08]
-S3_PRICES = [(0.40, i) for i in S3_INJ]     # consumption high: no S5/S1
+S3_PRICES = [(0.40, i) for i in S3_INJ]     # consumption high: no S4/S1
 
 
 def test_s3_window_bounded_by_saturation(site_config):
@@ -453,7 +445,7 @@ def test_s3_imminent_saturation_uses_current_block(site_config):
 def test_s3_skips_unpriced_blocks(site_config):
     # Block 2 (would be .50, the window's best) has no price: skipped, so
     # block 1 (.15) is the best PRICED block of the window 0..2.
-    plist = [(0.60, i) for i in S3_INJ]     # 0.50*0.9 = 0.45 < 0.60: no S5
+    plist = [(0.60, i) for i in S3_INJ]     # 0.50*0.9 = 0.45 < 0.60: no S4
     plist[2] = (0.60, 0.50)
     d = go(site_config, plist, now_i=1, sat=3, spill=2.0, hide={2})
     assert d.selector == "S3"
@@ -496,7 +488,7 @@ def test_s3_exports_only_what_is_not_needed(site_config):
 # ---- S4 -------------------------------------------------------------------
 
 # consumption b0 .30 b1 .20 b2 .25 b3 .35 | b4 .60 b5 .20 | b6, b7 .05
-# (b4..b7 are after the breach at b4). injection tiny (0.02) so arbitrage (S5)
+# (b4..b7 are after the breach at b4). injection tiny (0.02) so the sale use of S4
 # never applies: 0.018 < any cons.
 S4_PRICES = [(0.30, 0.02), (0.20, 0.02), (0.25, 0.02), (0.35, 0.02),
              (0.60, 0.02), (0.20, 0.02), (0.05, 0.02), (0.05, 0.02)]
@@ -597,7 +589,7 @@ def test_s4_vetoed_by_v3_when_no_budget(site_config):
     assert d.selector == "S6"
 
 
-# ---- S4, sale use (was S5) -------------------------------------------------
+# ---- S4, sale use -------------------------------------------------
 
 @pytest.mark.parametrize("later,fires", [
     (0.25, True),      # 0.25*0.9 = 0.225 > 0.20, spread 0.025
@@ -651,7 +643,7 @@ def test_s6_reasoning_names_salient_facts(site_config):
 def test_negative_injection_positive_consumption_band(site_config):
     # injection -0.01 while consumption +0.20, battery 50 %, spill ahead:
     # S3 proposes export (now -0.01 beats later -0.05) but V2 forbids it;
-    # evaluation advances (S4, S5 do not apply) and lands on S6.
+    # evaluation advances (S4 does not apply) and lands on S6.
     d = go(site_config, [(0.20, -0.01), (0.20, -0.05)], spill=1.0, sat=1)
     assert d.vetoes_fired == ["V2"]
     assert d.suppressed == [("S3", "export", "V2")]
@@ -674,9 +666,8 @@ def test_consecutive_vetoed_proposals_no_loop(site_config):
     # Battery at floor (V1), injection negative (V2), budget exhausted (V3).
     # S0 shave discharge: V1. S1 (cons -0.05) grid charge: V3.
     # S3 proposes nothing: no charge above the reserve to export.
-    # S5 grid-charge: later -0.05 * 0.9 = -0.045 > consumption now -0.05, so
-    # under the plain-multiplication loss rule S5 also proposes (the old
-    # price/eff division gave -0.0556 < -0.05 and hid it); V3 blocks it.
+    # S4 sale use: later -0.05 * 0.9 = -0.045 > consumption now -0.05, so
+    # under the plain-multiplication loss rule it also proposes; V3 blocks it.
     # Then S6.
     g = grid(offtake=4.0, energy=0.9, peak=2.5, avg=9.0)
     # shave: projected 0.9+4/6 = 1.5667; needed (1.5667-0.625)*6 = 5.65 ->
@@ -790,7 +781,7 @@ def test_regression_with_real_projection():
 
 NEG = (-0.05, 0.02)          # negative consumption price: S1 grid-charges
 ARB = [(0.10, 0.02), (0.10, 0.50), (0.10, 0.50)]
-# ARB: 0.50 * 0.9 = 0.45 > 0.10 -> S5 arbitrage grid charge when history is ok.
+# ARB: 0.50 * 0.9 = 0.45 > 0.10 -> S4 sale-use grid charge when history is ok.
 
 
 V4_FORBIDS = {"grid_charge", "export"}
@@ -1025,7 +1016,7 @@ def test_s4_dearer_now_does_nothing_and_falls_through(site_config):
 
 
 def test_s4_dearer_now_lets_a_later_selector_act(site_config):
-    # S4 steps aside; S5 (arbitrage against a later injection price) can act.
+    # S4's import use steps aside; its sale use (arbitrage against a later injection price) can act.
     plist = [(0.30, 0.02), (0.50, 0.02), (0.22, 0.60)]
     d = go(site_config, plist, pct=30.0, breach=2, shortfall={2: 1.0})
     assert d.selector == "S4"

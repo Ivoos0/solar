@@ -27,7 +27,8 @@ def send(action, target_power_kw):
 
 
 def read_charge_percent():
-    """Battery charge, 0 to 100. Anything else counts as a failed reading."""
+    """OPTIONAL. Battery charge, 0 to 100. Anything else counts as a failed reading.
+    Leave it out (and set battery.soc_sensor) when Home Assistant already has the charge."""
     ...
 ```
 
@@ -39,7 +40,7 @@ python3 -m pytest tests/test_driver_conformance.py --driver pyscript/modules/inv
 
 It checks the file name, that importing it touches no network, that `send` returns `True` for
 every action (`charge`, `discharge`, `export`, `idle`), also when repeated and within a few
-seconds, and that `read_charge_percent` returns a number from 0 to 100. It really calls your
+seconds, and, when you define it, that `read_charge_percent` returns a number from 0 to 100. It really calls your
 driver, so run it with the inverter disconnected or your connection mocked. Every
 `inverter_*.py` in `pyscript/modules/` is checked as well. Passing does not prove the driver works
 on your hardware.
@@ -162,7 +163,10 @@ Before you enable a real driver:
       its default behaviour. The planner sends it once when it stops a forced mode, and not again
       while it stays idle. The conformance check cannot test this without your hardware.
 - [ ] Decide what the inverter does when commands stop. A failed `send` is logged and is not counted
-      as sent, so the next decision tries it again.
+      as sent, so the next decision tries it again; after 3 failures in a row you get an e-mail and the
+      records carry `inverter_send_failed=N`. The planner also sends `idle` by itself when it halts for
+      missing prices, when its configuration breaks, and (the peak guard) when its meter dies while it was
+      shaving, so `idle` must always be safe to send.
 - [ ] Know what the peak guard already handles, and what is left to you. Handled: the guard reads
       net grid offtake, which its own discharge lowers, so it adds the power it is commanding back
       before projecting (see [Peak guard](how-it-works.md#peak-guard)); the command therefore stays steady instead

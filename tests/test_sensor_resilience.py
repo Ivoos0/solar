@@ -179,7 +179,6 @@ from test_battery_planner import NOTIFY, PRICE_ENTITY  # noqa: E402,F401
 def _failing_driver(env, ok=False):
     _real_driver(env)
     (env.tmp / "drivers" / "inverter_fakeinv.py").write_text(
-        "SOC_IS_STUB = False\n"
         "def send(action, target_power_kw):\n    return %s\n"
         "def read_charge_percent():\n    return 40.0\n" % ok, encoding="utf-8")
 

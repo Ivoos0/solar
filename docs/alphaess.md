@@ -172,7 +172,7 @@ its register definitions; the register list itself comes from the AlphaESS Modbu
    `sensor.alphaess_soc_battery`, `sensor.alphaess_power_battery` and so on.
 6. Point the planner at them in `user_config.yaml` (the table below).
 
-The power sensors poll every 10 seconds, which is easy on the bridge; the planner runs once a minute.
+The power sensors poll every 10 seconds, which is easy on the bridge; the planner runs every `timing.evaluation_interval_minutes` (5 by default). A sensor the planner depends on that is not written for `timing.sensor_stale_minutes` (15 by default) counts as unavailable, which a poll every 10 to 60 seconds never reaches.
 The PV power register (`0x0453`) was unreadable on one install and the planner does not need it, so it
 is left out.
 
@@ -238,7 +238,7 @@ pymodbus versions call the `slave` argument `device_id`.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| All `sensor.alphaess_*` are `unavailable`, records carry `soc_unavailable` and `battery_power_unavailable` | The bridge cannot be reached. The usual cause is that its IP address changed | Check that the bridge still has the address in `alphaess_modbus_host_ip` and answers (the script above). Give it a static address so this does not happen again |
+| All `sensor.alphaess_*` are `unavailable`, records carry `soc_unavailable` and `battery_power_unavailable`, the planner holds and, after 15 minutes, a sensor outage e-mail arrives | The bridge cannot be reached. The usual cause is that its IP address changed | Check that the bridge still has the address in `alphaess_modbus_host_ip` and answers (the script above). Give it a static address so this does not happen again |
 | Only some sensors are `unavailable` | A register is not readable on your inverter model | Remove that sensor from the hub; the planner does not need the optional ones |
 | Values look 10 times too big or small | A `scale` is missing or wrong | Compare with the definitions above |
 | The battery power has the wrong sign | Your inverter reports the opposite direction | Set `battery.power_positive: charge` |

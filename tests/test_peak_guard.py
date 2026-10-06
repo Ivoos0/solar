@@ -266,7 +266,6 @@ def test_forming_peak_discharges_once_with_guard_record(make_guard):
     # a forming peak leaves no charge budget after the household draw (V3
     # forbids grid charging only; the guard never charges)
     assert rec.vetoes_applied == ["V3"]
-    assert "soc_stubbed" not in rec.degraded_inputs
     line = decision.format_record(rec)
     assert "source=guard" in line and "selector=S0" in line
     assert "average mode running;" in line

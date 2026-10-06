@@ -42,7 +42,7 @@ how coarse the source was.
 | `kind` | `solar` or `usage`; a file read as the wrong kind is discarded |
 | `computed_at` | When the series was built, so a file written yesterday never looks fresh |
 | `source` | Where the data came from |
-| `config_fingerprint` | Hash of the settings that change what a block means (array geometry, location, block length) |
+| `config_fingerprint` | Hash of the settings that change what a block means: the block length and the usage settings (weeks, grouping, recency weighting, minimum days per block). The roof lives in the forecast URL, not here: a new forecast replaces the solar series |
 | `blocks` | The series itself |
 
 The solar series is always the raw forecast. The solar calibration ratio is

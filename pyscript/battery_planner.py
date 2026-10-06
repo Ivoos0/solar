@@ -5,7 +5,7 @@ Cycle, fired every minute and gated on
 config.evaluation_interval_minutes so that value is really configurable:
 
   config -> prices (missing/stale: HALT) -> forecast (missing: zero solar +
-  bounded retry) -> solar/usage series (cache) -> charge (sensor or stub) -> battery ->
+  bounded retry) -> solar/usage series (cache) -> charge (sensor or driver; none: hold) -> battery ->
   trajectory -> grid state -> rules.decide -> decision.build -> inverter.apply
 
 Documented readings and guesses (this file cannot be run outside Home Assistant)

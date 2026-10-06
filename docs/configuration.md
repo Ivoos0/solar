@@ -8,12 +8,14 @@ Every setting in `user_config.yaml`, which way to round values, and notes on pri
 - [Rounding: which way to err](#rounding-which-way-to-err)
 
 `battery_planner/user_config.example.yaml` lists every setting with comments. A bad configuration
-is a startup error: it is logged and no decision is made.
+is a startup error: it is logged and no decision is made. If the planner was already running, it also
+sends one `idle` to release any forced command and one e-mail, using the last good configuration.
 
 ## Settings reference
 
-Every key in `user_config.yaml`. Keys you leave out use the default. Only `battery.capacity_kwh` and
-`alerts.address` have no default and must be set.
+Every key in `user_config.yaml`. Keys you leave out use the default. `battery.capacity_kwh`, `alerts.address`
+and, with the default `logging` driver, `battery.soc_sensor` have no default and must be set. While the
+capacity tariff is on, `battery.power_sensor` is needed too, or the planner holds.
 
 | Key | Default | Unit | What it changes |
 |---|---|---|---|
@@ -29,7 +31,7 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `battery.soc_sensor` | none | entity id | **Required** with the `logging` driver (the config is refused without it); optional with a real driver that reads the charge itself. Sensor with the battery charge in percent (0 to 100), read by the planner and the peak guard. `unavailable`, `unknown`, not refreshed for `timing.sensor_stale_minutes`, a non-number or a value outside 0 to 100 counts as unreadable: the planner holds and marks `soc_unavailable`. There is no placeholder charge |
 | `battery.power_sensor` | none | entity id | Sensor with the battery power, in W or kW (the unit attribute is read; any other unit counts as unreadable). Lets the planner measure the household draw (see [What the planner does](how-it-works.md#what-the-planner-does)). Required while `capacity_tariff.enabled` is true: when it is not set, or cannot be read, the planner holds (no charging, no exporting; peak shaving still acts) and records carry `battery_power_not_configured` or `battery_power_unavailable` |
 | `battery.power_positive` | `discharge` | `discharge` or `charge` | Which direction is positive in `battery.power_sensor`. `discharge`: positive while the battery gives power (AlphaESS). `charge`: positive while it takes power |
-| `battery.max_charge_sensor` | none | entity id | Sensor with the inverter's own maximum battery charge power, in W or kW (the unit attribute is read). When it reads above 0, the planner uses it as the charge limit, read again every cycle. Otherwise `battery.max_charge_kw` applies and records carry `battery_limits_fallback` |
+| `battery.max_charge_sensor` | none | entity id | Sensor with the inverter's own maximum battery charge power, in W or kW (the unit attribute is read). When it reads above 0, the planner uses it as the charge limit, read again every cycle. Otherwise (unreadable, 0 or less, not refreshed for `timing.sensor_stale_minutes`, or above 4 times `battery.max_charge_kw`) `battery.max_charge_kw` applies and records carry `battery_limits_fallback` |
 | `battery.max_discharge_sensor` | none | entity id | The same for the maximum discharge power: the limit for exporting and for peak shaving |
 | `battery.max_charge_kw` | `5.0` | kW | Highest charge power the planner proposes. Fallback when no `battery.max_charge_sensor` is set or it cannot be read |
 | `battery.max_discharge_kw` | `5.0` | kW | Power used when exporting and the cap on peak shaving. Fallback when no `battery.max_discharge_sensor` is set or it cannot be read |
@@ -42,7 +44,7 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `capacity_tariff.billing_floor_kw` | `2.5` | kW | Peaks at or below this cost nothing extra. Sets the lowest ceiling |
 | `capacity_tariff.stay_under_percent` | `80` | % (above 0, up to 100) | Grid charging stays under this share of the ceiling |
 | `capacity_tariff.guard_interval_seconds` | `30` | seconds | Minimum gap between peak guard runs. The guard's timer is fixed at 30, so values below 30 change nothing |
-| `capacity_tariff.quarter_hour_average_mode` | `accumulating` | `accumulating`, `running` | How the meter's quarter-hour average is read (see below). `auto` no longer exists |
+| `capacity_tariff.quarter_hour_average_mode` | `accumulating` | `accumulating`, `running` | How the meter's quarter-hour average is read (see below) |
 | `capacity_tariff.offtake_sensor` | `sensor.slimmelezer_power_consumed` | entity id | Netted total offtake |
 | `capacity_tariff.quarter_hour_average_sensor` | `sensor.slimmelezer_huidig_kwartiervermogen` | entity id | Meter register 1-0:1.4.0 |
 | `capacity_tariff.month_peak_sensor` | `sensor.slimmelezer_maandpiek` | entity id | Meter register 1-0:1.6.0 |
@@ -52,7 +54,7 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `usage.grouping` | `same_weekday` | `same_weekday`, `day_type` | `same_weekday` averages the same weekday; `day_type` pools weekdays and weekend days |
 | `usage.recency_weighting` | `linear` | `linear`, `none` | `linear` weights newer weeks more (4 weeks: 4, 3, 2, 1). Changing it discards the cached profile |
 | `history.enabled` | `true` | true/false | Records the energy history |
-| `history.sensors.import`, `.export` | the SlimmeLezer tariff 1 and 2 counters | entity ids (list) | Cumulative kWh from and to the grid |
+| `history.sensors.import`, `.export` | the SlimmeLezer tariff 1 and 2 counters | entity ids (list) | Cumulative kWh from and to the grid. A listed sensor that does not exist in your Home Assistant triggers the sensor outage e-mail, so replace the defaults if you have other counters |
 | `history.sensors.solar`, `.battery_charge`, `.battery_discharge`, `.load` | `[]` | entity ids (list) | Cumulative kWh counters. See [Energy history](history-and-reports.md#energy-history) |
 | `report.enabled` | `true` | true/false | Writes the [daily report](history-and-reports.md#daily-report) |
 | `sensors.enabled` | `true` | true/false | Publishes the planner state as Home Assistant [sensors](alerts-and-sensors.md#sensors). `false` publishes nothing |
@@ -65,7 +67,7 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `timing.usage_cache_stale_minutes` | `2880` | minutes | Age after which the cached usage profile is rebuilt |
 | `alerts.address` | **required** | e-mail address | Recipient passed to the notifier. Use the same address as `smtp_recipient` |
 | `alerts.notify_service` | `battery_alert` | service name | Notifier `notify.<name>`; lowercase letters, digits, underscore |
-| `alerts.realert_minutes` | `60` | minutes | Minimum gap between price-outage e-mails |
+| `alerts.realert_minutes` | `60` | minutes | Minimum gap between repeats of the price-outage, sensor-outage and inverter-refuses-commands e-mails |
 | `alerts.sensor_enabled` | `true` | true/false | [Sensor outage e-mail](alerts-and-sensors.md#alert-e-mails) when configured sensors stay unavailable |
 | `alerts.sensor_outage_minutes` | `15` | minutes | How long a sensor must be unavailable before it is mailed. Integer, at least 1. Repeated every `alerts.realert_minutes` |
 | `alerts.peak_enabled` | `true` | true/false | Peak notice e-mail (after) |
@@ -123,9 +125,7 @@ the two differ by a factor of 15. You set which one your meter does; there is no
 out, open the history graph of `capacity_tariff.quarter_hour_average_sensor`: a sawtooth that drops to 0
 at every quarter-hour and climbs from there is `accumulating` (the SlimmeLezer 1-0:1.4.0 register
 behaves like this); a line that jumps to roughly the current load right after the boundary is
-`running`. A config that still says `auto` is refused at startup with a message saying so. The old
-`average_mode_planner.json` and `average_mode_guard.json` files under `battery_planner/state/` are no
-longer used and can be deleted.
+`running`.
 
 The peak guard's `@state_trigger` names `sensor.slimmelezer_power_consumed` literally, because
 decorator arguments are fixed at load time. If your netted offtake sensor has another name, the guard

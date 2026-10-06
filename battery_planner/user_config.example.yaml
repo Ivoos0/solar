@@ -56,7 +56,7 @@ battery:
                                 # placeholder value: unreadable or frozen, the
                                 # planner holds (no grid charging, no export).
                                 # See docs/alphaess.md.
-  # power_sensor: sensor.alphaess_power_battery
+  power_sensor: sensor.alphaess_power_battery
                                 # REQUIRED while capacity_tariff.enabled is true.
                                 # Battery power, in W or kW (the unit attribute is
                                 # read). The grid charge budget counts the house
@@ -70,14 +70,19 @@ battery:
   # name them here: they are read every cycle and replace the numbers below.
   # max_charge_sensor: sensor.alphaess_battery_max_charge_power
   # max_discharge_sensor: sensor.alphaess_battery_max_discharge_power
-  # reserve_sensor: sensor.alphaess_discharging_cutoff_soc   # percent; replaces reserve_percent
                                 # W or kW (the unit attribute is read). Set but
-                                # unreadable or 0: the numbers below apply and
-                                # records carry battery_limits_fallback.
+                                # unreadable, frozen, 0 or more than 4 x the numbers
+                                # below: the numbers below apply and records carry
+                                # battery_limits_fallback.
+  # The inverter's own minimum charge, in percent. Read every cycle and used as
+  # the reserve instead of reserve_percent (unreadable: reserve_percent applies
+  # and records carry battery_reserve_fallback).
+  # reserve_sensor: sensor.alphaess_discharging_cutoff_soc
   # max_charge_kw: 5.0          # ONLY IF YOU HAVE NO SENSOR. Default 5.0. Binds PER
   #                             # BLOCK, independent of capacity. Also the fallback.
   # max_discharge_kw: 5.0       # ONLY IF YOU HAVE NO SENSOR. Default 5.0.
-  round_trip_efficiency: 0.90   # gates arbitrage and the solar-hold decision
+  round_trip_efficiency: 0.90   # share of stored energy you get back; a later price (selling or
+                                # avoided buying) only counts at this fraction
 
 # The roof (position, tilt, direction, kWp) is NOT configured here: it lives only
 # in forecast_solar_url in secrets.yaml. See docs/install.md, step 5.
@@ -216,7 +221,7 @@ timing:
   usage_cache_stale_minutes: 2880
 
 alerts:
-  address: CHANGE_ME@example.com   # REQUIRED - where halt alerts are sent
+  address: CHANGE_ME@example.com   # REQUIRED - where the alert e-mails are sent
                                    # (same address as smtp_recipient in HA's secrets.yaml)
   notify_service: battery_alert      # name of the HA notify service (notify.<name>);
                                    # lowercase letters, digits, underscore. Must match the

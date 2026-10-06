@@ -132,7 +132,7 @@ def make_record(**over):
         saturation_block=None, spill_kwh=2.4, reserve_breach_block=None,
         projected_end_charge_kwh=2.1, duration_ms=84, running_average_kw=1.2,
         ceiling_kw=2.5, budget_kw=1.95, vetoes_applied=[], selector="S3",
-        reasoning="leftover 4.1kWh", degraded_inputs=["soc_stubbed"],
+        reasoning="leftover 4.1kWh", degraded_inputs=["soc_unavailable"],
         source="planner")
     base.update(over)
     return decision.DecisionRecord(**base)
@@ -210,7 +210,6 @@ def test_format_record_exception_returns_false_and_warns(
 
 def test_default_read_charge_has_no_reading_and_no_placeholder(inverter):
     assert inverter.read_charge() == (None, None)
-    assert not hasattr(inverter, "STUBBED_CHARGE_PERCENT")
 
 
 # ---- action / target power must match the record -------------------------
@@ -424,7 +423,6 @@ def test_public_surface_is_exactly_five_functions_plus_constants(inverter):
 
 _RECORDING = '''
 import os, threading
-SOC_IS_STUB = False
 SENT = []
 LOG_LINES_AT_SEND = []
 THREADS = []
@@ -461,7 +459,7 @@ _DRIVERS = {
     "noread": "def send(a, p):\n    return True\n",
     "crashes": "raise RuntimeError('import time failure')\n",
     "toggle": (
-        "SENT = []\nMODE = ['ok']\nSOC_IS_STUB = False\n"
+        "SENT = []\nMODE = ['ok']\n"
         "def send(action, target_power_kw):\n"
         "    SENT.append((action, target_power_kw))\n"
         "    if MODE[0] == 'raise':\n        raise OSError('bus down')\n"
@@ -507,7 +505,6 @@ def test_logging_driver_transmits_nothing_and_logs(inverter, tmp_path):
     drv = _driver_module("logging")
     assert drv.send("discharge", 3.0) is True      # no-op, nothing to observe
     assert not hasattr(drv, "read_charge_percent")      # no charge reading
-    assert not hasattr(drv, "SOC_IS_STUB")
 
 
 def test_logging_driver_has_no_imports_and_no_calls():

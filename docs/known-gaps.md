@@ -3,9 +3,15 @@
 What the planner does not do yet, and what has not been tested. Back to the [README](../README.md).
 
 - No inverter driver is shipped except `logging`, so nothing controls a battery.
-- Until a household load source is configured (usage history exists), the planner only peak-shaves
-  and otherwise idles: no grid charging, no solar storage, no exporting. The inverter's own behaviour
-  applies meanwhile.
+- Until a household load source is configured and `usage.min_history_days` days are recorded, the planner
+  only peak-shaves and otherwise idles: no grid charging, no solar storage, no exporting. The inverter's
+  own behaviour applies meanwhile.
+- The planner cannot curtail solar. At a negative injection price with a full battery the inverter's
+  default exports the surplus and you pay for it.
+- There is no minimum hold time or hysteresis: when the inputs move a little, a decision can change from one
+  cycle to the next, and each change is a new command once a driver is enabled.
+- A command sent to the inverter is not read back: the planner does not check that the inverter did what
+  it was told.
 - Peak protection is reactive. The projection covers battery charge, not grid offtake, so the planner
   does not hold charge back for a foreseeable evening peak.
 - The peak guard adds the discharge it commands back to the offtake reading, assuming the inverter

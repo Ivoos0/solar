@@ -41,10 +41,6 @@ def test_battery_derived_figures(site_config, pct, stored, headroom):
     assert b.charge_percent == pct
 
 
-def test_battery_state_has_no_stub_flag_any_more(site_config):
-    assert not hasattr(battery.from_percent(50, site_config), "is_stubbed")
-
-
 @pytest.mark.parametrize("bad", [-1, 100.5])
 def test_battery_rejects_out_of_range(site_config, bad):
     with pytest.raises(ValueError):

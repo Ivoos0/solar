@@ -4,6 +4,7 @@ How the planner chooses an action, what the peak guard does and what survives a 
 
 **Contents**
 
+- [When an input is missing or frozen](#when-an-input-is-missing-or-frozen)
 - [Peak guard](#peak-guard)
 - [What a restart does](#what-a-restart-does)
 
@@ -28,18 +29,19 @@ In this documentation, "charge" always means charge from the grid.
 
 Grid charging never exceeds the budget: the charging level (`stay_under_percent` of the ceiling) minus
 what the house is drawing. What the house draws is the grid power it would take without the battery
-helping. With `battery.power_sensor` set, the planner measures it: the meter reading plus the power
+helping. With `battery.power_sensor` the planner measures it: the meter reading plus the power
 the battery is delivering. A battery that covers a 3 kW house while the meter shows 0 kW still counts
 as 3 kW, and the figure does not move when the planner starts charging from the grid. Without that
-sensor the planner uses the meter reading minus its own grid charge, which cannot see a battery
-that is covering the house. Grid charging stops one evaluation interval before the quarter-hour ends:
+sensor, or when it cannot be read, the budget cannot be completed, so while the capacity tariff is on
+the planner holds (no charging, no exporting; veto V8). Grid charging stops one evaluation interval before the quarter-hour ends:
 in the last `timing.evaluation_interval_minutes` (5 by default, never less than 1) the budget is 0,
 so a charge sized for one quarter-hour does not run on into the next while the planner waits for its
 next decision. The peak guard and the peak warning are not affected; they re-check every 30 seconds.
 
 Price outage: if prices are missing, unparseable or already elapsed, no decisions are made. A `HALT`
 line is logged each cycle, one e-mail is sent on entry and then at most one per
-`alerts.realert_minutes`, and a `RECOVERED` line is logged when prices return. The e-mail names the
+`alerts.realert_minutes`, and a `RECOVERED` line is logged when prices return. On entry the planner also
+sends one `idle` if a forced command may still be in force, so the inverter returns to its default. The e-mail names the
 cause. Check the price entity and attribute (see [Configure](configuration.md#configure)). If the ENTSO-e integration
 itself is down, wait for it; the planner resumes by itself.
 
@@ -48,6 +50,35 @@ retries. It does not halt. With no forecast the planner is deliberately cautious
 power from the grid and does not export, because a plan built on zero solar is a guess. It idles
 ("hold: no solar forecast") and only peak protection still acts. A forecast that is merely old but
 still cached is used as before (`cache_age_solar=...`) and does not hold the planner.
+
+## When an input is missing or frozen
+
+Every input falls in one of three groups.
+
+- **Safety-critical:** the prices, the battery charge, and, while the capacity tariff is on, the battery
+  power and the meter sensors. The planner never guesses them. Prices missing: it halts (no decision).
+  Charge, battery power or meter missing: it holds, which means no grid charging and no exporting (vetoes
+  V7 and V8); peak shaving still acts. There is no placeholder charge: without a reading the planner holds.
+- **With a safe fallback:** the inverter's charge and discharge limit sensors and the reserve sensor fall
+  back to `battery.max_charge_kw`, `battery.max_discharge_kw` and `battery.reserve_percent`. The solar
+  forecast falls back to the cached forecast, then to zero solar (veto V6, hold).
+- **Detail only:** the energy counters. An unreadable counter, or one that falls back to 0, gives `null` for
+  that block and never a guess; gaps in the usage profile are filled from neighbouring blocks.
+
+A reading counts as missing when it is unknown or unavailable, when it has not been written for
+`timing.sensor_stale_minutes` (a frozen value is never used), or when it is implausible (battery power above
+4 times the inverter limit, a limit sensor above 4 times its configured fallback). A battery charge or power
+reading that fails for a cycle or two is replaced by the last good one (markers `soc_last_good` and
+`battery_power_last_good`); a longer outage holds.
+
+Whenever the planner stops deciding, it releases what it may have left running: one `idle` when prices go
+missing, when `user_config.yaml` stops validating (plus one e-mail), and from the peak guard when its meter
+has been dead for 2 minutes while it was shaving.
+
+You are told in four ways: the `degraded=` markers on every record, the sensor outage e-mail (after
+`alerts.sensor_outage_minutes`), the e-mail when the inverter keeps refusing commands, and the `inputs_down`
+attribute of `sensor.battery_planner_action`, which a Home Assistant automation can also watch to catch a
+planner that has stopped (see [Alert e-mails and sensors](alerts-and-sensors.md)).
 
 ## Peak guard
 

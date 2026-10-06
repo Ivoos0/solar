@@ -78,11 +78,11 @@ def test_names():
 def test_parses_real_lines_and_counts_by_hand():
     text = "\n".join([
         line(local(8), "charge", "S1", power=2.0, avg=1.0, ceiling=2.5,
-             budget=1.5, degraded=["soc_stubbed", "usage_samples=3"]),
+             budget=1.5, degraded=["soc_unavailable", "usage_samples=3"]),
         line(local(9), "idle", "S6", vetoes=["V4(suppressed S1 charge)",
-                                             "V4(suppressed S5 charge)"],
+                                             "V4(suppressed S4 charge)"],
              avg=2.2, ceiling=2.5, budget=-0.4,
-             degraded=["soc_stubbed"]),
+             degraded=["soc_unavailable"]),
         line(local(10), "export", "S3", vetoes=["V1+V2(suppressed S3 export)"],
              avg=0.5, ceiling=2.5, budget=2.0),
         line(local(11), "idle", "S6", vetoes=["V2"], degraded=["cache_age_solar=3h12m"]),
@@ -94,7 +94,7 @@ def test_parses_real_lines_and_counts_by_hand():
     # counted once per record: V4 appears twice in one record
     assert s["vetoes"] == {"V4": 1, "V1": 1, "V2": 2}
     assert s["suppressed"] == 3
-    assert s["degraded"] == {"soc_stubbed": 2, "usage_samples": 1,
+    assert s["degraded"] == {"soc_unavailable": 2, "usage_samples": 1,
                              "cache_age_solar": 1}
     assert s["max_avg"] == 2.2 and s["max_avg_at"] == local(9)
     assert s["max_ceiling"] == 2.5
@@ -250,9 +250,9 @@ def test_nothing_to_report_returns_none():
 def _full_report():
     decisions = "\n".join([
         line(local(8), "charge", "S1", power=2.0, avg=1.0, ceiling=2.5,
-             budget=1.5, degraded=["soc_stubbed"]),
+             budget=1.5, degraded=["soc_unavailable"]),
         line(local(9), "idle", "S6", vetoes=["V2"], avg=2.7, ceiling=2.5,
-             budget=-0.4, degraded=["soc_stubbed"]),
+             budget=-0.4, degraded=["soc_unavailable"]),
         line(local(18, 0, 0), "discharge", "S0", source="guard", power=1.5),
         line(local(18, 0, 30), "discharge", "S0", source="guard", power=2.0),
         decision.format_halt(decision.HaltState(
@@ -279,7 +279,7 @@ def test_rendered_report_key_lines():
     assert "- Actions: charge 1, discharge 2, export 0, idle 1" in lines
     assert "- Selectors: S0 2, S1 1, S6 1" in lines
     assert "- Vetoes seen: V2 1 (0 proposals suppressed)" in lines
-    assert "- Degraded inputs: soc_stubbed 2" in lines
+    assert "- Degraded inputs: soc_unavailable 2" in lines
     assert "- Halts: 1 cycle without a decision: prices gone (since " \
         "2026-09-29T14:20:00+02:00)" in lines
     assert "- Peak guard: 1 shaving episode (2 records)" in lines

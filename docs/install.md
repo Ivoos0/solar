@@ -71,7 +71,7 @@ Do these in order.
    cp battery_planner/user_config.example.yaml <ha-config>/battery_planner/user_config.yaml
    ```
 
-   Edit it (see [Configure](configuration.md#configure)). At minimum set `battery.capacity_kwh` and `alerts.address`.
+   Edit it (see [Configure](configuration.md#configure)). At minimum set `battery.capacity_kwh`, `battery.soc_sensor` (the planner refuses to start without a battery charge sensor), `battery.power_sensor` (while the capacity tariff is on) and `alerts.address`.
 7. <a id="install-step-7"></a>Restart Home Assistant. Core modules under `pyscript/modules/` are loaded natively and are not
    hot-reloaded, so any change to them needs a restart. A notifier is also only created at startup.
 8. <a id="install-step-8"></a>Test the notifier: Developer Tools -> Actions, choose `notify.battery_alert`, give it a message
@@ -111,7 +111,3 @@ Assistant's `secrets.yaml`.
 3. Never overwrite `user_config.yaml` or `secrets.yaml`. If a release adds keys, compare
    `user_config.example.yaml` and `secrets.example.yaml` with your files and add what is missing.
 4. Restart Home Assistant.
-
-Upgrade note: older versions named the notifier `gmail_alert`. If you set
-`alerts.notify_service: gmail_alert`, either keep that name in your notifier or change the setting to
-`battery_alert`.
