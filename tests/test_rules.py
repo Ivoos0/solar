@@ -398,7 +398,6 @@ def test_regression_reserve_floor_does_not_stop_negative_price_charging(
 # 8 blocks; injection: b0 .10 b1 .15 b2 .12 b3 .11 b4 .10 b5 .09 b6 .30 b7 .08
 S3_INJ = [0.10, 0.15, 0.12, 0.11, 0.10, 0.09, 0.30, 0.08]
 S3_PRICES = [(0.40, i) for i in S3_INJ]     # consumption high: no S5/S1
-S3_PRICES[-1] = (0.20, S3_INJ[-1])   # last price: what a kept kWh avoids
 
 
 def test_s3_window_bounded_by_saturation(site_config):
@@ -416,16 +415,19 @@ def test_s3_window_bounded_by_saturation(site_config):
     assert d6.selector == "S3"
 
 
-def test_s3_whole_horizon_when_no_saturation(site_config):
+def test_s3_needs_a_saturation_ahead(site_config):
+    # a spill without the battery filling up is a rate limit: exporting
+    # stored energy would not save any of it
     d = go(site_config, S3_PRICES, now_i=6, sat=None, spill=2.0)
-    assert d.selector == "S3" and "no saturation" in d.reasoning
-    d1 = go(site_config, S3_PRICES, now_i=1, sat=None, spill=2.0)
-    assert d1.selector == "S6"     # .15 is not the global best (.30)
+    assert d.selector == "S6"
 
 
-def test_s3_fires_on_leftover_alone(site_config):
+def test_s3_never_sells_leftover_charge(site_config):
+    # charge left at the horizon end, no spill: kept, whatever the price
     d = go(site_config, S3_PRICES, now_i=6, spill=0.0, leftover=4.1)
-    assert d.selector == "S3" and "leftover 4.10" in d.reasoning
+    assert d.selector == "S6"
+    d = go(site_config, S3_PRICES, now_i=6, sat=None, spill=0.0, leftover=4.1)
+    assert d.selector == "S6"
 
 
 def test_s3_not_without_spill_or_leftover(site_config):
@@ -488,24 +490,6 @@ def test_s3_exports_only_what_is_not_needed(site_config):
     assert "0.50 kWh is not needed" in d.reasoning
 
 
-def test_s3_leftover_worth_what_it_avoids_buying(site_config):
-    # no saturation: a kept kWh avoids buying. Injection now 0.30 against
-    # 0.40 * 0.9 = 0.36 at the last block: keep it. Against 0.20 * 0.9 = 0.18
-    # (the S3_PRICES default): export.
-    plist = list(S3_PRICES)
-    plist[-1] = (0.40, S3_INJ[-1])
-    assert go(site_config, plist, now_i=6, leftover=4.0).selector == "S6"
-    assert go(site_config, S3_PRICES, now_i=6, leftover=4.0).selector == "S3"
-
-
-def test_s3_leftover_uses_the_price_of_the_shortfall(site_config):
-    # a later shortfall is bought at 0.60: 0.54 after losses beats 0.30 now
-    plist = list(S3_PRICES)
-    plist[7] = (0.60, S3_INJ[7])
-    d = go(site_config, plist, now_i=6, leftover=4.0, shortfall={7: 1.0})
-    assert d.selector == "S6"
-
-
 # ---- S4 -------------------------------------------------------------------
 
 # consumption b0 .30 b1 .20 b2 .25 b3 .35 | b4 .60 b5 .20 | b6, b7 .05
@@ -548,6 +532,26 @@ def test_s4_ignores_cheaper_prices_after_breach(site_config):
             shortfall=S4_SHORT)
     # breach is behind now: window is the current block -> acts now.
     assert d5.selector == "S4"
+
+
+def test_s4_counts_only_the_shortage_until_the_refill(site_config):
+    # M2: breach at b4 (1 kWh short), full again at b5, a second, much bigger
+    # shortage at b7 that charging now cannot cover. N is 1, not 9: only the
+    # cheapest block before the breach (b1, .20) charges.
+    kw = dict(pct=30.0, breach=4, shortfall={4: 1.0, 7: 10.0},
+              charges={5: 10.0})
+    assert go(site_config, S4_PRICES, now_i=0, **kw).selector != "S4"
+    d = go(site_config, S4_PRICES, now_i=1, **kw)
+    assert d.selector == "S4" and "cheapest 1 of" in d.reasoning
+
+
+def test_s4_import_price_ignores_a_shortage_after_the_refill(site_config):
+    # The later shortage is bought at .05 (b7) but is a different shortage:
+    # the import S4 avoids is the one at b4 (.60), so .30 / 0.9 qualifies.
+    kw = dict(pct=30.0, breach=4, shortfall={4: 1.0, 7: 10.0},
+              charges={5: 10.0})
+    d = go(site_config, S4_PRICES, now_i=1, **kw)
+    assert d.selector == "S4" and "vs 0.6000 importing" in d.reasoning
 
 
 def test_s4_not_without_breach(site_config):
