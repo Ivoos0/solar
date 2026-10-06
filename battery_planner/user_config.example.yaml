@@ -211,6 +211,11 @@ alerts:
                                    # lowercase letters, digits, underscore. Must match the
                                    # notifier in configuration.yaml (or one made in the UI)
   realert_minutes: 60
+  sensor_enabled: true             # e-mail when configured sensors stay unavailable (soc, power,
+                                   # limit and reserve sensors, forecast, meter sensors, history
+                                   # counters). The price sensor has its own halt alert
+  sensor_outage_minutes: 15        # a sensor is reported once it has been unavailable this long
+                                   # (integer >= 1); repeated every realert_minutes
   # Two capacity-tariff e-mails, both sent through the same notify service:
   peak_enabled: true               # NOTICE AFTER the fact: this month's meter peak (1-0:1.6.0)
                                    # went above capacity_tariff.billing_floor_kw. One mail for the

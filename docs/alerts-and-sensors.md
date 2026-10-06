@@ -14,6 +14,8 @@ All e-mails go through the notifier `notify.<alerts.notify_service>` to `alerts.
 Price outage (halt). Sent when prices become unavailable, then at most once per
 `alerts.realert_minutes`. Fix the price source as described in [What the planner does](how-it-works.md#what-the-planner-does).
 
+Sensor outage (`alerts.sensor_enabled`). Sent when configured sensors stay unavailable (unknown, unavailable or missing) for `alerts.sensor_outage_minutes` (default 15). It covers the inputs the planner reads each cycle: `battery.soc_sensor`, `battery.power_sensor`, the limit and reserve sensors, the forecast entity, the three meter sensors while the capacity tariff is on, and the `history.sensors` counters. The price sensor is not included: it has the price outage alert above. One e-mail lists every sensor that has been down long enough, how long, and what the planner does meanwhile (for example "battery charge unknown: the planner holds"). It repeats every `alerts.realert_minutes` while any of them stays down, and stops when all are back. It works during a price outage. When you get one, check the integration behind the sensor (a Modbus bridge that lost its IP, an integration that needs a reload). The count lives in memory, so a restart during an outage starts it again. A failed send is retried on the next cycle.
+
 Peak warning, before (`alerts.peak_warning_enabled`). The peak guard projects the current
 quarter-hour's average from the energy so far and the current offtake. If the projection is above the
 ceiling on `alerts.peak_warning_ticks` consecutive evaluations (default 2), it sends a prediction: the

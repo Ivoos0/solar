@@ -64,6 +64,8 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `alerts.address` | **required** | e-mail address | Recipient passed to the notifier. Use the same address as `smtp_recipient` |
 | `alerts.notify_service` | `battery_alert` | service name | Notifier `notify.<name>`; lowercase letters, digits, underscore |
 | `alerts.realert_minutes` | `60` | minutes | Minimum gap between price-outage e-mails |
+| `alerts.sensor_enabled` | `true` | true/false | [Sensor outage e-mail](alerts-and-sensors.md#alert-e-mails) when configured sensors stay unavailable |
+| `alerts.sensor_outage_minutes` | `15` | minutes | How long a sensor must be unavailable before it is mailed. Integer, at least 1. Repeated every `alerts.realert_minutes` |
 | `alerts.peak_enabled` | `true` | true/false | Peak notice e-mail (after) |
 | `alerts.peak_warning_enabled` | `true` | true/false | Peak warning e-mail (before) |
 | `alerts.peak_warning_min_interval_minutes` | `60` | minutes (whole number, 1 or more) | Minimum gap between peak warnings |
