@@ -908,7 +908,8 @@ def _record_history_inner(cfg, now, price_map, solar, zero_fallback, soc):
     forecast, consumption, injection = _history_block_context(
         cfg, boundary, price_map, solar, zero_fallback)
     snap = history.make_snapshot(boundary, now, readings, forecast,
-                                 consumption, injection, soc)
+                                 consumption, injection, soc,
+                                 previous=_hist_last)
     records = history.records_between(
         _hist_last, snap, cfg.block_minutes, ZoneInfo(cfg.timezone))
     by_date = {}
@@ -926,7 +927,7 @@ def _record_history_inner(cfg, now, price_map, solar, zero_fallback, soc):
     if err:
         _hist_warn("snapshot", "cannot save last_snapshot.json: %s" % err, now)
     if snap.failed:
-        _hist_warn("sensors", "counters unreadable for %s; those values are "
+        _hist_warn("sensors", "counters unreadable (or fell to 0) for %s; those values are "
                    "recorded as null" % ", ".join(snap.failed), now)
 
 

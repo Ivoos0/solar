@@ -51,6 +51,8 @@ block (planner stopped, Home Assistant restarted) writes `null` records for the 
 one day of them. A difference is never spread over several blocks, and an unreadable counter makes its
 whole quantity `null`.
 
+A counter that reads exactly 0 after it has been above 0 counts as unreadable too: a cumulative counter does not go back to 0, and a sensor that bounces to 0 and then recovers would otherwise put its whole value into one block. The block with the 0 and the block after it are `null` for that quantity (the planner logs a warning); the next block is normal again. The last good reading of each counter is kept in `battery_planner/history/last_snapshot.json` for this, so it also works across an unavailable gap and a restart. A counter that really starts at 0 (a new meter, an export counter that never exported) is accepted. A drop to a small non-zero number is not caught here; it makes that block `null` as a reset, but a recovery from it is not recognised.
+
 The planner runs every `timing.evaluation_interval_minutes`, so a block's counters are read up to one
 interval after the boundary. Both read times are in every record.
 

@@ -245,6 +245,32 @@ def test_sensor_unavailable_gives_nulls_incomplete_and_one_warning(env):
     assert len(warnings(env)) == n                        # rate-limited
 
 
+def test_a_counter_bouncing_to_zero_gives_nulls_not_a_huge_delta(env):
+    counters(env, i1=500, i2=500, e1=5, e2=5)
+    env.run(T0)
+    counters(env, i1=0, i2=500, e1=5, e2=5)          # one tariff counter drops to 0
+    env.run(T0 + QUARTER)
+    counters(env, i1=500, i2=500, e1=5, e2=5)        # and recovers
+    env.run(T0 + 2 * QUARTER)
+    counters(env, i1=500.5, i2=500, e1=5, e2=5)
+    env.run(T0 + 3 * QUARTER)
+    first, second, third = records(env)
+    assert first["import_kwh"] is None and second["import_kwh"] is None
+    assert third["import_kwh"] == pytest.approx(0.5)
+    assert max(r["import_kwh"] or 0 for r in records(env)) < 1.0
+    assert len(warnings(env)) >= 1
+
+
+def test_the_zero_check_survives_a_restart(env):
+    counters(env, i1=500, i2=500, e1=5, e2=5)
+    env.run(T0)
+    restart(env)
+    counters(env, i1=0, i2=0, e1=5, e2=5)
+    env.run(T0 + QUARTER)
+    (r,) = records(env)
+    assert r["import_kwh"] is None
+
+
 def test_missing_entity_is_unreadable_not_an_error(env):
     env.run(T0)                                           # no counters at all
     env.run(T0 + QUARTER)
