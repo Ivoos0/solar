@@ -112,6 +112,10 @@ class FakeInverter:
         self.charge_percent = 50.0
         self.marker = None
         self.stub = True
+        self.last_action = None            # what last_command.json would say
+
+    def last_sent_action(self, *a, **k):
+        return self.last_action
 
     def apply(self, action, target_power_kw, record, *a, **k):
         decision.format_record(record)      # must always format
@@ -1463,3 +1467,34 @@ def test_dry_run_adds_nothing_back_because_nothing_is_commanded(make_guard):
     _shave_tick(g, 5, 0, shaving=False)
     assert g.mod._commanded_discharge_kw(g.mod._get_config(),
                                          g.mod._monotonic()) == 0.0
+
+
+# ---- L5: a discharge left over from before a reload is released -------------------
+
+QUIET = dict(offtake="0.3", avg="0.4", peak="2.5")
+
+
+def test_reload_with_a_discharge_on_record_sends_idle_once(make_guard):
+    g = make_guard().at(12, 7, 30)
+    g.inv.last_action = "discharge"
+    g.tick(**QUIET)
+    assert [c[0] for c in g.inv.calls] == ["idle"]
+    rec = g.inv.calls[0][2]
+    assert rec.source == "guard" and "released" in rec.reasoning
+    g.tick(advance=30.0, **QUIET)                  # nothing more afterwards
+    assert len(g.inv.calls) == 1
+
+
+@pytest.mark.parametrize("last", [None, "idle", "charge", "export"])
+def test_reload_without_a_discharge_on_record_sends_nothing(make_guard, last):
+    g = make_guard().at(12, 7, 30)
+    g.inv.last_action = last
+    g.tick(**QUIET)
+    assert g.inv.calls == []
+
+
+def test_reload_that_needs_shaving_sends_the_discharge_not_idle(make_guard):
+    g = make_guard().at(12, 7, 30)
+    g.inv.last_action = "discharge"
+    g.tick(**PEAK_ARGS)
+    assert [c[0] for c in g.inv.calls] == ["discharge"]

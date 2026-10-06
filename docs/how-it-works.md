@@ -94,3 +94,5 @@ A missing or damaged file is treated as "nothing saved": the planner starts fres
 because of it. Deleting a file is safe; the worst case is one repeated e-mail or command. Everything
 else starts fresh, for example the guard's shaving state, which is re-derived from the meter on the
 next evaluation.
+
+One exception: if `last_command.json` still says `discharge` when the peak guard starts after a restart or reload and there is nothing to shave, the guard sends one `idle` to release it. The inverter keeps a forced discharge until its own timeout, and the guard has forgotten it sent one.

@@ -183,9 +183,15 @@ def _read_state(path):
 
 @pyscript_executor  # noqa: F821
 def _write_state(path, payload):
-    """Temp file, fsync, rename over the target. Error text or None."""
+    """Temp file, fsync, rename over the target. Error text or None.
+
+    The temp name is unique per writer (process and thread): the planner and
+    the peak guard both write last_command.json from executor threads, and a
+    shared temp name let one writer replace or rename the other's file.
+    """
     import json
-    tmp = path + ".tmp"
+    import threading
+    tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(tmp, "w", encoding="utf-8") as handle:
@@ -194,6 +200,10 @@ def _write_state(path, payload):
             os.fsync(handle.fileno())
         os.replace(tmp, path)
     except Exception as exc:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
         return repr(exc)
     return None
 
@@ -580,6 +590,17 @@ def _forget_sent(path):
     except Exception as exc:
         log.warning(  # noqa: F821
             "inverter: cannot clear the last sent command: %r" % (exc,))
+
+
+def last_sent_action(log_dir=DEFAULT_LOG_DIR, state_dir=None):
+    """Action of the last command a driver accepted ("charge", "discharge",
+    "export" or "idle"), or None when nothing is on record. Reads the shared
+    last_command.json (and this process's memory); never raises."""
+    try:
+        last = _last_command(_state_file(state_dir, log_dir))
+        return None if last is None else last[0]
+    except Exception:
+        return None
 
 
 def apply(action, target_power_kw, record, log_path=None,
