@@ -15,6 +15,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import os
+
 import pytest
 
 import decision
@@ -42,7 +44,7 @@ ALLOWED_CALL_ATTRS = {"write", "flush", "fileno", "fsync", "makedirs",
                       "Thread", "start", "rstrip", "load", "dumps",
                       "replace", "remove", "astimezone", "fromisoformat",
                       "total_seconds", "isoformat", "items", "info", "compile",
-                      "isfinite"}
+                      "isfinite", "getpid", "get_ident"}
 
 
 class FakeLog:
@@ -394,14 +396,18 @@ def test_no_transmission_vocabulary_in_source():
         assert not re.search(word, text, re.IGNORECASE), word
 
 
-def test_public_surface_is_exactly_three_functions_plus_constants(inverter):
+def test_public_surface_is_exactly_four_functions_plus_constants(inverter):
     public = {n for n in vars(inverter) if not n.startswith("_")}
     funcs = {n for n in public
              if callable(getattr(inverter, n))
              and getattr(getattr(inverter, n), "__module__", None)
              == inverter.__name__}
-    assert funcs == {"apply", "read_charge", "log_path_for"}
+    # last_sent_action is read-only: the guard asks what is still on record
+    # after a reload, so it never reaches into a private helper
+    assert funcs == {"apply", "read_charge", "log_path_for",
+                     "last_sent_action"}
     assert public == {"os", "decision", "datetime", "apply", "read_charge",
+                      "last_sent_action",
                       "DEFAULT_RESEND_MINUTES", "LAST_COMMAND_FILE",
                       "HOLD_ATTRIBUTE", "RESEND_FRACTION", "HOLD_LIMIT_MINUTES",
                       "MAX_PLAN_CALLS", "LOG_REPEAT_MINUTES",
@@ -1601,3 +1607,64 @@ def test_list_values_in_the_calls_are_copies_too(inverter, drivers, tmp_path):
     sent_list = _service_calls()[0][2]["names"]
     assert sent_list == ["a", "b"]
     assert sent_list is not _driver_module(kind).SHARED
+
+
+# ---- last_sent_action -----------------------------------------------------------------
+
+def test_last_sent_action_reads_the_shared_file(inverter, tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    assert inverter.last_sent_action(state_dir=str(state)) is None
+    (state / "last_command.json").write_text(
+        '{"action": "discharge", "power_kw": 1.5, '
+        '"sent_at": "2026-09-30T12:00:00+00:00"}', encoding="utf-8")
+    assert inverter.last_sent_action(state_dir=str(state)) == "discharge"
+
+
+@pytest.mark.parametrize("content", ["", "junk", "[]", '{"action": 3}'])
+def test_last_sent_action_never_raises(inverter, tmp_path, content):
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "last_command.json").write_text(content, encoding="utf-8")
+    assert inverter.last_sent_action(state_dir=str(state)) is None
+
+
+# ---- L6: two writers of last_command.json ----------------------------------------------
+
+def test_concurrent_writers_never_clobber_each_other(inverter, tmp_path):
+    import json
+    import threading
+
+    path = str(tmp_path / "state" / "last_command.json")
+    errors = []
+
+    def writer(action):
+        for i in range(150):
+            err = inverter._write_state(path, {
+                "action": action, "power_kw": float(i),
+                "sent_at": "2026-09-30T12:00:00+00:00"})
+            if err:
+                errors.append(err)
+
+    threads = [threading.Thread(target=writer, args=(a,))
+               for a in ("discharge", "idle", "charge", "export")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    data = json.loads(open(path, encoding="utf-8").read())
+    assert data["action"] in {"discharge", "idle", "charge", "export"}
+    assert [f for f in os.listdir(os.path.dirname(path)) if f.endswith(".tmp")] == []
+
+
+def test_a_failed_write_leaves_no_temp_file(inverter, tmp_path, monkeypatch):
+    path = str(tmp_path / "state" / "last_command.json")
+
+    def broken(src, dst):
+        raise OSError("disk says no")
+
+    monkeypatch.setattr(inverter.os, "replace", broken)
+    err = inverter._write_state(path, {"action": "idle"})
+    assert "disk says no" in err
+    assert [f for f in os.listdir(os.path.dirname(path)) if f.endswith(".tmp")] == []

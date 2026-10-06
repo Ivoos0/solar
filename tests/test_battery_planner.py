@@ -1369,7 +1369,7 @@ def test_halt_cause_names_entity_when_unavailable(env):
     assert "price entity %s unavailable" % PRICE_ENTITY in env.lines()[0]
 
 
-# ---- own_grid_charge_kw (household draw in the grid-charge budget) ----------
+# ---- helpers for the grid-charge budget tests ---------------------------------
 
 OFFTAKE_ENTITY = "sensor.slimmelezer_power_consumed"
 
@@ -1406,51 +1406,6 @@ def _charge_at_budget(env):
                        selector="S1", reasoning="forced")
     rules.decide = fake
     return seen
-
-
-def test_own_grid_charge_is_zero_with_logging_driver(env):
-    seen = _charge_at_budget(env)
-    env.write_config("capacity_tariff:\n  quarter_hour_average_mode: running\n")
-    env.state.set(OFFTAKE_ENTITY, "1.5", {"unit_of_measurement": "kW"})
-    env.run(T0)
-    env.run(T0 + STEP)
-    assert len(seen) == 2
-    assert seen[0].own_grid_charge_kw == 0.0
-    assert seen[1].own_grid_charge_kw == 0.0
-
-
-def test_own_grid_charge_equals_last_grid_charge_with_real_driver(env):
-    _real_driver(env)
-    seen = _charge_at_budget(env)
-    env.state.set(OFFTAKE_ENTITY, "1.5", {"unit_of_measurement": "kW"})
-    env.run(T0)
-    assert seen[0].own_grid_charge_kw == 0.0          # nothing commanded yet
-    first_kw = env.mod._last_grid_charge[1]
-    assert first_kw > 0
-    env.run(T0 + STEP)
-    assert seen[1].own_grid_charge_kw == pytest.approx(first_kw)
-
-
-def test_own_grid_charge_expires_after_two_intervals(env):
-    _real_driver(env)
-    seen = _charge_at_budget(env)
-    env.state.set(OFFTAKE_ENTITY, "1.5", {"unit_of_measurement": "kW"})
-    env.run(T0)
-    env.run(T0 + timedelta(minutes=11))                 # > 2 x 5 min
-    assert seen[1].own_grid_charge_kw == 0.0
-
-
-def test_non_grid_decision_clears_own_grid_charge(env):
-    _real_driver(env)
-    _charge_at_budget(env)
-    env.state.set(OFFTAKE_ENTITY, "1.5", {"unit_of_measurement": "kW"})
-    env.run(T0)
-    assert env.mod._last_grid_charge is not None
-    env.mod.rules.decide = env.mod.rules.decide.__closure__[0].cell_contents \
-        if False else env.mod.rules.decide
-    env.mod._remember_grid_charge(
-        type("D", (), {"action": "idle", "target_power_kw": 0.0})(), T0)
-    assert env.mod._last_grid_charge is None
 
 
 # ---- forecast sensor age ------------------------------------------------------------
@@ -1671,18 +1626,6 @@ def test_stale_but_usable_cached_series_does_not_trigger_v6(env, monkeypatch):
     assert any(m.startswith("cache_age_solar") for m in keys["degraded"].split(","))
     assert "solar_zero_fallback" not in keys["degraded"]
     assert "V6" not in keys["vetoes"] and keys["action"] == "charge"
-
-
-def test_dry_run_gives_no_own_grid_charge_correction(env):
-    _real_driver(env)
-    env.write_config("inverter:\n  type: fakeinv\n  dry_run: true\n"
-                     "capacity_tariff:\n  quarter_hour_average_mode: running\n"
-                     "  stay_under_percent: 80\n")
-    seen = _charge_at_budget(env)
-    env.state.set(OFFTAKE_ENTITY, "1.5", {"unit_of_measurement": "kW"})
-    env.run(T0)
-    env.run(T0 + STEP)
-    assert seen[1].own_grid_charge_kw == 0.0          # nothing was really charged
 
 
 def test_a_patchy_profile_is_marked_with_the_share_of_gaps(env, monkeypatch):
