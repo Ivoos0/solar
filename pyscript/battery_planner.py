@@ -194,6 +194,8 @@ _hist_warned = {}                     # warning kind -> last time logged
 _peak_alert_loaded = False            # peak_alert.json read once per process
 _peak_alert_last = None               # (YYYY-MM, kW) of the last notified peak
 _sensor_first_down = {}               # entity -> when first seen unavailable
+_stale_minutes = 15                   # timing.sensor_stale_minutes of the running cycle
+_last_good = {}                       # key -> (value, when) for the short debounce
 _sensor_last_alert = None             # when the last sensor outage mail went out
 _calibration = None                   # history.solar_calibration result, per clock hour
 _calibration_key = None               # what it was computed for (date, hour, settings)
@@ -391,11 +393,44 @@ def _sensor_kw(entity):
     return number / 1000.0 if unit == "W" else number
 
 
+def _is_stale(entity):
+    """True when a continuously published sensor has not been written for
+    timing.sensor_stale_minutes: a frozen value counts as unavailable. No
+    timestamp (older Home Assistant, fakes) is never stale."""
+    now = _now()
+    age = cache.stamp_age_minutes(_state_stamp(entity), now)
+    if age is None or age <= _stale_minutes:
+        return False
+    _warn_hourly("stale:" + entity,
+                 "sensor %s has not refreshed for %s (limit %dm); treated as "
+                 "unavailable" % (entity, cache.format_minutes(age),
+                                  _stale_minutes), now)
+    return True
+
+
+def _debounced(key, value, local, cfg, markers, marker):
+    """A reading that fails for a cycle or two does not flip the decision.
+
+    A readable value is remembered. An unreadable one is replaced by the last
+    good value while that is at most 2 evaluation intervals old (+1 minute),
+    with `marker` on the record; later it stays unreadable.
+    """
+    if value is not None:
+        _last_good[key] = (value, local)
+        return value
+    held = _last_good.get(key)
+    limit = (2 * cfg.evaluation_interval_minutes + 1) * 60
+    if held is not None and (local - held[1]).total_seconds() <= limit:
+        markers.append(marker)
+        return held[0]
+    return None
+
+
 def _power_kw(entity):
     """Signed power sensor as kW: W is converted, kW kept, any other unit (or
-    none) is unreadable. None when unreadable."""
+    none) is unreadable. None when unreadable or not refreshed."""
     value = _state_value(entity)
-    if value is None:
+    if value is None or _is_stale(entity):
         return None
     try:
         number = float(value)
@@ -421,13 +456,21 @@ def _battery_discharge_kw(cfg):
     power = _power_kw(cfg.power_sensor)
     if power is None:
         return None
+    if abs(power) > 4 * max(cfg.max_charge_kw, cfg.max_discharge_kw):
+        _warn_hourly("bounds:" + cfg.power_sensor,
+                     "battery power %.1f kW from %s is implausible for a "
+                     "%.1f kW inverter; treated as unavailable"
+                     % (power, cfg.power_sensor,
+                        max(cfg.max_charge_kw, cfg.max_discharge_kw)), _now())
+        return None
     return capacity.battery_discharge_from_power(power, cfg.power_positive)
 
 
-def _limit_kw(entity):
-    """Inverter power limit sensor as kW; None when unreadable or not above 0."""
+def _limit_kw(entity, fallback_kw):
+    """Inverter power limit sensor as kW; None when unreadable, not above 0 or
+    implausibly high (more than 4 x the configured fallback)."""
     kw = _power_kw(entity)
-    if kw is None or kw <= 0:
+    if kw is None or kw <= 0 or kw > 4 * fallback_kw:
         return None
     return kw
 
@@ -443,10 +486,10 @@ def _with_limits(cfg, markers):
         return cfg
     charge = None
     if cfg.max_charge_sensor is not None:
-        charge = _limit_kw(cfg.max_charge_sensor)
+        charge = _limit_kw(cfg.max_charge_sensor, cfg.max_charge_kw)
     discharge = None
     if cfg.max_discharge_sensor is not None:
-        discharge = _limit_kw(cfg.max_discharge_sensor)
+        discharge = _limit_kw(cfg.max_discharge_sensor, cfg.max_discharge_kw)
     if ((cfg.max_charge_sensor is not None and charge is None)
             or (cfg.max_discharge_sensor is not None and discharge is None)):
         markers.append("battery_limits_fallback")
@@ -471,10 +514,11 @@ def _with_reserve(cfg, markers):
 def _read_soc(entity):
     """Battery charge in percent from a sensor; None when unreadable.
 
-    Unreadable: unknown/unavailable, not a number, or outside 0..100.
+    Unreadable: unknown/unavailable, not refreshed for
+    timing.sensor_stale_minutes, not a number, or outside 0..100.
     """
     value = _state_value(entity)
-    if value is None:
+    if value is None or _is_stale(entity):
         return None
     try:
         number = float(value)
@@ -1284,6 +1328,8 @@ def _cycle(now):
     if cfg is None:
         _release_on_config_failure(now)
         return
+    global _stale_minutes
+    _stale_minutes = cfg.sensor_stale_minutes
     local = now.astimezone(ZoneInfo(cfg.timezone))
     _check_peak_alert(cfg, local)        # before prices: also works in a halt
     _check_sensor_outage(cfg, local)
@@ -1329,8 +1375,11 @@ def _cycle(now):
         if charge_marker:
             markers.append(charge_marker)
         bat = battery.from_percent(charge, cfg, is_stubbed=charge_is_stub)
+        # a real driver that only offers the 50 % placeholder is not a reading
+        soc_known = not (charge_is_stub and cfg.inverter_type != "logging")
     else:                                    # real reading: never the stub
-        charge = _read_soc(cfg.soc_sensor)
+        charge = _debounced("soc", _read_soc(cfg.soc_sensor), local, cfg,
+                            markers, "soc_last_good")
         if charge is None:
             soc_known, charge_is_stub = False, True
             markers.append("soc_unavailable")
@@ -1343,7 +1392,8 @@ def _cycle(now):
         second=0, microsecond=0)
     traj = trajectory.project(bat, solar, usage, price_map, cfg,
                               start_time=block_start)
-    battery_kw = _battery_discharge_kw(cfg)
+    battery_kw = _debounced("power", _battery_discharge_kw(cfg), local, cfg,
+                            markers, "battery_power_last_good")
     if cfg.power_sensor is not None and battery_kw is None:
         markers.append("battery_power_unavailable")
     grid = _grid_state(cfg, local, battery_kw, markers)
@@ -1374,7 +1424,8 @@ def _cycle(now):
     degraded = decision.degraded_markers(
         bat, solar_zero_fallback=zero_fallback, cache_markers=markers,
         usage_samples=coverage)
-    if not soc_known:                        # soc_unavailable says it already
+    if not soc_known and cfg.soc_sensor is not None:
+        # soc_unavailable says it already
         degraded = [m for m in degraded if m != "soc_stubbed"]
     took = int((_now() - started).total_seconds() * 1000)
     record = decision.build(d, traj, bat, price_now, degraded, now=local,

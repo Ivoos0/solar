@@ -210,6 +210,8 @@ timing:
   evaluation_interval_minutes: 5
   forecast_retry_minutes: 10
   solar_cache_stale_minutes: 120
+  sensor_stale_minutes: 15      # a battery charge / power / limit / reserve sensor not written for
+                                # this long counts as unavailable (a frozen value is never used)
   usage_cache_stale_minutes: 2880
 
 alerts:

@@ -114,7 +114,7 @@ def test_readable_charge_lets_the_same_prices_charge(env, monkeypatch):
     assert keys["action"] == "charge" and "V7" not in keys["vetoes"]
 
 
-def test_soc_known_follows_the_sensor_cycle_by_cycle(env, monkeypatch):
+def test_soc_known_follows_the_sensor_with_a_short_debounce(env, monkeypatch):
     seen = []
     real = env.mod.rules.decide
 
@@ -126,10 +126,14 @@ def test_soc_known_follows_the_sensor_cycle_by_cycle(env, monkeypatch):
     planner_with_soc(env, "50")
     env.run(T0)
     env.state.set(SOC, "unavailable", {})
-    env.run(T0 + STEP)
-    env.state.set(SOC, "50", {})
+    env.run(T0 + STEP)                  # one cycle: the last good reading holds
     env.run(T0 + 2 * STEP)
-    assert seen == [True, False, True]
+    env.run(T0 + 3 * STEP)              # 15 min without a reading: unknown
+    env.state.set(SOC, "50", {})
+    env.run(T0 + 4 * STEP)
+    assert seen == [True, True, True, False, True]
+    assert "soc_last_good" in fields_of(env.decisions()[1])["degraded"]
+    assert "soc_unavailable" in fields_of(env.decisions()[3])["degraded"]
 
 
 def test_without_the_sensor_nothing_changes(env):

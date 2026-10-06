@@ -423,14 +423,26 @@ def _read_sensor(entity):
     return value * factor, stamp, None
 
 
-def _read_soc(entity):
+def _stale_stamp(stamp, cfg):
+    """True when a continuously published sensor has not been written for
+    timing.sensor_stale_minutes (a frozen value counts as unavailable)."""
+    if stamp is None:
+        return False
+    return (_now(cfg) - stamp).total_seconds() > cfg.sensor_stale_minutes * 60
+
+
+def _read_soc(entity, cfg=None):
     """Battery charge in percent from a sensor; None when unreadable
-    (unknown/unavailable, not a number, or outside 0..100)."""
+    (unknown/unavailable, not refreshed, not a number, or outside 0..100)."""
     try:
         raw = state.get(entity)  # noqa: F821
     except Exception:
         return None
     if raw is None or str(raw).strip().lower() in _BAD:
+        return None
+    if cfg is not None and _stale_stamp(
+            _as_datetime(getattr(raw, "last_reported", None))
+            or _as_datetime(getattr(raw, "last_updated", None)), cfg):
         return None
     try:
         value = float(raw)
@@ -550,10 +562,11 @@ def _commanded_discharge_kw(cfg, at):
     return max(0.0, min(_flags["shave_kw"], cfg.max_discharge_kw))
 
 
-def _limit_kw(entity):
-    """Inverter power limit sensor as kW; None when unreadable or not above 0."""
-    kw, _, problem = _read_sensor(entity)
-    if problem or kw <= 0:
+def _limit_kw(entity, fallback_kw, cfg):
+    """Inverter power limit sensor as kW; None when unreadable, not refreshed,
+    not above 0 or implausibly high (more than 4 x the configured fallback)."""
+    kw, stamp, problem = _read_sensor(entity)
+    if problem or kw <= 0 or kw > 4 * fallback_kw or _stale_stamp(stamp, cfg):
         return None
     return kw
 
@@ -567,10 +580,10 @@ def _with_limits(cfg):
         return cfg
     charge = None
     if cfg.max_charge_sensor is not None:
-        charge = _limit_kw(cfg.max_charge_sensor)
+        charge = _limit_kw(cfg.max_charge_sensor, cfg.max_charge_kw, cfg)
     discharge = None
     if cfg.max_discharge_sensor is not None:
-        discharge = _limit_kw(cfg.max_discharge_sensor)
+        discharge = _limit_kw(cfg.max_discharge_sensor, cfg.max_discharge_kw, cfg)
     if ((cfg.max_charge_sensor is not None and charge is None)
             or (cfg.max_discharge_sensor is not None and discharge is None)):
         _flags["limits_marker"] = "battery_limits_fallback"
@@ -583,7 +596,7 @@ def _with_reserve(cfg):
     _flags["reserve_marker"] = None
     if cfg.reserve_sensor is None:
         return cfg
-    new = site_config.with_reserve(cfg, _read_soc(cfg.reserve_sensor))
+    new = site_config.with_reserve(cfg, _read_soc(cfg.reserve_sensor, cfg))
     if new is cfg:
         _flags["reserve_marker"] = "battery_reserve_fallback"
     return new
@@ -595,8 +608,9 @@ def _battery_discharge_kw(cfg):
     then estimated from the offtake alone)."""
     if cfg.power_sensor is None:
         return None
-    power, _, problem = _read_sensor(cfg.power_sensor)
-    if problem:
+    power, stamp, problem = _read_sensor(cfg.power_sensor)
+    if (problem or _stale_stamp(stamp, cfg)
+            or abs(power) > 4 * max(cfg.max_charge_kw, cfg.max_discharge_kw)):
         return None
     return capacity.battery_discharge_from_power(power, cfg.power_positive)
 
@@ -826,7 +840,7 @@ def _evaluate(trigger_type, started):
             cfg.inverter_type, CORE_DIR)
         batt = battery.from_percent(charge, cfg, is_stubbed=charge_is_stub)
     else:                                    # real reading: never the stub
-        charge = _read_soc(cfg.soc_sensor)
+        charge = _read_soc(cfg.soc_sensor, cfg)
         soc_known = charge is not None
         charge_is_stub = not soc_known
         charge_marker = None if soc_known else "soc_unavailable"

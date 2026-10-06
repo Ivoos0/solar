@@ -360,7 +360,7 @@ def format_halt(halt_state, now):
 # What the planner does while each kind of input is missing (the e-mail says so).
 _SENSOR_EFFECTS = {
     "soc": "battery charge unknown: the planner holds (no charging, no exporting)",
-    "power": "the household draw is estimated from the grid offtake alone",
+    "power": "the household draw cannot be measured: the planner holds (no charging, no exporting)",
     "max_charge": "battery.max_charge_kw applies",
     "max_discharge": "battery.max_discharge_kw applies",
     "reserve": "battery.reserve_percent applies",

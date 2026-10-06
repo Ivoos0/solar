@@ -57,6 +57,7 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `report.enabled` | `true` | true/false | Writes the [daily report](history-and-reports.md#daily-report) |
 | `sensors.enabled` | `true` | true/false | Publishes the planner state as Home Assistant [sensors](alerts-and-sensors.md#sensors). `false` publishes nothing |
 | `retention.keep_days` | `90` | days | Logs, history and reports older than this are deleted every night. At least 1, and at least 7 times the larger of `usage.history_weeks` and `solar.calibration_weeks`. See [Daily cleanup](history-and-reports.md#daily-cleanup) |
+| `timing.sensor_stale_minutes` | `15` | minutes | A continuously published sensor (battery charge, battery power, limit and reserve sensors) that has not been written for this long counts as unavailable: a frozen value is never used. A reading that has no timestamp is never stale. Integer, at least 1 |
 | `timing.block_minutes` | `15` | minutes | Planning block length. Must divide 60. Keep 15 to match the price list |
 | `timing.evaluation_interval_minutes` | `5` | minutes | How often the planner runs |
 | `timing.forecast_retry_minutes` | `10` | minutes | Minimum gap between forced forecast refreshes after failures |

@@ -71,7 +71,7 @@ def test_message_names_each_sensor_its_downtime_and_effect():
     assert title == "Battery planner: 2 sensors unavailable"
     assert "sensor.a: unavailable for 20 min" in message
     assert "sensor.b: unavailable for 15 min" in message
-    assert "planner holds" in message and "grid offtake" in message
+    assert "planner holds" in message and "cannot be measured" in message
     assert "Re-alert every 60 min" in message
 
 

@@ -35,6 +35,7 @@ _MAP = [
     ("timing", "forecast_retry_minutes", "forecast_retry_minutes"),
     ("timing", "solar_cache_stale_minutes", "solar_cache_stale_minutes"),
     ("timing", "usage_cache_stale_minutes", "usage_cache_stale_minutes"),
+    ("timing", "sensor_stale_minutes", "sensor_stale_minutes"),
     ("usage", "history_weeks", "usage_history_weeks"),
     ("usage", "min_history_days", "usage_min_history_days"),
     ("usage", "min_bucket_days", "usage_min_bucket_days"),
@@ -148,6 +149,7 @@ class SiteConfig:
     forecast_retry_minutes: int = 10
     solar_cache_stale_minutes: int = 120
     usage_cache_stale_minutes: int = 2880
+    sensor_stale_minutes: int = 15
     realert_minutes: int = 60
     sensor_alert_enabled: bool = True
     sensor_outage_minutes: int = 15
@@ -387,6 +389,10 @@ def _errors(cfg):
                                      else ""))
     if isinstance(cfg.usage_history_weeks, float) or cfg.usage_history_weeks < 1:
         bad("usage_history_weeks", cfg.usage_history_weeks,
+            "must be an integer >= 1")
+    if (isinstance(cfg.sensor_stale_minutes, float)
+            or cfg.sensor_stale_minutes < 1):
+        bad("timing.sensor_stale_minutes", cfg.sensor_stale_minutes,
             "must be an integer >= 1")
     if (isinstance(cfg.usage_min_bucket_days, float)
             or cfg.usage_min_bucket_days < 1):
