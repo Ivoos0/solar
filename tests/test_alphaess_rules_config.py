@@ -34,7 +34,7 @@ def test_v7_skips_the_checks_that_need_a_reading(site_config):
 
 def test_v7_blocks_charging(site_config):
     d = go(site_config, [NEG] * 3, soc_known=False)
-    assert d.suppressed == [("S1", "charge", "V7"), ("S5", "charge", "V7")]
+    assert d.suppressed == [("S1", "charge", "V7"), ("S4", "charge", "V7")]
     assert (d.selector, d.action) == ("S6", "idle")
     assert d.reasoning.startswith("hold: no battery reading")
 

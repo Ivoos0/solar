@@ -309,7 +309,7 @@ def test_v3_blocks_grid_charge_and_leaves_solar_to_the_default(site_config):
     d = go(site_config, [(-0.05, 0.02)] * 2, g=EXHAUSTED)
     assert d.vetoes_fired == ["V3"]
     # S5 also proposes a grid charge (later 0.02*0.9 = 0.018 > -0.05): vetoed.
-    assert d.suppressed == [("S1", "charge", "V3"), ("S5", "charge", "V3")]
+    assert d.suppressed == [("S1", "charge", "V3"), ("S4", "charge", "V3")]
     assert d.selector == "S6" and d.action == "idle"
     # ... and surplus solar asks for nothing: the inverter stores it by default.
     d2 = go(site_config, [(0.20, 0.02), (0.20, 0.10)], g=EXHAUSTED,
@@ -594,7 +594,7 @@ def test_s4_vetoed_by_v3_when_no_budget(site_config):
     assert d.selector == "S6"
 
 
-# ---- S5 -------------------------------------------------------------------
+# ---- S4, sale use (was S5) -------------------------------------------------
 
 @pytest.mark.parametrize("later,fires", [
     (0.25, True),      # 0.25*0.9 = 0.225 > 0.20, spread 0.025
@@ -602,34 +602,34 @@ def test_s4_vetoed_by_v3_when_no_budget(site_config):
     (0.22, False),     # profitable BEFORE losses (0.22 > 0.20), 0.198 after
     (0.201, False),    # 1 % spread is nowhere near enough
 ])
-def test_s5_efficiency_threshold(site_config, later, fires):
+def test_s4_sale_efficiency_threshold(site_config, later, fires):
     d = go(site_config, [(0.20, 0.02), (0.30, later)])
-    assert (d.selector == "S5") is fires
+    assert (d.selector == "S4") is fires
     if fires:
         assert d.action == "charge"
         assert d.target_power_kw == 5.0
         assert "10:15" in d.reasoning        # names the target block
 
 
-def test_s5_reasoning_names_spread(site_config):
+def test_s4_sale_reasoning_names_spread(site_config):
     d = go(site_config, [(0.20, 0.02), (0.30, 0.25)])
     assert "0.2250" in d.reasoning and "0.0250" in d.reasoning
 
 
-def test_s5_needs_headroom(site_config):
+def test_s4_sale_needs_headroom(site_config):
     d = go(site_config, [(0.20, 0.02), (0.30, 0.25)], pct=100.0)
     assert d.selector == "S6"
 
 
-def test_s5_never_proposes_loss_making_cycle_on_negative_prices(site_config):
+def test_s4_sale_never_proposes_loss_making_cycle_on_negative_prices(site_config):
     # negative later injection can never beat a positive consumption price
     d = go(site_config, [(0.20, -0.05), (0.30, -0.01)])
     assert d.selector == "S6"
 
 
-def test_s5_grid_charge_capped(site_config):
+def test_s4_sale_grid_charge_capped(site_config):
     d = go(site_config, [(0.20, 0.02), (0.30, 0.25)], g=TIGHT)
-    assert d.selector == "S5" and d.target_power_kw == pytest.approx(1.2)
+    assert d.selector == "S4" and d.target_power_kw == pytest.approx(1.2)
 
 
 # ---- S6 -------------------------------------------------------------------
@@ -684,7 +684,7 @@ def test_consecutive_vetoed_proposals_no_loop(site_config):
     assert d.suppressed == [
         ("S0", "discharge", "V5"),
         ("S1", "charge", "V3"),
-        ("S5", "charge", "V3"),
+        ("S4", "charge", "V3"),
     ]
     assert (d.selector, d.action, d.target_power_kw) == ("S6", "idle", 0.0)
 
@@ -821,7 +821,7 @@ def test_v4_omitted_kwarg_in_decide_vetoes_grid_charge(site_config):
     d = go(site_config, [NEG] * 3, history=None)
     assert d.vetoes_fired == ["V4"]
     assert d.suppressed == [("S1", "charge", "V4"),
-                            ("S5", "charge", "V4")]
+                            ("S4", "charge", "V4")]
     assert (d.selector, d.action) == ("S6", "idle")
 
 
@@ -830,22 +830,22 @@ def test_v4_blocks_s1_grid_charge_and_falls_through_to_idle(site_config):
     assert (d.selector, d.action, d.target_power_kw) == ("S6", "idle", 0.0)
     assert d.vetoes_fired == ["V4"]
     assert d.suppressed == [("S1", "charge", "V4"),
-                            ("S5", "charge", "V4")]
+                            ("S4", "charge", "V4")]
     assert "V4" in d.reasoning
 
 
-def test_v4_blocks_s5_arbitrage_grid_charge(site_config):
+def test_v4_blocks_s4_sale_arbitrage_grid_charge(site_config):
     d = go(site_config, ARB, history=False)
     assert (d.selector, d.action) == ("S6", "idle")
-    assert d.suppressed == [("S5", "charge", "V4")]
+    assert d.suppressed == [("S4", "charge", "V4")]
 
 
-def test_history_present_lets_s1_and_s5_grid_charge(site_config):
+def test_history_present_lets_s1_and_s4_grid_charge(site_config):
     d = go(site_config, [NEG] * 3, history=True)
     assert (d.selector, d.action) == ("S1", "charge")
     assert d.vetoes_fired == [] and d.suppressed == []
     d = go(site_config, ARB, history=True)
-    assert (d.selector, d.action) == ("S5", "charge")
+    assert (d.selector, d.action) == ("S4", "charge")
     assert d.vetoes_fired == []
 
 
@@ -914,7 +914,7 @@ def test_v4_renders_in_the_vetoes_field(site_config):
     import decision
     d = go(site_config, [NEG] * 3, history=False)
     assert decision.render_vetoes(d) == ["V4(suppressed S1 charge)",
-                                        "V4(suppressed S5 charge)"]
+                                        "V4(suppressed S4 charge)"]
 
 
 # ---- stay_under_percent -------------------------------------------------------
@@ -945,15 +945,15 @@ def test_percent_80_fires_v3_where_100_does_not(site_config):
     d = go(cfg, [NEG] * 3, g=PCT_FULL)
     assert d.vetoes_fired == ["V3"]
     assert d.suppressed == [("S1", "charge", "V3"),
-                            ("S5", "charge", "V3")]
+                            ("S4", "charge", "V3")]
     d = go(site_config, [NEG] * 3, g=PCT_FULL)
     assert d.vetoes_fired == [] and d.target_power_kw == pytest.approx(0.75)
 
 
-def test_percent_80_caps_s5_too(site_config):
+def test_percent_80_caps_s4_sale_too(site_config):
     cfg = replace(site_config, stay_under_percent=80.0)
     d = go(cfg, ARB, g=PCT_GRID)
-    assert d.selector == "S5" and d.target_power_kw == pytest.approx(0.30)
+    assert d.selector == "S4" and d.target_power_kw == pytest.approx(0.30)
 
 
 def test_percent_does_not_reduce_peak_shaving(site_config):
@@ -975,9 +975,9 @@ def test_s1_clamps_to_budget_after_household_draw(site_config):
     assert "capped by grid budget 0.20 kW" in d.reasoning
 
 
-def test_s4_s5_clamp_to_budget_after_household_draw(site_config):
+def test_s4_sale_clamps_to_budget_after_household_draw(site_config):
     d = go(site_config, ARB, g=HOUSEHOLD)
-    assert d.selector == "S5"
+    assert d.selector == "S4"
     assert d.target_power_kw == pytest.approx(0.2)
     assert "capped by grid budget 0.20 kW" in d.reasoning
 
@@ -1025,7 +1025,7 @@ def test_s4_dearer_now_lets_a_later_selector_act(site_config):
     # S4 steps aside; S5 (arbitrage against a later injection price) can act.
     plist = [(0.30, 0.02), (0.50, 0.02), (0.22, 0.60)]
     d = go(site_config, plist, pct=30.0, breach=2, shortfall={2: 1.0})
-    assert d.selector == "S5"
+    assert d.selector == "S4"
 
 
 def test_s4_efficiency_decides(site_config):
@@ -1126,7 +1126,7 @@ def test_v6_review_scenario_s4_does_not_over_buy_on_a_zero_forecast(
 
 def test_v6_blocks_negative_price_grid_charge(site_config):
     d = go(site_config, [NEG] * 3, forecast=False)
-    assert d.suppressed == [("S1", "charge", "V6"), ("S5", "charge", "V6")]
+    assert d.suppressed == [("S1", "charge", "V6"), ("S4", "charge", "V6")]
     assert (d.selector, d.action) == ("S6", "idle")
 
 
@@ -1147,7 +1147,7 @@ def test_v6_and_v4_together_name_both(site_config):
     d = go(site_config, [NEG] * 3, history=False, forecast=False)
     assert d.vetoes_fired == ["V4", "V6"]
     assert d.suppressed == [("S1", "charge", "V4+V6"),
-                            ("S5", "charge", "V4+V6")]
+                            ("S4", "charge", "V4+V6")]
     assert "no solar forecast" in d.reasoning
 
 
@@ -1155,7 +1155,7 @@ def test_v6_joins_the_block_list_in_the_record_text(site_config):
     import decision
     d = go(site_config, [NEG] * 3, forecast=False)
     assert decision.render_vetoes(d) == [
-        "V6(suppressed S1 charge)", "V6(suppressed S5 charge)"]
+        "V6(suppressed S1 charge)", "V6(suppressed S4 charge)"]
 
 
 # ---- L1: never charge more than the room left in the battery ---------------
@@ -1181,9 +1181,9 @@ def test_s1_full_power_when_there_is_room(site_config):
     assert d.target_power_kw == 5.0 and "room left" not in d.reasoning
 
 
-def test_s5_charge_limited_to_the_room_left(site_config):
+def test_s4_sale_charge_limited_to_the_room_left(site_config):
     d = go(site_config, ARB, pct=97.5)
-    assert (d.selector, d.action) == ("S5", "charge")
+    assert (d.selector, d.action) == ("S4", "charge")
     assert d.target_power_kw == pytest.approx(1.0)
 
 
@@ -1203,3 +1203,30 @@ def test_s3_needs_the_round_trip_margin(site_config):
     enough = [(0.40, 0.15), (0.40, 0.15), (0.40, 0.13), (0.40, 0.10)]
     d = go(site_config, enough, now_i=1, sat=3, spill=2.0)
     assert d.selector == "S3"                       # 0.135 > 0.13
+
+
+# ---- S4 sale use: only the cheapest blocks that fill the room charge ----------
+
+# consumption b0 .30 b1 .20 b2 .25 b3 .22 | sell block b4 (injection .60,
+# value .54 after losses) | b5 .01 is after the sell block and does not count.
+SALE = [(0.30, 0.02), (0.20, 0.02), (0.25, 0.02), (0.22, 0.02),
+        (0.50, 0.60), (0.01, 0.02)]
+
+
+@pytest.mark.parametrize("pct,now_i,fires", [
+    (90.0, 0, False),   # room 1.0 kWh = 1 block: only the cheapest (b1) charges
+    (90.0, 1, True),
+    (90.0, 2, False),
+    (50.0, 0, True),    # room 5.0 kWh = 4 blocks: all of b0..b3 qualify
+    (50.0, 2, True),
+])
+def test_s4_sale_charges_only_the_cheapest_blocks_that_fill_the_room(
+        site_config, pct, now_i, fires):
+    d = go(site_config, SALE, now_i=now_i, pct=pct)
+    assert (d.selector == "S4") is fires
+
+
+def test_s4_sale_ignores_cheaper_blocks_after_the_sell_block(site_config):
+    # b5 (.01) is cheaper but arrives after the sell block: not a candidate
+    d = go(site_config, SALE, now_i=1, pct=90.0)
+    assert d.selector == "S4" and "cheapest 1 of 3" in d.reasoning

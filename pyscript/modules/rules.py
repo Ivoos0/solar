@@ -24,7 +24,7 @@ Entry point
                  True only when the usage profile rests on real history
                  (the adapter sets it from sample coverage). The default is the
                  SAFE value False: no history -> V4 holds every price-driven
-                 selector (S1-S5); only peak shaving (S0) still acts.
+                 selector (S1, S3, S4); only peak shaving (S0) still acts.
   forecast_available
                  False only when the solar series is the zero-solar fallback
                  (the forecast is missing or stale and no usable cache exists;
@@ -94,7 +94,7 @@ battery shows up in the record's vetoes field as V5(suppressed S0 discharge).
 V4 ("no usage profile"): without history the trajectory cannot know the
 household load. A grid charge could land on top of an unseen peak, and the
 spill/saturation maths of S3 are meaningless at zero usage. So every
-price-driven selector (S1, S3-S5) is held and
+price-driven selector (S1, S3, S4) is held and
 the planner falls through to idle (S6), whose reasoning says "no usage history:
 planner holds". V4 does NOT forbid "discharge": the only discharge proposal is
 S0 peak shaving, which does not depend on usage history (it reads the live grid
@@ -116,7 +116,7 @@ Resolved ambiguities / documented readings
   ALWAYS price * efficiency, for every sign of price. Storing 1 kWh returns
   only eff kWh later, so exporting later at a negative price costs LESS than
   now (-0.02 * 0.9 = -0.018 > -0.02); dividing would invert that.
-* "Best remaining" injection price (S5) = priced blocks strictly AFTER the
+* "Best remaining" injection price (S4, sale use) = priced blocks strictly AFTER the
   current block, to the horizon end. S3 compares against the window
   [current block, saturation_block) which includes now.
 * S3/S4 window is [current, boundary): boundary = saturation_block (S3) /
@@ -136,9 +136,17 @@ Resolved ambiguities / documented readings
   sits at the floor; a shortage after a refill is a separate one that
   charging now cannot cover); N = max(1, ceil(shortfall
   / (max_charge_kw * block_hours))), capped at the window size. "Among the
-  cheapest N" includes ties with the N-th cheapest price. S4 and S5 need
+  cheapest N" includes ties with the N-th cheapest price. S4 needs
   headroom > 0.
-* S4 acts only when charging is CHEAPER than simply importing at the breach.
+* S4 has two uses of a stored kWh and tries them in this order. (1) Import
+  avoidance, below. (2) Sale: the best later injection price (after the
+  current block, to the horizon end) times the round-trip efficiency; the
+  candidate blocks are those before that sell block whose consumption price
+  is below that value, and N = max(1, ceil(headroom / (max_charge_kw *
+  block_hours))) capped at the candidates, so only the cheapest blocks that
+  fill the battery's room charge (ties with the N-th included). The selector
+  that was called S5 in older logs is this second use.
+* S4 import avoidance acts only when charging is CHEAPER than simply importing at the breach.
   The reserve is a floor, not a target: when the battery gets there the house
   imports at that time. Charging now costs price_now / round_trip_efficiency
   per kWh delivered later; importing at the breach costs the energy-weighted
@@ -148,11 +156,11 @@ Resolved ambiguities / documented readings
   block included, must satisfy price / efficiency < that weighted price,
   strictly; on a tie importing wins. Otherwise S4 proposes nothing and the
   loop falls through.
-* Every grid-charging selector (S1, S4, S5) clamps to budget_kw
+* Every grid-charging selector (S1, S4) clamps to budget_kw
   (capacity.budget_kw: charge power left after the household draw, capped there
   at max_charge_kw) and says so when the cap bit. budget_kw is 0.0 in the last minute of a window, so V3 then
   forbids grid charging; that is capacity.budget_kw semantics, not re-derived here.
-* If the current block has no published price, every price selector (S1-S5)
+* If the current block has no published price, every price selector (S1, S3, S4)
   is skipped and V2 cannot fire; S0 and S6 still work.
 * A veto naming several causes is reported joined, e.g. "V1+V2" for export.
 """
@@ -483,9 +491,9 @@ def _breach_import_price(ctx, span):
     return cost / energy
 
 
-def _s4(ctx):
+def _s4_import(ctx):
     p, t, cfg = ctx.price_now, ctx.traj, ctx.config
-    if p is None or t.reserve_breach_block is None             or ctx.battery.headroom_kwh <= _MIN_ENERGY_KWH:
+    if t.reserve_breach_block is None:
         return None
     cands = _priced(ctx, _window(ctx, t.reserve_breach_block))
     if not cands:
@@ -522,26 +530,48 @@ def _s4(ctx):
            len(cands), threshold, kw, note))
 
 
-def _s5(ctx):
+def _s4_sale(ctx):
+    """Charge now to sell later: stored energy is worth the best later
+    injection price after round-trip losses.
+
+    The charge blocks are the ones before that sell block that beat its value;
+    the battery needs only enough of them to fill its room, so only the
+    cheapest N charge.
+    """
     p, cfg = ctx.price_now, ctx.config
-    if p is None or ctx.battery.headroom_kwh <= _MIN_ENERGY_KWH:
-        return None
     best = _later_best_injection(ctx)
     if best is None:
         return None
-    value = _after_losses(best[1].injection_price, cfg.round_trip_efficiency)
-    if not value > p.consumption_price:
+    sell_idx, sell = best
+    value = _after_losses(sell.injection_price, cfg.round_trip_efficiency)
+    cands = [c for c in _priced(ctx, range(ctx.idx, sell_idx))
+             if c[1].consumption_price < value]
+    if not cands or not p.consumption_price < value:
+        return None
+    per_block = cfg.max_charge_kw * ctx.hours
+    n = min(len(cands),
+            max(1, math.ceil(ctx.battery.headroom_kwh / per_block - 1e-9)))
+    threshold = sorted(c[1].consumption_price for c in cands)[n - 1]
+    if p.consumption_price > threshold:
         return None
     kw, note = _grid_power(ctx, cfg.max_charge_kw)
     return Proposal(
         "charge", kw,
         "arbitrage: injection %.4f at %s after efficiency %.2f = %.4f beats "
-        "consumption price now %.4f (spread %.4f EUR/kWh after losses): "
-        "charge from grid at %.2f kW%s"
-        % (best[1].injection_price,
-           _hhmm(ctx.traj.blocks[best[0]].block_start),
+        "consumption price now %.4f (spread %.4f EUR/kWh after losses), and "
+        "now is within the cheapest %d of %d qualifying blocks before it "
+        "(cutoff %.4f): charge from grid at %.2f kW%s"
+        % (sell.injection_price, _hhmm(ctx.traj.blocks[sell_idx].block_start),
            cfg.round_trip_efficiency, value, p.consumption_price,
-           value - p.consumption_price, kw, note))
+           value - p.consumption_price, n, len(cands), threshold, kw, note))
+
+
+def _s4(ctx):
+    """Charge from the grid when a stored kWh is worth more than it costs:
+    the import it avoids at a coming shortage, else the later sale."""
+    if ctx.price_now is None or ctx.battery.headroom_kwh <= _MIN_ENERGY_KWH:
+        return None
+    return _s4_import(ctx) or _s4_sale(ctx)
 
 
 def _s6_reasoning(ctx, fired, suppressed):
@@ -596,8 +626,7 @@ def _s6_reasoning(ctx, fired, suppressed):
 # S0 leads: a capacity peak is billed across the next twelve months while a
 # price opportunity pays once. Even a very good arbitrage hour is worth cents
 # where a peak increase is worth tens of euros. Do not "optimise" this order.
-_SELECTORS = (("S0", _s0), ("S1", _s1), ("S3", _s3), ("S4", _s4),
-              ("S5", _s5))
+_SELECTORS = (("S0", _s0), ("S1", _s1), ("S3", _s3), ("S4", _s4))
 
 
 def decide(trajectory, price_map, battery_state, grid_state, config, now,
