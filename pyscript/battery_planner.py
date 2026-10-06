@@ -457,6 +457,21 @@ def _with_limits(cfg, markers):
     return config.with_limits(cfg, charge, discharge)
 
 
+def _with_reserve(cfg, markers):
+    """cfg with the inverter's own minimum charge as the reserve this cycle.
+
+    A configured battery.reserve_sensor that cannot be read (or reads outside
+    0 to below 100) leaves battery.reserve_percent and adds the
+    battery_reserve_fallback marker.
+    """
+    if cfg.reserve_sensor is None:
+        return cfg
+    new = config.with_reserve(cfg, _read_soc(cfg.reserve_sensor))
+    if new is cfg:
+        markers.append("battery_reserve_fallback")
+    return new
+
+
 def _read_soc(entity):
     """Battery charge in percent from a sensor; None when unreadable.
 
@@ -1264,6 +1279,7 @@ def _cycle(now):
 
     markers = []
     cfg = _with_limits(cfg, markers)
+    cfg = _with_reserve(cfg, markers)
     payload, forecast_age = _read_forecast(cfg, now)
     if payload is None:
         _forecast_failed(cfg, now)

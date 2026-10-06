@@ -67,6 +67,7 @@ battery:
   # name them here: they are read every cycle and replace the numbers below.
   # max_charge_sensor: sensor.alphaess_battery_max_charge_power
   # max_discharge_sensor: sensor.alphaess_battery_max_discharge_power
+  # reserve_sensor: sensor.alphaess_discharging_cutoff_soc   # percent; replaces reserve_percent
                                 # W or kW (the unit attribute is read). Set but
                                 # unreadable or 0: the numbers below apply and
                                 # records carry battery_limits_fallback.

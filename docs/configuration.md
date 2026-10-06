@@ -24,7 +24,8 @@ Every key in `user_config.yaml`. Keys you leave out use the default. Only `batte
 | `prices.entity` | `sensor.entso_prices_average_electricity_price` | entity id | Sensor that carries the price list |
 | `prices.attribute` | `prices` | attribute name | Attribute of that sensor holding the `{time, price}` list |
 | `battery.capacity_kwh` | **required** | kWh | Battery size the planner uses |
-| `battery.reserve_percent` | `10.0` | % | Charge level the planner will not export to the grid below. It is a limit on exporting, not a target: the planner never buys power to keep the battery up to it, and peak shaving may use charge below it. The inverter's own minimum charge still applies |
+| `battery.reserve_sensor` | none | entity id | Sensor with the inverter's own minimum charge in percent (for the AlphaESS the discharge cut-off, register `0x0850`). When it reads from 0 up to below 100, the planner uses it as the reserve, read again every cycle. Otherwise `battery.reserve_percent` applies and records carry `battery_reserve_fallback` |
+| `battery.reserve_percent` | `10.0` | % | Charge level the planner will not export to the grid below. It is a limit on exporting, not a target: the planner never buys power to keep the battery up to it, and peak shaving may use charge below it. The inverter's own minimum charge still applies. Keep it at or above the inverter's own discharge cut-off, otherwise the planner counts charge the inverter will not release as usable. Fallback when no `battery.reserve_sensor` is set or it cannot be read |
 | `battery.soc_sensor` | none | entity id | Sensor with the battery charge in percent (0 to 100). When set, the planner and the peak guard read the charge from it instead of the driver's placeholder. `unavailable`, `unknown`, a non-number or a value outside 0 to 100 counts as unreadable: the planner holds and marks `soc_unavailable` |
 | `battery.power_sensor` | none | entity id | Sensor with the battery power, in W or kW (the unit attribute is read; any other unit counts as unreadable). Lets the planner measure the household draw (see [What the planner does](how-it-works.md#what-the-planner-does)). Unreadable: the older estimate is used and records carry `battery_power_unavailable` |
 | `battery.power_positive` | `discharge` | `discharge` or `charge` | Which direction is positive in `battery.power_sensor`. `discharge`: positive while the battery gives power (AlphaESS). `charge`: positive while it takes power |
@@ -82,7 +83,7 @@ more cautious and cheaper for you. Where no direction is safe, use the exact val
 | `prices.consumption_multiplier`, `prices.consumption_offset` | up | A higher buying price makes grid charging (for a negative price or for arbitrage) less attractive |
 | `prices.injection_multiplier`, `prices.injection_offset` | down | A lower selling price makes arbitrage less attractive and stops exporting at a negative price sooner |
 | `battery.capacity_kwh` | down | Use usable capacity, not nameplate. The planner then never counts on energy the battery does not have |
-| `battery.reserve_percent` | up | The planner stops exporting to the grid earlier |
+| `battery.reserve_percent` | up | The planner stops exporting to the grid earlier. A reading from `battery.reserve_sensor` is used as read |
 | `battery.max_charge_kw`, `battery.max_discharge_kw` | down | Commanded power never exceeds what the inverter does. Readings from `battery.max_charge_sensor` and `battery.max_discharge_sensor` are used as read |
 | `battery.round_trip_efficiency` | down | Arbitrage needs a bigger price spread |
 | `capacity_tariff.stay_under_percent` | lower is safer | Less grid charging near the peak ceiling, at the cost of fewer cheap charges |
