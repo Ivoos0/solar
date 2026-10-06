@@ -29,8 +29,9 @@ What is checked:
     idle, with 0.0 for idle and a positive power (and the maximum power)
     otherwise: returns True, does not raise, returns within the time bound,
     and gives the same answer when repeated
-  * read_charge_percent() returns a real number 0..100 (not a bool, not NaN)
-  * SOC_IS_STUB, when present, is a bool
+  * read_charge_percent(), when the driver defines it, returns a real number
+    0..100 (not a bool, not NaN); a driver may leave it out and rely on
+    battery.soc_sensor, there is no placeholder charge any more
   * COMMAND_HOLD_MINUTES, when present, is None (unknown) or a positive number
     (not a bool): how long the inverter keeps a forced command without a
     refresh. The planner re-sends an unchanged command at 0.8 x that.
@@ -45,8 +46,8 @@ are str, int, float (finite), bool or a list of those; idle, charge, discharge
 and export must each return at least one call (an empty idle plan would release
 nothing); the call must return within the time bound, give the same answer when
 repeated, and do no network access (sockets are blocked while it runs). Such a
-driver needs read_charge_percent() only when it declares no SOC_ENTITY (the
-entity id of the battery charge sensor in percent, read by the boundary). The
+driver may declare SOC_ENTITY (the entity id of the battery charge sensor in
+percent, read by the boundary) or read_charge_percent(), or neither. The
 checker never executes the service calls.
 
 Third-party imports (for example pymodbus) are allowed: drivers are loaded as
@@ -300,8 +301,10 @@ def _plan_problems(module, timeout, max_power_kw):
 
 def _read_problems(module, timeout):
     read = getattr(module, "read_charge_percent", None)
+    if read is None:
+        return []                       # no charge reading: battery.soc_sensor
     if not callable(read):
-        return ["read_charge_percent() is missing or not callable"]
+        return ["read_charge_percent is not callable"]
     problems = []
     for _ in range(2):
         ok, value, elapsed = _call(read, (), timeout)
@@ -347,10 +350,6 @@ def find_problems(driver, timeout=DEFAULT_TIMEOUT_SECONDS,
         problems.append("importing the file failed: %s: %s"
                         % (type(exc).__name__, exc))
         return problems
-    if hasattr(module, "SOC_IS_STUB") and not isinstance(
-            module.SOC_IS_STUB, bool):
-        problems.append("SOC_IS_STUB is %r; it must be a bool (or be left out)"
-                        % (module.SOC_IS_STUB,))
     if hasattr(module, "COMMAND_HOLD_MINUTES"):
         hold = module.COMMAND_HOLD_MINUTES
         if hold is not None and (

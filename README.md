@@ -18,12 +18,12 @@ Source: <https://github.com/Ivoos0/solar>
   after about 80 % of the time the driver says the inverter keeps a command (or, when it does not say,
   after `inverter.resend_minutes`, default 15), not on every five-minute cycle. `idle` is sent once
   after a forced mode and not repeated while idle lasts. The log line is still written every cycle.
-- With the `logging` driver the battery charge is a fixed 50 %. Every record carries
-  `degraded=soc_stubbed`. A driver that reads the real charge removes the marker. The charge is real
-  as soon as you set `battery.soc_sensor` to a sensor that holds it in percent (for example the AlphaESS
-  sensor in [AlphaESS inverter, read-only](docs/alphaess.md#alphaess-inverter-read-only-home-assistant-modbus)):
-  the planner and the peak guard then read that sensor and nothing is stubbed. If the sensor cannot
-  be read, the planner does not guess: it holds (no charging from the grid, no exporting) and marks
+- The battery charge is always a real reading. Set `battery.soc_sensor` to a sensor that holds it in
+  percent (for example the AlphaESS sensor in
+  [AlphaESS inverter, read-only](docs/alphaess.md#alphaess-inverter-read-only-home-assistant-modbus)); it is
+  required with the `logging` driver, and the planner refuses to start without it. A real driver may read
+  the charge itself instead. There is no placeholder value: if the reading is missing, frozen or not a number
+  from 0 to 100, the planner does not guess. It holds (no charging from the grid, no exporting) and marks
   the record `soc_unavailable`. Peak shaving still works.
 - It can read an AlphaESS inverter through Home Assistant's modbus integration, read-only: the real
   battery charge, the battery power and the energy counters (see

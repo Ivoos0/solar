@@ -396,7 +396,7 @@ def test_reading_the_calibration_does_not_need_a_clock_or_io():
 # ---- settings --------------------------------------------------------------------
 
 def _cfg(**sections):
-    raw = {"battery": {"capacity_kwh": 10.0}, "alerts": {"address": "a@b.c"}}
+    raw = {"battery": {"capacity_kwh": 10.0, "soc_sensor": "sensor.test_battery_soc"}, "alerts": {"address": "a@b.c"}}
     raw.update(sections)
     return config.from_dict(raw)
 

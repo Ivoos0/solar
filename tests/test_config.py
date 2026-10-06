@@ -6,7 +6,8 @@ from config import ConfigError, from_dict
 
 
 def base(**over):
-    raw = {"battery": {"capacity_kwh": 10.0},
+    raw = {"battery": {"capacity_kwh": 10.0,
+                       "soc_sensor": "sensor.test_battery_soc"},
            "alerts": {"address": "a@b.c"}}
     for path, v in over.items():
         sec, key = path.split("__")
@@ -28,7 +29,8 @@ def test_defaults_applied(site_config):
 def test_full_parse_flattens():
     c = from_dict({
         "prices": {"consumption_multiplier": 1.2},
-        "battery": {"capacity_kwh": 12, "reserve_percent": 5},
+        "battery": {"capacity_kwh": 12, "reserve_percent": 5,
+                    "soc_sensor": "sensor.my_soc"},
         "solar": {"forecast_attribute": "wh"},
         "timing": {"block_minutes": 30},
         "alerts": {"address": "x@y.z", "realert_minutes": 30},

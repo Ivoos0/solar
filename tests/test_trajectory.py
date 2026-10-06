@@ -41,9 +41,8 @@ def test_battery_derived_figures(site_config, pct, stored, headroom):
     assert b.charge_percent == pct
 
 
-def test_battery_stub_default_and_override(site_config):
-    assert battery.from_percent(50, site_config).is_stubbed is True
-    assert battery.from_percent(50, site_config, is_stubbed=False).is_stubbed is False
+def test_battery_state_has_no_stub_flag_any_more(site_config):
+    assert not hasattr(battery.from_percent(50, site_config), "is_stubbed")
 
 
 @pytest.mark.parametrize("bad", [-1, 100.5])

@@ -9,6 +9,7 @@ constants; the clock is a mutable test value patched over `_now`.
 import ast
 import builtins
 import importlib.util
+import json
 import os
 import re
 import sys
@@ -34,6 +35,9 @@ QUARTER_AVG_ENTITY = "sensor.slimmelezer_huidig_kwartiervermogen"
 # The planner holds without a battery power reading while the capacity
 # tariff is on, so every default test config names one.
 POWER_ENTITY = "sensor.test_battery_power"
+# A charge reading is required (no placeholder charge): every default test
+# config names one and the fixture sets it to 50 %.
+SOC_ENTITY = "sensor.test_battery_soc"
 MONTH_PEAK_ENTITY = "sensor.slimmelezer_maandpiek"
 
 CONTRACT_FIELDS = [
@@ -128,6 +132,7 @@ class Env:
         self.peak_path = self.state_dir / "peak_alert.json"
         self.halt_path = self.state_dir / "halt.json"
         self.command_path = self.state_dir / "last_command.json"
+        self.soc_sensor = True           # False: the driver must read the charge
         # Off by default: the fixture's month peak (3.0) is above the floor
         # and would mail in every unrelated test. Peak-alert tests turn it on.
         self.peak_alerts = False
@@ -160,7 +165,9 @@ class Env:
     def write_config(self, extra=""):
         self.config_path.write_text(
             "battery:\n  capacity_kwh: 10.0\n"
-            "  power_sensor: sensor.test_battery_power\nalerts:\n"
+            "  power_sensor: sensor.test_battery_power\n"
+            + ("  soc_sensor: sensor.test_battery_soc\n" if self.soc_sensor else "")
+            + "alerts:\n"
             "  address: owner@example.com\n"
             "  notify_service: test_notifier\n"
             "  peak_enabled: %s\n" % ("true" if self.peak_alerts else "false")
@@ -235,6 +242,7 @@ def env(tmp_path):
         st.set(QUARTER_AVG_ENTITY, "0.7", {"unit_of_measurement": "kW"})
         st.set(MONTH_PEAK_ENTITY, "3.0", {"unit_of_measurement": "kW"})
         st.set(POWER_ENTITY, "0", {"unit_of_measurement": "W"})
+        st.set(SOC_ENTITY, "50", {"unit_of_measurement": "%"})
         yield e
     finally:
         if restore_decide is not None:      # the core module outlives the test
@@ -265,7 +273,8 @@ def test_normal_cycle_appends_one_contract_line(env):
     assert all(v != "" for v in keys.values())
     assert re.fullmatch(r"\d+ms", keys["took"])
     assert keys["source"] == "planner"
-    assert "soc_stubbed" in keys["degraded"]
+    assert keys["soc"] == "50.0%/5.00kWh"             # the real sensor reading
+    assert "soc_stubbed" not in keys["degraded"]
     assert "usage_history_unavailable" in keys["degraded"]
     assert keys["_ts"].endswith("+02:00")
     assert env.service.calls == []
@@ -795,7 +804,8 @@ ispec.loader.exec_module(real)         # its `import decision` resolves via alia
 mod.inverter = real
 
 (tmp / "user_config.yaml").write_text(
-    "battery:\n  capacity_kwh: 10.0\nalerts:\n  address: a@b.c\n")
+    "battery:\n  capacity_kwh: 10.0\n  soc_sensor: sensor.test_battery_soc\n"
+    "alerts:\n  address: a@b.c\n")
 mod.CONFIG_PATH = str(tmp / "user_config.yaml")
 mod.CACHE_DIR = str(tmp / "cache") + "/"
 mod.DECISIONS_LOG_DIR = str(tmp / "logs")
@@ -1093,8 +1103,8 @@ def test_populated_history_lets_the_same_prices_grid_charge(env, monkeypatch):
 def test_alert_uses_default_service_when_config_omits_it(env):
     mod = env.mod
     env.config_path.write_text(
-        "battery:\n  capacity_kwh: 10.0\nalerts:\n"
-        "  address: owner@example.com\n  peak_enabled: false\n",
+        "battery:\n  capacity_kwh: 10.0\n  soc_sensor: sensor.test_battery_soc\n"
+        "alerts:\n  address: owner@example.com\n  peak_enabled: false\n",
         encoding="utf-8")
     bump_mtime(env.config_path, 20)
     env.state.set(PRICE_ENTITY, "unavailable", {})
@@ -1142,17 +1152,19 @@ def _clean_drivers():
             del sys.modules[name]
 
 
-def test_default_config_uses_logging_driver_and_stays_stubbed(env, _clean_drivers):
+def test_default_config_uses_the_logging_driver_and_the_charge_sensor(env, _clean_drivers):
     env.mod.CORE_DIR = str(MODULES)
     env.run()
     keys = fields_of(env.decisions()[0])
-    assert "soc_stubbed" in keys["degraded"]
+    assert "soc_stubbed" not in keys["degraded"]
+    assert "soc_unavailable" not in keys["degraded"]
     assert "inverter_driver_unavailable" not in keys["degraded"]
     assert env.log.by_level["error"] == []
 
 
-def test_configured_driver_gets_the_decision_and_clears_the_stub_marker(
+def test_configured_driver_gets_the_decision_and_supplies_the_charge(
         env, tmp_path, _clean_drivers):
+    env.soc_sensor = False                    # no sensor: the driver reads it
     _use_driver(env, tmp_path, "realdrv")
     env.run()
     lines = env.decisions()
@@ -1179,13 +1191,14 @@ def test_raising_driver_still_logs_and_the_cycle_survives(
 
 def test_unknown_driver_falls_back_to_logging_with_marker_and_error(
         env, tmp_path, _clean_drivers):
+    env.soc_sensor = False                    # the marker comes from the charge read
     _use_driver(env, tmp_path, "nonexistent", source=None)
     env.run()
     lines = env.decisions()
     assert len(lines) == 1
     keys = fields_of(lines[0])
     assert "inverter_driver_unavailable" in keys["degraded"]
-    assert "soc_stubbed" in keys["degraded"]
+    assert "soc_unavailable" in keys["degraded"] and "V7" in keys["vetoes"]
     first_errors = [m for m in env.log.by_level["error"] if "NOT transmitting" in m]
     assert len(first_errors) == 1
     env.run(T0 + STEP)
@@ -1652,3 +1665,69 @@ def test_a_full_offset_has_no_marker(env):
     env.write_config("prices:\n  consumption_offset: 0.1366\n")
     env.run(T0)
     assert "consumption_offset_low" not in fields_of(env.decisions()[0])["degraded"]
+
+
+# ---- sensor failure policy: release a forced command on halt / bad config ----------------
+
+def _command_on_record(env, action="charge"):
+    env.state_dir.mkdir(parents=True, exist_ok=True)
+    env.command_path.write_text(
+        json.dumps({"action": action, "power_kw": 3.0,
+                    "sent_at": "2026-09-30T23:00:00+00:00"}), encoding="utf-8")
+
+
+def _last_action(env):
+    return json.loads(env.command_path.read_text(encoding="utf-8"))["action"]
+
+
+def test_a_price_halt_releases_a_forced_command_once(env):
+    _real_driver(env)
+    _command_on_record(env, "charge")
+    env.state.set(PRICE_ENTITY, "unavailable", {})
+    env.run(T0)
+    assert _last_action(env) == "idle"
+    idle_lines = [l for l in env.lines() if " | action=idle" in l]
+    assert len(idle_lines) == 1 and "price outage" in idle_lines[0]
+    assert "soc=n/a" in idle_lines[0]
+    env.run(T0 + STEP)                                  # still halted
+    assert len([l for l in env.lines() if " | action=idle" in l]) == 1
+
+
+@pytest.mark.parametrize("last", [None, "idle"])
+def test_a_price_halt_sends_nothing_without_a_command_in_force(env, last):
+    _real_driver(env)
+    if last:
+        _command_on_record(env, last)
+    env.state.set(PRICE_ENTITY, "unavailable", {})
+    env.run(T0)
+    assert [l for l in env.lines() if " | action=idle" in l] == []
+
+
+def test_a_price_halt_with_the_logging_driver_sends_nothing(env):
+    _command_on_record(env, "charge")
+    env.state.set(PRICE_ENTITY, "unavailable", {})
+    env.run(T0)
+    assert [l for l in env.lines() if " | action=idle" in l] == []
+
+
+def test_a_broken_config_releases_once_and_mails_once(env):
+    _real_driver(env)
+    env.run(T0)                                           # a good cycle first
+    _command_on_record(env, "export")
+    env.config_path.write_text("battery: [not, a, mapping", encoding="utf-8")
+    bump_mtime(env.config_path, 30)
+    env.run(T0 + STEP)
+    env.run(T0 + 2 * STEP)
+    assert _last_action(env) == "idle"
+    released = [l for l in env.lines()
+                if " | action=idle" in l and "configuration invalid" in l]
+    assert len(released) == 1
+    mails = [m for m in env.service.of("notify", NOTIFY)
+             if "configuration invalid" in m[2]["title"]]
+    assert len(mails) == 1
+
+
+def test_a_broken_config_before_any_good_one_sends_nothing(env):
+    env.config_path.write_text("battery: [not, a, mapping", encoding="utf-8")
+    env.run(T0)
+    assert env.service.of("notify", NOTIFY) == []

@@ -181,7 +181,7 @@ def test_module_is_pure():
 # ---- config: retention.keep_days ------------------------------------------------------------
 
 def _cfg(extra=None, **sections):
-    raw = {"battery": {"capacity_kwh": 10.0},
+    raw = {"battery": {"capacity_kwh": 10.0, "soc_sensor": "sensor.test_battery_soc"},
            "alerts": {"address": "o@example.com"}}
     raw.update(sections)
     if extra:

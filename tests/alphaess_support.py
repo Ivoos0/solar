@@ -32,6 +32,8 @@ def battery_config(path, battery_lines=(), extra="", mode=None,
     """
     path = Path(path)
     text = "battery:\n  capacity_kwh: 10.0\n"
+    if not any(line.startswith("soc_sensor:") for line in battery_lines):
+        text += "  soc_sensor: sensor.test_battery_soc\n"
     for line in battery_lines:
         text += "  %s\n" % line
     text += "alerts:\n  address: owner@example.com\n  notify_service: test_notifier\n"

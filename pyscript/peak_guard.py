@@ -118,7 +118,7 @@ DOCUMENTED READINGS / DEVIATIONS FROM THE WP TEXT
   evaluated", never a projected 0.00kWh), saturation and breach render
   "none", end_soc is the CURRENT stored kWh (same fallback decision.build uses
   with no blocks), cons/inj render n/a (no prices). why says "no trajectory".
-  avg/ceiling/budget are real (capacity.*). degraded carries soc_stubbed and,
+  avg/ceiling/budget are real (capacity.*). degraded carries soc_unavailable and,
   when relevant, meter_restored. The configured average mode is stated in
   why.
 * Vetoes: only vetoes that forbid "discharge" BLOCK a shave, i.e. V5 (battery
@@ -423,14 +423,26 @@ def _read_sensor(entity):
     return value * factor, stamp, None
 
 
-def _read_soc(entity):
+def _stale_stamp(stamp, cfg):
+    """True when a continuously published sensor has not been written for
+    timing.sensor_stale_minutes (a frozen value counts as unavailable)."""
+    if stamp is None:
+        return False
+    return (_now(cfg) - stamp).total_seconds() > cfg.sensor_stale_minutes * 60
+
+
+def _read_soc(entity, cfg=None):
     """Battery charge in percent from a sensor; None when unreadable
-    (unknown/unavailable, not a number, or outside 0..100)."""
+    (unknown/unavailable, not refreshed, not a number, or outside 0..100)."""
     try:
         raw = state.get(entity)  # noqa: F821
     except Exception:
         return None
     if raw is None or str(raw).strip().lower() in _BAD:
+        return None
+    if cfg is not None and _stale_stamp(
+            _as_datetime(getattr(raw, "last_reported", None))
+            or _as_datetime(getattr(raw, "last_updated", None)), cfg):
         return None
     try:
         value = float(raw)
@@ -453,6 +465,13 @@ def _notify(cfg, title, message):
         return True
     except Exception as exc:
         _warn("alert", "alert send failed: %r" % (exc,))
+        try:
+            service.call(  # noqa: F821
+                "persistent_notification", "create", title=title,
+                message=message,
+                notification_id="battery_planner_" + title.replace(" ", "_").lower())
+        except Exception as exc2:
+            _warn("alert2", "persistent notification failed: %r" % (exc2,))
         return False
 
 
@@ -468,7 +487,7 @@ def _guard_note(cfg, shave, vetoed, batt, charge_is_stub):
     else:
         note = "The guard is not shaving (nothing it could shave right now)."
     if charge_is_stub:
-        note += " The battery charge is a stub value (no real reading)."
+        note += " The battery charge reading is unavailable."
     if cfg.inverter_type == "logging":
         note += (" The inverter driver is 'logging': a shave is recorded but "
                  "nothing is sent to the battery.")
@@ -550,10 +569,11 @@ def _commanded_discharge_kw(cfg, at):
     return max(0.0, min(_flags["shave_kw"], cfg.max_discharge_kw))
 
 
-def _limit_kw(entity):
-    """Inverter power limit sensor as kW; None when unreadable or not above 0."""
-    kw, _, problem = _read_sensor(entity)
-    if problem or kw <= 0:
+def _limit_kw(entity, fallback_kw, cfg):
+    """Inverter power limit sensor as kW; None when unreadable, not refreshed,
+    not above 0 or implausibly high (more than 4 x the configured fallback)."""
+    kw, stamp, problem = _read_sensor(entity)
+    if problem or kw <= 0 or kw > 4 * fallback_kw or _stale_stamp(stamp, cfg):
         return None
     return kw
 
@@ -567,10 +587,10 @@ def _with_limits(cfg):
         return cfg
     charge = None
     if cfg.max_charge_sensor is not None:
-        charge = _limit_kw(cfg.max_charge_sensor)
+        charge = _limit_kw(cfg.max_charge_sensor, cfg.max_charge_kw, cfg)
     discharge = None
     if cfg.max_discharge_sensor is not None:
-        discharge = _limit_kw(cfg.max_discharge_sensor)
+        discharge = _limit_kw(cfg.max_discharge_sensor, cfg.max_discharge_kw, cfg)
     if ((cfg.max_charge_sensor is not None and charge is None)
             or (cfg.max_discharge_sensor is not None and discharge is None)):
         _flags["limits_marker"] = "battery_limits_fallback"
@@ -583,7 +603,7 @@ def _with_reserve(cfg):
     _flags["reserve_marker"] = None
     if cfg.reserve_sensor is None:
         return cfg
-    new = site_config.with_reserve(cfg, _read_soc(cfg.reserve_sensor))
+    new = site_config.with_reserve(cfg, _read_soc(cfg.reserve_sensor, cfg))
     if new is cfg:
         _flags["reserve_marker"] = "battery_reserve_fallback"
     return new
@@ -595,8 +615,9 @@ def _battery_discharge_kw(cfg):
     then estimated from the offtake alone)."""
     if cfg.power_sensor is None:
         return None
-    power, _, problem = _read_sensor(cfg.power_sensor)
-    if problem:
+    power, stamp, problem = _read_sensor(cfg.power_sensor)
+    if (problem or _stale_stamp(stamp, cfg)
+            or abs(power) > 4 * max(cfg.max_charge_kw, cfg.max_discharge_kw)):
         return None
     return capacity.battery_discharge_from_power(power, cfg.power_positive)
 
@@ -614,9 +635,7 @@ def _grid_state(offtake_kw, now, month_peak, cfg, is_restored, reported,
 def _make_record(now, cfg, grid, batt, took_ms, action, power_kw,
                  vetoes, reasoning):
     """Full DecisionRecord for a guard decision (see docstring for renderings)."""
-    degraded = decision.degraded_markers(batt)
-    if _flags["inverter_marker"] == "soc_unavailable":
-        degraded = [m for m in degraded if m != "soc_stubbed"]
+    degraded = decision.degraded_markers()
     if _flags["inverter_marker"]:
         degraded.append(_flags["inverter_marker"])
     if _flags["limits_marker"]:
@@ -665,6 +684,22 @@ def _clear_shaving(window_start, why):
     _set_shaving_entity(False, window_start, 0.0)
 
 
+def _release_discharge(why):
+    """The guard has lost its inputs while a shave it started may still be in
+    force: send one `idle` (the planner would only do so on its next cycle).
+    Never raises."""
+    try:
+        cfg = _cfg["config"]
+        if cfg is None:
+            return
+        record = decision.release_record(
+            _now(cfg), "peak shave (guard): %s, so the discharge is "
+            "released" % why, "guard")
+        _emit("idle", 0.0, record, cfg)
+    except Exception as exc:
+        _warn("release", "cannot release the discharge: %r" % (exc,))
+
+
 def _handle_unreadable(missing):
     """Unreadable meter: log, do nothing, never discharge on a guess."""
     if _flags["unreadable_since"] is None:
@@ -674,7 +709,10 @@ def _handle_unreadable(missing):
           % ", ".join(missing))
     waited = _monotonic() - _flags["unreadable_since"]
     if _flags["shaving"] is not False and waited >= GRACE_SECONDS:
+        was_shaving = _flags["shaving"] is True
         _clear_shaving(None, "meter unreadable for %.0f s" % waited)
+        if was_shaving:
+            _release_discharge("the meter has been unreadable for %.0f s" % waited)
 
 
 def _handle_error():
@@ -683,7 +721,10 @@ def _handle_error():
         _flags["unreadable_since"] = _monotonic()
     waited = _monotonic() - _flags["unreadable_since"]
     if _flags["shaving"] is not False and waited >= GRACE_SECONDS:
+        was_shaving = _flags["shaving"] is True
         _clear_shaving(None, "ticks failing for %.0f s" % waited)
+        if was_shaving:
+            _release_discharge("the guard has been failing for %.0f s" % waited)
 
 
 def _avg_staleness(stamp, now, start):
@@ -798,18 +839,17 @@ def _evaluate(trigger_type, started):
         offtake_text = "offtake %.2f kW" % grid.offtake_kw
     shave = capacity.shave_kw(grid, cfg)
 
-    soc_known = True
     if cfg.soc_sensor is None:
-        charge, charge_is_stub, charge_marker = inverter.read_charge(
-            cfg.inverter_type, CORE_DIR)
-        batt = battery.from_percent(charge, cfg, is_stubbed=charge_is_stub)
-    else:                                    # real reading: never the stub
-        charge = _read_soc(cfg.soc_sensor)
-        soc_known = charge is not None
-        charge_is_stub = not soc_known
-        charge_marker = None if soc_known else "soc_unavailable"
-        batt = (battery.from_percent(charge, cfg, is_stubbed=False)
-                if soc_known else battery.unknown(cfg))
+        charge, charge_marker = inverter.read_charge(cfg.inverter_type, CORE_DIR)
+    else:
+        charge = _read_soc(cfg.soc_sensor, cfg)
+        charge_marker = None
+    soc_known = charge is not None
+    if not soc_known:
+        charge_marker = "soc_unavailable"
+    charge_is_stub = not soc_known           # no reading behind the figure
+    batt = (battery.from_percent(charge, cfg) if soc_known
+            else battery.unknown(cfg))
     _flags["inverter_marker"] = charge_marker
     forbidden, fired = rules.establish_vetoes(
         batt, None, cfg, grid, usage_history_available=True,   # never grid-charges: V4 is moot

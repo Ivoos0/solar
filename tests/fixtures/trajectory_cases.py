@@ -19,6 +19,7 @@ def site(capacity, max_charge_kw, max_discharge_kw, reserve_percent=10.0):
     return config.from_dict({
         "battery": {
             "capacity_kwh": capacity,
+            "soc_sensor": "sensor.test_battery_soc",
             "reserve_percent": reserve_percent,
             "max_charge_kw": max_charge_kw,
             "max_discharge_kw": max_discharge_kw,

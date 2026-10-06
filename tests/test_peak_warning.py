@@ -38,7 +38,7 @@ def wg(make_guard, monkeypatch, tmp_path):
     def build(alerts="", capacity_extra=""):
         g = make_guard()
         (tmp_path / "user_config.yaml").write_text(
-            "battery:\n  capacity_kwh: 10.0\n"
+            "battery:\n  capacity_kwh: 10.0\n  soc_sensor: sensor.test_battery_soc\n"
             "alerts:\n  address: owner@example.com\n%s"
             "capacity_tariff:\n  quarter_hour_average_mode: running\n"
             "  stay_under_percent: 100\n%s" % (alerts, capacity_extra),
@@ -54,7 +54,7 @@ def go(g, h, m, s, **kw):
 
 
 def warned(g):
-    return [c for c in g.svc.calls if c[2]["title"].startswith(
+    return [c for c in g.svc.calls if c[0] == "notify" and c[2]["title"].startswith(
         "Capacity peak warning")]
 
 
@@ -80,7 +80,7 @@ def test_constants_are_documented_values():
 # ---- config ---------------------------------------------------------------------
 
 def test_config_defaults_and_validation():
-    raw = {"battery": {"capacity_kwh": 10.0}, "alerts": {"address": "a@b.c"}}
+    raw = {"battery": {"capacity_kwh": 10.0, "soc_sensor": "sensor.test_battery_soc"}, "alerts": {"address": "a@b.c"}}
     c = config.from_dict(raw)
     assert c.peak_warning_enabled is True
     assert c.peak_warning_min_interval_minutes == 60
@@ -102,7 +102,7 @@ def test_config_defaults_and_validation():
                      ("peak_warning_ticks", 2.0),
                      ("peak_warning_ticks", "2"),
                      ("peak_warning_ticks", True)):
-        raw2 = {"battery": {"capacity_kwh": 10.0},
+        raw2 = {"battery": {"capacity_kwh": 10.0, "soc_sensor": "sensor.test_battery_soc"},
                 "alerts": {"address": "a@b.c", key: bad}}
         with pytest.raises(config.ConfigError) as e:
             config.from_dict(raw2)
@@ -127,7 +127,7 @@ def test_two_consecutive_evaluations_send_one_warning(wg):
     assert "2.50 kW ceiling" in msg and "Current offtake: 5.00 kW" in msg
     assert "Time left in this quarter-hour: 7.0 min" in msg   # at 12:08:00
     assert "The guard is shaving: discharging" in msg
-    assert "stub" in msg and "'logging'" in msg
+    assert "'logging'" in msg
 
 
 def test_at_most_one_warning_per_window(wg):
@@ -392,3 +392,13 @@ def test_counter_resets_at_a_window_boundary(wg):
     go(g2, 12, 16, 0, **HIGH)                        # new window: counting restarts
     go(g2, 12, 16, 30, **HIGH)
     assert len(warned(g2)) == 1                      # the shared fake: only g's
+
+
+def test_a_failed_mail_is_also_shown_as_a_persistent_notification(wg):
+    g = wg()
+    g.svc.fail = True
+    two_ticks(g, **HIGH)
+    pn = [c for c in g.svc.calls if c[0] == "persistent_notification"]
+    assert pn and pn[0][1] == "create"
+    assert pn[0][2]["title"].startswith("Capacity peak warning")
+    assert pn[0][2]["notification_id"].startswith("battery_planner_")

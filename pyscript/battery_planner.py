@@ -173,6 +173,7 @@ MAX_FETCHES_PER_HOUR = 12             # shared with the hourly poll
 FORECAST_FAILURES_BEFORE_RETRY = 2
 FORECAST_AGE_MARKER_MINUTES = 75      # older than a normal hourly refresh: mark it
 SLOW_CYCLE_MS = 5000                  # a cycle slower than this is logged
+SEND_FAILURE_ALERT_AFTER = 3          # consecutive refused commands before the e-mail
 HISTORY_WARN_MINUTES = 60             # per warning kind, energy history
 
 # ---- module state -----------------------------------------------------------
@@ -182,6 +183,8 @@ _last_run = None
 _config = None
 _config_mtime = None
 _config_error = None
+_last_good_config = None              # the last config that validated (for a release)
+_config_release_done = False          # idle already sent for this config failure
 _halt_state = None
 _halt_loaded = False                  # halt.json read once per process
 _forecast_failures = 0
@@ -192,6 +195,10 @@ _hist_warned = {}                     # warning kind -> last time logged
 _peak_alert_loaded = False            # peak_alert.json read once per process
 _peak_alert_last = None               # (YYYY-MM, kW) of the last notified peak
 _sensor_first_down = {}               # entity -> when first seen unavailable
+_stale_minutes = 15                   # timing.sensor_stale_minutes of the running cycle
+_sensors_down = []                    # entities currently unavailable (health attribute)
+_send_alert_at = None                 # when the send-failure mail last went out
+_last_good = {}                       # key -> (value, when) for the short debounce
 _sensor_last_alert = None             # when the last sensor outage mail went out
 _calibration = None                   # history.solar_calibration result, per clock hour
 _calibration_key = None               # what it was computed for (date, hour, settings)
@@ -389,11 +396,44 @@ def _sensor_kw(entity):
     return number / 1000.0 if unit == "W" else number
 
 
+def _is_stale(entity):
+    """True when a continuously published sensor has not been written for
+    timing.sensor_stale_minutes: a frozen value counts as unavailable. No
+    timestamp (older Home Assistant, fakes) is never stale."""
+    now = _now()
+    age = cache.stamp_age_minutes(_state_stamp(entity), now)
+    if age is None or age <= _stale_minutes:
+        return False
+    _warn_hourly("stale:" + entity,
+                 "sensor %s has not refreshed for %s (limit %dm); treated as "
+                 "unavailable" % (entity, cache.format_minutes(age),
+                                  _stale_minutes), now)
+    return True
+
+
+def _debounced(key, value, local, cfg, markers, marker):
+    """A reading that fails for a cycle or two does not flip the decision.
+
+    A readable value is remembered. An unreadable one is replaced by the last
+    good value while that is at most 2 evaluation intervals old (+1 minute),
+    with `marker` on the record; later it stays unreadable.
+    """
+    if value is not None:
+        _last_good[key] = (value, local)
+        return value
+    held = _last_good.get(key)
+    limit = (2 * cfg.evaluation_interval_minutes + 1) * 60
+    if held is not None and (local - held[1]).total_seconds() <= limit:
+        markers.append(marker)
+        return held[0]
+    return None
+
+
 def _power_kw(entity):
     """Signed power sensor as kW: W is converted, kW kept, any other unit (or
-    none) is unreadable. None when unreadable."""
+    none) is unreadable. None when unreadable or not refreshed."""
     value = _state_value(entity)
-    if value is None:
+    if value is None or _is_stale(entity):
         return None
     try:
         number = float(value)
@@ -419,13 +459,21 @@ def _battery_discharge_kw(cfg):
     power = _power_kw(cfg.power_sensor)
     if power is None:
         return None
+    if abs(power) > 4 * max(cfg.max_charge_kw, cfg.max_discharge_kw):
+        _warn_hourly("bounds:" + cfg.power_sensor,
+                     "battery power %.1f kW from %s is implausible for a "
+                     "%.1f kW inverter; treated as unavailable"
+                     % (power, cfg.power_sensor,
+                        max(cfg.max_charge_kw, cfg.max_discharge_kw)), _now())
+        return None
     return capacity.battery_discharge_from_power(power, cfg.power_positive)
 
 
-def _limit_kw(entity):
-    """Inverter power limit sensor as kW; None when unreadable or not above 0."""
+def _limit_kw(entity, fallback_kw):
+    """Inverter power limit sensor as kW; None when unreadable, not above 0 or
+    implausibly high (more than 4 x the configured fallback)."""
     kw = _power_kw(entity)
-    if kw is None or kw <= 0:
+    if kw is None or kw <= 0 or kw > 4 * fallback_kw:
         return None
     return kw
 
@@ -441,10 +489,10 @@ def _with_limits(cfg, markers):
         return cfg
     charge = None
     if cfg.max_charge_sensor is not None:
-        charge = _limit_kw(cfg.max_charge_sensor)
+        charge = _limit_kw(cfg.max_charge_sensor, cfg.max_charge_kw)
     discharge = None
     if cfg.max_discharge_sensor is not None:
-        discharge = _limit_kw(cfg.max_discharge_sensor)
+        discharge = _limit_kw(cfg.max_discharge_sensor, cfg.max_discharge_kw)
     if ((cfg.max_charge_sensor is not None and charge is None)
             or (cfg.max_discharge_sensor is not None and discharge is None)):
         markers.append("battery_limits_fallback")
@@ -469,10 +517,11 @@ def _with_reserve(cfg, markers):
 def _read_soc(entity):
     """Battery charge in percent from a sensor; None when unreadable.
 
-    Unreadable: unknown/unavailable, not a number, or outside 0..100.
+    Unreadable: unknown/unavailable, not refreshed for
+    timing.sensor_stale_minutes, not a number, or outside 0..100.
     """
     value = _state_value(entity)
-    if value is None:
+    if value is None or _is_stale(entity):
         return None
     try:
         number = float(value)
@@ -508,13 +557,16 @@ def _counter_kwh(entity):
 
 def _load_config():
     """Current SiteConfig, reloaded when the file's mtime changes; else None."""
-    global _config, _config_mtime, _config_error
+    global _config, _config_mtime, _config_error, _last_good_config
+    global _config_release_done
     result = _load_yaml(CONFIG_PATH, _config_mtime)
     if result["status"] == "loaded":
         _config_mtime = result["mtime"]
         try:
             _config = config.from_dict(result["data"])
             _config_error = None
+            _last_good_config = _config
+            _config_release_done = False
         except config.ConfigError as exc:
             _config, _config_error = None, str(exc)
     elif result["status"] == "error":
@@ -548,7 +600,9 @@ def _read_prices(cfg, local):
 
 def _notify(cfg, title, message):
     """Send one e-mail via the configured notify service. True when sent;
-    a failure is logged and returns False so the caller retries later."""
+    a failure is logged and returns False so the caller retries later. A
+    failed send is also shown in Home Assistant as a persistent notification
+    (a second channel; the fixed id keeps a retry from piling them up)."""
     try:
         service.call(  # noqa: F821
             "notify", cfg.notify_service,
@@ -556,6 +610,14 @@ def _notify(cfg, title, message):
         return True
     except Exception as exc:
         log.error(f"battery_planner: alert send failed: {exc!r}")  # noqa: F821
+        try:
+            service.call(  # noqa: F821
+                "persistent_notification", "create", title=title,
+                message=message,
+                notification_id="battery_planner_" + title.replace(" ", "_").lower())
+        except Exception as exc2:
+            log.error(  # noqa: F821
+                f"battery_planner: persistent notification failed: {exc2!r}")
         return False
 
 
@@ -611,6 +673,42 @@ def _load_halt():
         _halt_state = None
 
 
+def _release(cfg, local, reasoning):
+    """Send `idle` once when a command may still be in force.
+
+    Only when the last command on record is not idle (with the logging driver
+    nothing is ever recorded, so nothing is sent). Never raises.
+    """
+    try:
+        if cfg.inverter_type == "logging":
+            return                          # transmits nothing, nothing to release
+        if inverter.last_sent_action(state_dir=STATE_DIR) in (None, "idle"):
+            return
+        record = decision.release_record(
+            local, decision.one_line(reasoning), "planner")
+        inverter.apply("idle", 0.0, record, log_dir=DECISIONS_LOG_DIR,
+                       inverter_type=cfg.inverter_type, driver_dir=CORE_DIR,
+                       resend_minutes=cfg.inverter_resend_minutes,
+                       state_dir=STATE_DIR, dry_run=cfg.inverter_dry_run)
+    except Exception as exc:
+        log.error(f"battery_planner: release failed: {exc!r}")  # noqa: F821
+
+
+def _release_on_config_failure(now):
+    """Invalid or unreadable configuration: release once, using the last good one."""
+    global _config_release_done
+    if _config_release_done or _last_good_config is None:
+        return
+    _config_release_done = True
+    cfg = _last_good_config
+    local = now.astimezone(ZoneInfo(cfg.timezone))
+    _release(cfg, local, "configuration invalid (%s): releasing any forced "
+             "command" % (_config_error or "unknown"))
+    _notify(cfg, "Battery planner stopped: configuration invalid",
+            "No decisions are being made. Cause: %s" % (
+                decision.one_line(_config_error or "unknown")))
+
+
 def _halt(cfg, local, cause):
     """Price outage: no decision; alert on entry, then per realert_minutes."""
     global _halt_state
@@ -620,6 +718,8 @@ def _halt(cfg, local, cause):
         log.error(f"battery_planner: HALT, {cause}")  # noqa: F821
         _halt_state = decision.HaltState(True, cause, local, None)
         _save_halt()
+        _release(cfg, local, "price outage (%s): releasing any forced "
+                 "command, the inverter returns to its default" % cause)
     last = _halt_state.last_alert_at
     if last is None or (local - last).total_seconds() >= cfg.realert_minutes * 60:
         if _send_alert(cfg, _halt_state.cause, _halt_state.entered_at):
@@ -697,6 +797,31 @@ def _check_peak_alert(cfg, local):
         log.error(f"battery_planner: peak alert failed: {exc!r}")  # noqa: F821
 
 
+def _check_send_failures(cfg, local):
+    """E-mail when the inverter keeps refusing commands (3 in a row), then
+    every alerts.realert_minutes while it does. Never raises."""
+    global _send_alert_at
+    try:
+        streak = inverter.send_failure_streak()
+        if streak < SEND_FAILURE_ALERT_AFTER:
+            _send_alert_at = None
+            return
+        if (_send_alert_at is not None and (local - _send_alert_at).total_seconds()
+                < cfg.realert_minutes * 60):
+            return
+        if _notify(cfg, "Battery planner: the inverter does not accept commands",
+                   "%d commands in a row were not accepted by the inverter "
+                   "driver (%s). Decisions are still logged, but nothing "
+                   "reaches the inverter, which keeps its default behaviour "
+                   "or the last command until it times out. Check the "
+                   "connection to the inverter and the driver log. Re-alert "
+                   "every %d min." % (streak, cfg.inverter_type,
+                                      cfg.realert_minutes)):
+            _send_alert_at = local
+    except Exception as exc:
+        log.error(f"battery_planner: send failure alert failed: {exc!r}")  # noqa: F821
+
+
 def _check_sensor_outage(cfg, local):
     """E-mail when configured sensors stay unavailable.
 
@@ -706,12 +831,14 @@ def _check_sensor_outage(cfg, local):
     during an outage starts the count again. Never raises, never touches a
     decision; a failed send is retried next cycle.
     """
-    global _sensor_first_down, _sensor_last_alert
+    global _sensor_first_down, _sensor_last_alert, _sensors_down
     try:
         if not cfg.sensor_alert_enabled:
+            _sensors_down = []
             return
         sensors = decision.required_sensors(cfg)
         down = [e for e, _ in sensors if _state_value(e) is None]
+        _sensors_down = down
         first, last, due = decision.outage_step(
             _sensor_first_down, _sensor_last_alert, down, local,
             cfg.sensor_outage_minutes, cfg.realert_minutes)
@@ -1161,7 +1288,7 @@ def _publish_halted(on, cause, since, now):
         "cause": cause, "since": since}, now)
 
 
-def _publish_sensors(cfg, local, record, grid, stubbed, solar_ratio=None):
+def _publish_sensors(cfg, local, record, grid, no_reading, solar_ratio=None):
     """Publish this cycle's decision. NEVER raises, never touches a decision.
 
     Missing data is published as "unknown" (state) or null (attribute), never
@@ -1171,7 +1298,7 @@ def _publish_sensors(cfg, local, record, grid, stubbed, solar_ratio=None):
     try:
         if not cfg.sensors_enabled:
             return
-        soc = None if stubbed else _rounded(record.charge_percent, 1)
+        soc = None if no_reading else _rounded(record.charge_percent, 1)
         _publish(SENSOR_ACTION, record.action, {
             "friendly_name": "Battery planner action",
             "icon": "mdi:battery-sync",
@@ -1180,6 +1307,7 @@ def _publish_sensors(cfg, local, record, grid, stubbed, solar_ratio=None):
             "vetoes": ", ".join(record.vetoes_applied) or "none",
             "why": decision.one_line(record.reasoning),
             "degraded": ", ".join(record.degraded_inputs) or "none",
+            "inputs_down": ", ".join(_sensors_down) or "none",
             "soc_percent": soc,
             "decided_at": record.timestamp.isoformat(timespec="seconds"),
             "source": record.source}, local)
@@ -1219,6 +1347,7 @@ def _publish_halt_sensors(cfg, local):
             "icon": "mdi:battery-sync",
             "power_kw": None, "selector": None, "vetoes": "none",
             "why": "halted: %s" % cause, "degraded": "none",
+            "inputs_down": ", ".join(_sensors_down) or "none",
             "soc_percent": None,
             "decided_at": local.isoformat(timespec="seconds"),
             "source": "planner"}, local)
@@ -1239,7 +1368,10 @@ def _cycle(now):
     started = _now()
     cfg = _load_config()
     if cfg is None:
+        _release_on_config_failure(now)
         return
+    global _stale_minutes
+    _stale_minutes = cfg.sensor_stale_minutes
     local = now.astimezone(ZoneInfo(cfg.timezone))
     _check_peak_alert(cfg, local)        # before prices: also works in a halt
     _check_sensor_outage(cfg, local)
@@ -1278,28 +1410,26 @@ def _cycle(now):
     window_days = cfg.usage_history_weeks * 7
     coverage = history_days if history_days < window_days else None
 
-    soc_known = True
     if cfg.soc_sensor is None:
-        charge, charge_is_stub, charge_marker = inverter.read_charge(
-            cfg.inverter_type, CORE_DIR)
+        charge, charge_marker = inverter.read_charge(cfg.inverter_type, CORE_DIR)
         if charge_marker:
             markers.append(charge_marker)
-        bat = battery.from_percent(charge, cfg, is_stubbed=charge_is_stub)
-    else:                                    # real reading: never the stub
-        charge = _read_soc(cfg.soc_sensor)
-        if charge is None:
-            soc_known, charge_is_stub = False, True
-            markers.append("soc_unavailable")
-            bat = battery.unknown(cfg)
-        else:
-            charge_is_stub = False
-            bat = battery.from_percent(charge, cfg, is_stubbed=False)
+    else:
+        charge = _debounced("soc", _read_soc(cfg.soc_sensor), local, cfg,
+                            markers, "soc_last_good")
+    soc_known = charge is not None
+    if soc_known:
+        bat = battery.from_percent(charge, cfg)
+    else:                                    # no reading: hold, never guess
+        markers.append("soc_unavailable")
+        bat = battery.unknown(cfg)
     block_start = local.replace(
         minute=(local.minute // cfg.block_minutes) * cfg.block_minutes,
         second=0, microsecond=0)
     traj = trajectory.project(bat, solar, usage, price_map, cfg,
                               start_time=block_start)
-    battery_kw = _battery_discharge_kw(cfg)
+    battery_kw = _debounced("power", _battery_discharge_kw(cfg), local, cfg,
+                            markers, "battery_power_last_good")
     if cfg.power_sensor is not None and battery_kw is None:
         markers.append("battery_power_unavailable")
     grid = _grid_state(cfg, local, battery_kw, markers)
@@ -1328,13 +1458,15 @@ def _cycle(now):
         if p.block_start <= local < p.block_start + timedelta(minutes=cfg.block_minutes):
             price_now = p
     degraded = decision.degraded_markers(
-        bat, solar_zero_fallback=zero_fallback, cache_markers=markers,
+        solar_zero_fallback=zero_fallback, cache_markers=markers,
         usage_samples=coverage)
-    if not soc_known:                        # soc_unavailable says it already
-        degraded = [m for m in degraded if m != "soc_stubbed"]
+    streak = inverter.send_failure_streak()
+    if streak:
+        degraded = degraded + ["inverter_send_failed=%d" % streak]
     took = int((_now() - started).total_seconds() * 1000)
     record = decision.build(d, traj, bat, price_now, degraded, now=local,
                             duration_ms=took, grid_state=grid, config=cfg)
+    _check_send_failures(cfg, local)
     if not inverter.apply(d.action, d.target_power_kw, record,
                           log_dir=DECISIONS_LOG_DIR,
                           inverter_type=cfg.inverter_type,
@@ -1343,13 +1475,13 @@ def _cycle(now):
                           state_dir=STATE_DIR,
                           dry_run=cfg.inverter_dry_run):
         log.error("battery_planner: decision could not be recorded")  # noqa: F821
-    _publish_sensors(cfg, local, record, grid, bat.is_stubbed, solar_ratio)
+    _publish_sensors(cfg, local, record, grid, not soc_known, solar_ratio)
     if took > SLOW_CYCLE_MS:
         log.warning(f"battery_planner: slow cycle {took}ms")  # noqa: F821
     # The history records the RAW forecast: a calibrated one would feed the
     # ratio back into itself.
     _record_history(cfg, now, price_map, solar_raw, zero_fallback,
-                    None if charge_is_stub else charge)
+                    charge)
 
 
 def _due(now):

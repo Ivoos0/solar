@@ -86,7 +86,7 @@ def test_boundary_crossing_writes_one_record_with_all_fields(env):
     assert r["from_net_kwh"] == r["import_kwh"]
     assert r["consumption_price"] is not None and r["injection_price"] is not None
     assert isinstance(r["forecast_solar_kwh"], float)
-    assert r["soc_percent"] is None                       # SOC is the stub
+    assert r["soc_percent"] == 50.0                       # the charge sensor reading
     assert r["start_read_at"] == T0.isoformat()
     assert r["snapshot_read_at"] == (T0 + QUARTER).isoformat()
     assert env.decisions()                                # decisions unaffected
@@ -99,7 +99,7 @@ def soc_config(env):
     env.write_config(FULL)
     nl = chr(10)
     text = env.config_path.read_text(encoding="utf-8").replace(
-        "battery:" + nl, "battery:" + nl + "  soc_sensor: %s" % SOC + nl, 1)
+        "sensor.test_battery_soc", SOC, 1)
     env.config_path.write_text(text, encoding="utf-8")
 
 
@@ -135,8 +135,9 @@ def test_end_charge_null_when_the_sensor_is_unavailable_at_the_end(env):
     assert r["soc_percent"] == 40.0 and r["soc_end_percent"] is None
 
 
-def test_end_charge_null_without_a_charge_sensor(env):
+def test_end_charge_null_when_the_charge_is_unreadable_throughout(env):
     env.write_config(FULL)
+    env.state.set("sensor.test_battery_soc", "unavailable", {})
     cycles(env, 2)
     (r,) = records(env)
     assert r["soc_percent"] is None and r["soc_end_percent"] is None

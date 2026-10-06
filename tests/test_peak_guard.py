@@ -34,6 +34,7 @@ MODULES = SRC.parent / "modules"
 _CORE_NAMES = ("config", "capacity", "battery", "rules", "decision")
 TZ = ZoneInfo("Europe/Brussels")
 SHAVING = "pyscript.peak_guard_shaving"
+SOC_ENTITY = "sensor.test_battery_soc"
 OFFTAKE = "sensor.slimmelezer_power_consumed"
 AVG = "sensor.slimmelezer_huidig_kwartiervermogen"
 PEAK = "sensor.slimmelezer_maandpiek"
@@ -109,10 +110,18 @@ class FakeInverter:
     def __init__(self):
         self.calls = []
         self.reads = []
-        self.charge_percent = 50.0
+        self.st = None                     # set by make_guard: the fake state
+        self.driver_charge = 50.0          # what a driver reads (no soc_sensor)
         self.marker = None
-        self.stub = True
         self.last_action = None            # what last_command.json would say
+
+    @property
+    def charge_percent(self):
+        return float(self.st.values[SOC_ENTITY])
+
+    @charge_percent.setter
+    def charge_percent(self, value):
+        self.st.values[SOC_ENTITY] = str(value)
 
     def last_sent_action(self, *a, **k):
         return self.last_action
@@ -125,7 +134,7 @@ class FakeInverter:
 
     def read_charge(self, inverter_type="logging", driver_dir=None):
         self.reads.append((inverter_type, driver_dir))
-        return self.charge_percent, self.stub, self.marker
+        return self.driver_charge, self.marker
 
 
 def _factory(registry, name):
@@ -164,9 +173,10 @@ class Guard:
         return [c for c in self.inv.calls if c[0] == "discharge"]
 
 
-def _write_config(path, mode="running", extra=""):
+def _write_config(path, mode="running", extra="", soc_sensor=True):
     path.write_text(
         "battery:\n  capacity_kwh: 10.0\n"
+        + ("  soc_sensor: sensor.test_battery_soc\n" if soc_sensor else "") +
         "alerts:\n  address: owner@example.com\n"
         "capacity_tariff:\n  quarter_hour_average_mode: %s\n"
         "  stay_under_percent: 100\n%s" % (mode, extra),
@@ -179,15 +189,17 @@ def make_guard(monkeypatch, tmp_path):
 
     builds = []
 
-    def build(mode="running", extra="", state=None):
+    def build(mode="running", extra="", state=None, soc_sensor=True):
         # Each guard gets its own state dir (as a separate install would);
         # pass the same `state` name to simulate a restart of one guard.
         builds.append(1)
         state = state or ("state%d" % len(builds))
         cfg_path = tmp_path / "user_config.yaml"
-        _write_config(cfg_path, mode, extra)
+        _write_config(cfg_path, mode, extra, soc_sensor)
         triggers = []
         st, log, inv = FakeState(), FakeLog(), FakeInverter()
+        st.values["sensor.test_battery_soc"] = "50"
+        inv.st = st
         for name, value in (
                 ("pyscript_executor", lambda fn: fn),
                 ("state_trigger", _factory(triggers, "state_trigger")),
@@ -222,7 +234,7 @@ def make_guard(monkeypatch, tmp_path):
 
 def _cfg(mode="running"):
     return config.from_dict({
-        "battery": {"capacity_kwh": 10.0},
+        "battery": {"capacity_kwh": 10.0, "soc_sensor": "sensor.test_battery_soc"},
         "alerts": {"address": "owner@example.com"},
         "capacity_tariff": {"quarter_hour_average_mode": mode,
                             "stay_under_percent": 100}})
@@ -254,7 +266,7 @@ def test_forming_peak_discharges_once_with_guard_record(make_guard):
     # a forming peak leaves no charge budget after the household draw (V3
     # forbids grid charging only; the guard never charges)
     assert rec.vetoes_applied == ["V3"]
-    assert "soc_stubbed" in rec.degraded_inputs
+    assert "soc_stubbed" not in rec.degraded_inputs
     line = decision.format_record(rec)
     assert "source=guard" in line and "selector=S0" in line
     assert "average mode running;" in line
@@ -985,7 +997,8 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 assert not any(n in sys.modules for n in ("config", "capacity", "decision"))
 (tmp / "user_config.yaml").write_text(
-    "battery:\n  capacity_kwh: 10.0\nalerts:\n  address: a@b.c\n"
+    "battery:\n  capacity_kwh: 10.0\n  soc_sensor: sensor.test_battery_soc\n"
+    "alerts:\n  address: a@b.c\n"
     "capacity_tariff:\n  quarter_hour_average_mode: running\n")
 mod.CONFIG_PATH = str(tmp / "user_config.yaml")
 mod.STATE_DIR = str(tmp / "state") + "/"
@@ -1087,7 +1100,8 @@ def test_lint_allows_comprehensions_and_native_key_callables():
 # ---- inverter.type: the guard selects the driver from the same config ----------
 
 def test_guard_passes_configured_type_and_driver_dir_to_the_boundary(make_guard):
-    g = make_guard(extra="inverter:\n  type: alphaess\n").at(12, 7, 30)
+    g = make_guard(extra="inverter:\n  type: alphaess\n",
+                   soc_sensor=False).at(12, 7, 30)
     g.tick(**PEAK_ARGS)
     assert g.inv.reads and g.inv.reads[0] == ("alphaess", str(MODULES))
     assert g.inv.kwargs == {"inverter_type": "alphaess",
@@ -1100,12 +1114,13 @@ def test_guard_passes_configured_type_and_driver_dir_to_the_boundary(make_guard)
 def test_guard_defaults_to_the_logging_driver(make_guard):
     g = make_guard().at(12, 7, 30)
     g.tick(**PEAK_ARGS)
-    assert g.inv.reads[0][0] == "logging"
+    assert g.inv.reads == []                      # the charge sensor is used
     assert g.inv.kwargs["inverter_type"] == "logging"
 
 
 def test_guard_driver_marker_lands_in_the_record_and_is_not_sticky(make_guard):
-    g = make_guard().at(12, 7, 30)
+    g = make_guard(extra="inverter:\n  type: alphaess\n",
+                   soc_sensor=False).at(12, 7, 30)
     g.inv.marker = "inverter_driver_unavailable"
     g.tick(**PEAK_ARGS)
     assert "inverter_driver_unavailable" in g.discharges[0][2].degraded_inputs
@@ -1114,13 +1129,6 @@ def test_guard_driver_marker_lands_in_the_record_and_is_not_sticky(make_guard):
     stop = g.inv.calls[-1][2]
     assert stop.action == "idle"
     assert "inverter_driver_unavailable" not in stop.degraded_inputs
-
-
-def test_guard_stub_flag_comes_from_the_driver(make_guard):
-    g = make_guard().at(12, 7, 30)
-    g.inv.stub = False
-    g.tick(**PEAK_ARGS)
-    assert "soc_stubbed" not in g.discharges[0][2].degraded_inputs
 
 
 # ---- daily rotation: the guard writes the same dated file as the planner ----------
@@ -1498,3 +1506,41 @@ def test_reload_that_needs_shaving_sends_the_discharge_not_idle(make_guard):
     g.inv.last_action = "discharge"
     g.tick(**PEAK_ARGS)
     assert [c[0] for c in g.inv.calls] == ["discharge"]
+
+
+# ---- sensor failure policy: a dead meter releases the discharge ----------------------
+
+def test_meter_lost_while_shaving_releases_the_discharge_once(make_guard):
+    g = make_guard().at(12, 7, 30)
+    g.tick(**PEAK_ARGS)
+    assert [c[0] for c in g.inv.calls] == ["discharge"]
+    g.tick(offtake="unavailable", advance=30.0)
+    assert [c[0] for c in g.inv.calls] == ["discharge"]       # inside the grace
+    g.tick(advance=g.mod.GRACE_SECONDS + 1)
+    assert [c[0] for c in g.inv.calls] == ["discharge", "idle"]
+    rec = g.inv.calls[1][2]
+    assert rec.source == "guard" and "released" in rec.reasoning
+    assert "unreadable" in rec.reasoning
+    g.tick(advance=30.0)                                      # still dead
+    assert len(g.inv.calls) == 2
+
+
+def test_meter_lost_while_not_shaving_sends_nothing(make_guard):
+    g = make_guard().at(12, 7, 30)
+    g.tick(offtake="0.3", avg="0.4", peak="2.5")
+    g.tick(offtake="unavailable", advance=30.0)
+    g.tick(advance=g.mod.GRACE_SECONDS + 1)
+    assert g.inv.calls == []
+
+
+def test_failing_ticks_while_shaving_release_the_discharge(make_guard, monkeypatch):
+    g = make_guard().at(12, 7, 30)
+    g.tick(**PEAK_ARGS)
+
+    def boom():
+        raise ValueError("config broke")
+    monkeypatch.setattr(g.mod, "_get_config", boom)
+    g.tick(advance=30.0)
+    g.tick(advance=g.mod.GRACE_SECONDS + 1)
+    assert [c[0] for c in g.inv.calls] == ["discharge", "idle"]
+    assert "failing" in g.inv.calls[1][2].reasoning

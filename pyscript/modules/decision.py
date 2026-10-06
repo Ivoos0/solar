@@ -12,8 +12,8 @@ Public API
           now, duration_ms, grid_state=None, config=None, source="planner")
     format_record(record)     -> one line, fixed field order
     format_halt(halt_state, now) -> one HALT line
-    degraded_markers(battery_state, solar_zero_fallback=False,
-                     cache_markers=(), usage_samples=None) -> [str]
+    degraded_markers(solar_zero_fallback=False, cache_markers=(),
+                     usage_samples=None) -> [str]
     render_vetoes(decision)   -> [str] (also used by build)
     FIELD_NAMES               the keys after the timestamp, in
                               output order
@@ -87,9 +87,10 @@ FIELD_NAMES = (
 
 # Numeric fields that must be finite (a "nan"/"inf" would render as text that
 # is not a number). The optional ones render n/a when None.
-_REQUIRED_NUMBERS = ("target_power_kw", "charge_percent", "charge_kwh",
-                     "projected_end_charge_kwh", "duration_ms")
-_OPTIONAL_NUMBERS = ("consumption_price", "injection_price",
+_REQUIRED_NUMBERS = ("target_power_kw", "duration_ms")
+_OPTIONAL_NUMBERS = ("charge_percent", "charge_kwh",
+                     "projected_end_charge_kwh",
+                     "consumption_price", "injection_price",
                      "forecast_remaining_kwh", "usage_remaining_kwh",
                      "spill_kwh", "running_average_kw", "ceiling_kw",
                      "budget_kw")
@@ -197,8 +198,8 @@ def render_vetoes(decision):
     return tokens
 
 
-def degraded_markers(battery_state, solar_zero_fallback=False,
-                     cache_markers=(), usage_samples=None):
+def degraded_markers(solar_zero_fallback=False, cache_markers=(),
+                     usage_samples=None):
     """Assemble the degraded list.
 
     cache_markers: strings from cache.age_marker(series, now), passed through
@@ -206,8 +207,6 @@ def degraded_markers(battery_state, solar_zero_fallback=False,
     fewer than seven (None = not degraded).
     """
     out = []
-    if battery_state.is_stubbed:
-        out.append("soc_stubbed")
     if solar_zero_fallback:
         out.append("solar_zero_fallback")
     out.extend(cache_markers)
@@ -301,7 +300,8 @@ def format_record(record):
         r.timestamp.isoformat(timespec="seconds"),
         "action=%s" % r.action,
         "power=%s" % _kw(r.target_power_kw),
-        "soc=%.1f%%/%s" % (r.charge_percent, _kwh(r.charge_kwh)),
+        "soc=%s" % (NA if r.charge_percent is None else "%.1f%%/%s" % (
+            r.charge_percent, _kwh(r.charge_kwh))),
         "cons=%s" % _price(r.consumption_price),
         "inj=%s" % _price(r.injection_price),
         "solar_rem=%s" % _kwh(r.forecast_remaining_kwh),
@@ -323,6 +323,25 @@ def format_record(record):
     return " | ".join(parts)
 
 
+def release_record(now, reasoning, source="planner", degraded=()):
+    """An idle DecisionRecord for a release that has no decision behind it.
+
+    Used when the planner halts, its configuration is invalid or the peak
+    guard loses its meter: a forced command sent earlier may still be in
+    force, and the inverter must be told to go back to its default. Nothing
+    was read, so the battery and price fields are n/a.
+    """
+    return DecisionRecord(
+        timestamp=now, action="idle", target_power_kw=0.0,
+        charge_percent=None, charge_kwh=None, consumption_price=None,
+        injection_price=None, forecast_remaining_kwh=None,
+        usage_remaining_kwh=None, saturation_block=None, spill_kwh=None,
+        reserve_breach_block=None, projected_end_charge_kwh=None,
+        duration_ms=0, running_average_kw=None, ceiling_kw=None,
+        budget_kw=None, vetoes_applied=[], selector="S6", reasoning=reasoning,
+        degraded_inputs=list(degraded), source=source)
+
+
 def format_halt(halt_state, now):
     """HALT line for a cycle that produced no decision."""
     _reject_delimiters("cause", halt_state.cause)
@@ -339,7 +358,7 @@ def format_halt(halt_state, now):
 # What the planner does while each kind of input is missing (the e-mail says so).
 _SENSOR_EFFECTS = {
     "soc": "battery charge unknown: the planner holds (no charging, no exporting)",
-    "power": "the household draw is estimated from the grid offtake alone",
+    "power": "the household draw cannot be measured: the planner holds (no charging, no exporting)",
     "max_charge": "battery.max_charge_kw applies",
     "max_discharge": "battery.max_discharge_kw applies",
     "reserve": "battery.reserve_percent applies",

@@ -56,8 +56,8 @@ class Env:
     def write_config(self, extra=""):
         self.base.mkdir(parents=True, exist_ok=True)
         self.config_path.write_text(
-            "battery:\n  capacity_kwh: 10.0\nalerts:\n"
-            "  address: owner@example.com\n" + extra, encoding="utf-8")
+            "battery:\n  capacity_kwh: 10.0\n  soc_sensor: sensor.test_battery_soc\n"
+            "alerts:\n  address: owner@example.com\n" + extra, encoding="utf-8")
         bump_mtime(self.config_path)
 
     def decisions(self, day, text="x"):

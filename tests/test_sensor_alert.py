@@ -71,7 +71,7 @@ def test_message_names_each_sensor_its_downtime_and_effect():
     assert title == "Battery planner: 2 sensors unavailable"
     assert "sensor.a: unavailable for 20 min" in message
     assert "sensor.b: unavailable for 15 min" in message
-    assert "planner holds" in message and "grid offtake" in message
+    assert "planner holds" in message and "cannot be measured" in message
     assert "Re-alert every 60 min" in message
 
 
@@ -88,7 +88,7 @@ def test_required_sensors_follow_the_configuration(site_config):
     assert kinds[site_config.forecast_entity] == "forecast"
     assert kinds[site_config.offtake_sensor] == "offtake"
     assert site_config.price_entity not in kinds       # has its own halt alert
-    assert "soc" not in kinds.values()                 # not configured
+    assert kinds[site_config.soc_sensor] == "soc"      # the charge reading is required
 
 
 def test_optional_sensors_appear_once_configured():

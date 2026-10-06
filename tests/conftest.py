@@ -14,7 +14,8 @@ import config  # noqa: E402
 def site_config():
     """Valid SiteConfig with this site's real values."""
     return config.from_dict({
-        "battery": {"capacity_kwh": 10.0},
+        "battery": {"capacity_kwh": 10.0,
+                    "soc_sensor": "sensor.test_battery_soc"},
         "alerts": {"address": "owner@example.com"},
         # The shipped default is 80; the suite's hand-derived budgets are
         # against the full ceiling. The 80 % semantics are tested explicitly.
