@@ -1297,6 +1297,13 @@ def _cycle(now):
     solar_raw, zero_fallback = _solar(cfg, local, midnight, span_end, payload, markers)
     solar, solar_ratio = _calibrated(cfg, local, solar_raw, zero_fallback, markers)
     usage, history_days = _usage(cfg, local, midnight, span_end, markers)
+    if history_days > 0 and usage:
+        thin = 0
+        for slot in usage:
+            if slot.sample_days < cfg.usage_min_bucket_days:
+                thin += 1
+        if thin:
+            markers.append("usage_gaps_pct=%d" % max(1, round(100.0 * thin / len(usage))))
     window_days = cfg.usage_history_weeks * 7
     coverage = history_days if history_days < window_days else None
 

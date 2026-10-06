@@ -132,6 +132,9 @@ capacity_tariff:
 # Expected household consumption per block, averaged from recent history.
 usage:
   history_weeks: 4              # trailing window
+  min_bucket_days: 2            # a block of the day needs this many days of history before its
+                                # own average is trusted; thinner blocks are interpolated from
+                                # the nearest well backed blocks (integer >= 1)
   min_history_days: 3           # days of recorded history needed before any
                                 # price-driven action (charging, exporting); until
                                 # then the planner only peak-shaves and idles.

@@ -1683,3 +1683,18 @@ def test_dry_run_gives_no_own_grid_charge_correction(env):
     env.run(T0)
     env.run(T0 + STEP)
     assert seen[1].own_grid_charge_kw == 0.0          # nothing was really charged
+
+
+def test_a_patchy_profile_is_marked_with_the_share_of_gaps(env, monkeypatch):
+    monkeypatch.setattr(env.mod, "read_usage_history",
+                        lambda cfg, local: _history(3))
+    env.run(T0)
+    degraded = fields_of(env.decisions()[0])["degraded"]
+    assert "usage_gaps_pct=" in degraded
+
+
+def test_a_full_profile_has_no_gap_marker(env, monkeypatch):
+    monkeypatch.setattr(env.mod, "read_usage_history",
+                        lambda cfg, local: _history(28))
+    env.run(T0)
+    assert "usage_gaps_pct" not in fields_of(env.decisions()[0])["degraded"]

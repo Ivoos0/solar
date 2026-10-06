@@ -2,6 +2,8 @@ import dataclasses
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from dataclasses import replace
+
 import pytest
 
 import series
@@ -447,3 +449,80 @@ def test_series_on_fall_back_day_are_dense_100(site_config):
     assert sum(b.expected_kwh for b in s) == pytest.approx(25.0)
     u = series.usage_profile([], site_config, start, end)
     assert len(u) == 100
+
+
+# ---- gaps inside the history ---------------------------------------------------
+
+def _hour(ts):
+    return ts.hour + ts.minute / 60.0
+
+
+def _no_gap_blocks(history, hours):
+    return [(t, v) for t, v in history if not (hours[0] <= _hour(t) < hours[1])]
+
+
+def test_a_gap_is_filled_from_the_neighbouring_blocks(site_config):
+    # 0.1 kWh per hour of the day: a straight line, so the interpolation is
+    # exact. The blocks 03:00-03:45 are missing on every day.
+    line = _history(14, lambda ts: 0.1 * _hour(ts))
+    holey = _no_gap_blocks(line, (3.0, 4.0))
+    u = series.usage_profile(holey, site_config, START, _end(100))
+    for slot in u:
+        hour = _hour(slot.block_start)
+        assert slot.expected_kwh == pytest.approx(0.1 * hour, abs=1e-9)
+        if 3.0 <= hour < 4.0:
+            assert slot.sample_days == 0            # still marked as a gap
+
+
+def test_the_overall_mean_is_not_used_when_neighbours_exist(site_config):
+    night_low = lambda ts: 0.05 if ts.hour < 6 else 0.5      # noqa: E731
+    holey = _no_gap_blocks(_history(14, night_low), (2.0, 3.0))
+    u = series.usage_profile(holey, site_config, START, _end(100))
+    gap = [b for b in u if 2.0 <= _hour(b.block_start) < 3.0]
+    assert gap and all(b.expected_kwh == pytest.approx(0.05) for b in gap)
+
+
+def test_a_thin_bucket_is_replaced_by_well_backed_neighbours(site_config):
+    # Block 03:00 has one day only (the older days miss it); the rest of the
+    # day has two days per weekday. With the default minimum of 2 the thin
+    # block follows its neighbours (0.2) instead of its single odd value (9.0).
+    base = _history(14, lambda ts: 0.2)
+    thin = [(t, v) for t, v in base
+            if not (_hour(t) == 3.0 and t < START - timedelta(days=7))]
+    thin = [(t, 9.0 if _hour(t) == 3.0 else v) for t, v in thin]
+    u = series.usage_profile(thin, site_config, START, _end(100))
+    at3 = [b for b in u if _hour(b.block_start) == 3.0]
+    assert at3 and all(b.expected_kwh == pytest.approx(0.2) for b in at3)
+    assert all(b.sample_days == 1 for b in at3)
+
+
+def test_minimum_of_one_keeps_a_single_day_value(site_config):
+    cfg = replace(site_config, usage_min_bucket_days=1)
+    base = _history(14, lambda ts: 0.2)
+    thin = [(t, v) for t, v in base
+            if not (_hour(t) == 3.0 and t < START - timedelta(days=7))]
+    thin = [(t, 9.0 if _hour(t) == 3.0 else v) for t, v in thin]
+    u = series.usage_profile(thin, cfg, START, _end(100))
+    at3 = [b for b in u if _hour(b.block_start) == 3.0]
+    assert at3 and all(b.expected_kwh == pytest.approx(9.0) for b in at3)
+
+
+def test_the_first_days_keep_their_own_values(site_config):
+    # one day of history: no bucket reaches two days, so nothing is replaced
+    u = series.usage_profile(_history(1, lambda ts: 0.1 * _hour(ts)),
+                             site_config, START, _end(700))
+    own = [b for b in u if b.sample_days == 1]
+    assert own
+    assert all(b.expected_kwh == pytest.approx(0.1 * _hour(b.block_start))
+               for b in own)
+
+
+def test_gaps_are_filled_within_the_same_day_group_only(site_config):
+    # Tuesdays are well backed (0.5), other days thin (0.1, one day each).
+    # A thin Wednesday block must not borrow a Tuesday value.
+    def f(ts):
+        return 0.5 if ts.weekday() == 1 else 0.1
+
+    u = series.usage_profile(_history(8, f), site_config, START, _end(48))
+    wed = [b.expected_kwh for b in u if b.block_start.weekday() == 2]
+    assert wed and all(v == pytest.approx(0.1) for v in wed)
