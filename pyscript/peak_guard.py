@@ -251,6 +251,7 @@ _flags = {
     "primed": False,       # entity reconciled to "off" since import/reload
     "inverter_marker": None,  # degraded marker from the last charge reading
     "limits_marker": None,  # battery_limits_fallback while a limit sensor fails
+    "reserve_marker": None,  # battery_reserve_fallback while the reserve sensor fails
     "stale_window": None,  # window a stale-average WARNING was already logged
     "stale_info_window": None,  # window a low stale-average INFO was logged
     "stale_episode": False,  # a stale average was seen and has not refreshed yet
@@ -590,6 +591,18 @@ def _with_limits(cfg):
     return site_config.with_limits(cfg, charge, discharge)
 
 
+def _with_reserve(cfg):
+    """cfg with the inverter's own minimum charge as the reserve for this tick
+    (same rule as battery_planner._with_reserve)."""
+    _flags["reserve_marker"] = None
+    if cfg.reserve_sensor is None:
+        return cfg
+    new = site_config.with_reserve(cfg, _read_soc(cfg.reserve_sensor))
+    if new is cfg:
+        _flags["reserve_marker"] = "battery_reserve_fallback"
+    return new
+
+
 def _battery_discharge_kw(cfg):
     """Battery power from battery.power_sensor (kW, discharge positive), or
     None: no sensor configured, or it cannot be read (the household draw is
@@ -688,6 +701,8 @@ def _make_record(now, cfg, grid, batt, verdict, took_ms, action, power_kw,
         degraded.append(_flags["inverter_marker"])
     if _flags["limits_marker"]:
         degraded.append(_flags["limits_marker"])
+    if _flags["reserve_marker"]:
+        degraded.append(_flags["reserve_marker"])
     if verdict.confidence == "assumed":
         degraded.append("avg_mode_assumed")
     if grid.is_restored:
@@ -816,6 +831,7 @@ def _evaluate(trigger_type, started):
             _clear_shaving(None, "capacity tariff disabled")
         return
     cfg = _with_limits(cfg)
+    cfg = _with_reserve(cfg)
     _refresh_beat(cfg, now, started)
 
     offtake, _, p_off = _read_sensor(cfg.offtake_sensor)

@@ -110,6 +110,7 @@ only V5 can stop a peak shave, shown as `V5(suppressed S0 discharge)`.
 | Marker | Meaning |
 |---|---|
 | `soc_stubbed` | The battery charge is the 50 % placeholder of the `logging` driver. Absent when `battery.soc_sensor` supplies the charge |
+| `battery_reserve_fallback` | `battery.reserve_sensor` is set but cannot be read (unknown, unavailable, not a number, or outside 0 to below 100). `battery.reserve_percent` applies on that record |
 | `battery_limits_fallback` | `battery.max_charge_sensor` or `battery.max_discharge_sensor` is set but cannot be read (unknown, unavailable, not a number, a unit other than W or kW, or 0 or less). The numeric `battery.max_charge_kw` / `max_discharge_kw` apply for that direction on that record |
 | `battery_power_unavailable` | `battery.power_sensor` is set but cannot be read (unknown, unavailable, not a number, or a unit other than W or kW). The budget then uses the older estimate: meter offtake minus the planner's own grid charge |
 | `soc_unavailable` | `battery.soc_sensor` is set but cannot be read (unknown, unavailable, not a number or outside 0 to 100). The charge is not guessed: V7 holds grid charging and export. Replaces `soc_stubbed` on that record |

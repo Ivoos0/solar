@@ -23,6 +23,7 @@ _MAP = [
     ("battery", "soc_sensor", "soc_sensor"),
     ("battery", "power_sensor", "power_sensor"),
     ("battery", "power_positive", "power_positive"),
+    ("battery", "reserve_sensor", "reserve_sensor"),
     ("battery", "max_charge_sensor", "max_charge_sensor"),
     ("battery", "max_discharge_sensor", "max_discharge_sensor"),
     ("solar", "forecast_entity", "forecast_entity"),
@@ -86,13 +87,14 @@ _NON_NUMERIC = (
     "peak_alert_enabled", "peak_warning_enabled", "report_enabled",
     "sensors_enabled", "inverter_dry_run", "soc_sensor",
     "power_sensor", "power_positive", "max_charge_sensor",
-    "max_discharge_sensor",
+    "max_discharge_sensor", "reserve_sensor",
 ) + _HISTORY_SENSOR_ATTRS
 
 # Optional entity-name fields: None = not configured, else domain.object_id.
 _OPTIONAL_ENTITY_FIELDS = (
     ("soc_sensor", "battery.soc_sensor"),
     ("power_sensor", "battery.power_sensor"),
+    ("reserve_sensor", "battery.reserve_sensor"),
     ("max_charge_sensor", "battery.max_charge_sensor"),
     ("max_discharge_sensor", "battery.max_discharge_sensor"),
 )
@@ -174,6 +176,7 @@ class SiteConfig:
     soc_sensor: object = None
     # Optional sensors with the inverter's maximum battery charge / discharge
     # power (W or kW). Not in fingerprint(): they name where data is read.
+    reserve_sensor: object = None
     max_charge_sensor: object = None
     max_discharge_sensor: object = None
     # Optional sensor with the battery power (W or kW, signed). power_positive
@@ -234,6 +237,15 @@ def with_limits(cfg, charge_kw=None, discharge_kw=None):
     if _num(discharge_kw) and discharge_kw > 0:
         changes["max_discharge_kw"] = float(discharge_kw)
     return replace(cfg, **changes) if changes else cfg
+
+
+def with_reserve(cfg, percent=None):
+    """A NEW config with reserve_percent replaced by the inverter's own
+    minimum charge (percent). None, or a value that is not a number from 0 up
+    to (excluding) 100, keeps the configured fallback. cfg is never mutated."""
+    if _num(percent) and 0 <= percent < 100:
+        return replace(cfg, reserve_percent=float(percent))
+    return cfg
 
 
 def _num(v):
